@@ -14,9 +14,9 @@ use crate::camera::Camera;
 pub struct GaussianSplat {
     pub xyz: Point3<f32>,
     pub color: Vector3<f32>,
-    pub opacity: f32,
     pub covariance_1: Vector3<f32>,
     pub covariance_2: Vector3<f32>,
+    pub opacity: f32,
 }
 
 impl GaussianSplat {
@@ -38,23 +38,23 @@ impl GaussianSplat {
                     shader_location: 1,
                     format: wgpu::VertexFormat::Float32x3,
                 },
-                // opacity
+                // covariance_1
                 wgpu::VertexAttribute {
                     offset: VEC3_SIZE * 2,
                     shader_location: 2,
-                    format: wgpu::VertexFormat::Float32,
-                },
-                // covariance_1
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 2 + 1,
-                    shader_location: 3,
                     format: wgpu::VertexFormat::Float32x3,
                 },
                 // covariance_2
                 wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 3 + 1,
-                    shader_location: 4,
+                    offset: VEC3_SIZE * 3,
+                    shader_location: 3,
                     format: wgpu::VertexFormat::Float32x3,
+                },
+                // opacity
+                wgpu::VertexAttribute {
+                    offset: VEC3_SIZE * 4,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float32,
                 },
             ],
         }
@@ -79,7 +79,7 @@ impl PointCloud {
 
         let mut points = Vec::with_capacity(num_points);
 
-        for _ in 0..num_points {
+        for i in 0..num_points {
             let x = reader.read_f32::<LittleEndian>().unwrap();
             let y = reader.read_f32::<LittleEndian>().unwrap();
             let z = reader.read_f32::<LittleEndian>().unwrap();
@@ -95,24 +95,24 @@ impl PointCloud {
                 .seek_relative(std::mem::size_of::<f32>() as i64 * 45)
                 .unwrap();
             let opacity = sigmoid(reader.read_f32::<LittleEndian>().unwrap());
-            let scale_1 = reader.read_f32::<LittleEndian>().unwrap();
-            let scale_2 = reader.read_f32::<LittleEndian>().unwrap();
-            let scale_3 = reader.read_f32::<LittleEndian>().unwrap();
+            let scale_1 = reader.read_f32::<LittleEndian>().unwrap().exp();
+            let scale_2 = reader.read_f32::<LittleEndian>().unwrap().exp();
+            let scale_3 = reader.read_f32::<LittleEndian>().unwrap().exp();
             let rot_0 = reader.read_f32::<LittleEndian>().unwrap();
             let rot_1 = reader.read_f32::<LittleEndian>().unwrap();
             let rot_2 = reader.read_f32::<LittleEndian>().unwrap();
             let rot_3 = reader.read_f32::<LittleEndian>().unwrap();
 
-            let cov = build_cov(
-                Quaternion::new(rot_0, rot_1, rot_2, rot_3),
-                Vector3::new(scale_1, scale_2, scale_3),
-            );
+            let rot_q = Quaternion::new(rot_0, rot_1, rot_2, rot_3);
+            let scale = Vector3::new(scale_1, scale_2, scale_3);
+
+            let cov = build_cov(rot_q, scale);
             points.push(GaussianSplat {
                 xyz: Point3::new(x, y, z),
                 color: Vector3::new(r, g, b),
-                opacity: opacity,
                 covariance_1: Vector3::new(cov[0], cov[1], cov[2]),
                 covariance_2: Vector3::new(cov[3], cov[4], cov[5]),
+                opacity: opacity,
             })
         }
 

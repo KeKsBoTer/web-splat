@@ -8,8 +8,9 @@ use cgmath::{Deg, Matrix, Matrix2, Matrix3, Matrix4, Point3, Rad, Vector3};
 use controller::CameraController;
 use pc::PointCloud;
 use renderer::{CameraUniform, GaussianRenderer};
+use scene::Scene;
 use winit::{
-    event::{DeviceEvent, ElementState, Event, WindowEvent},
+    event::{DeviceEvent, ElementState, Event, VirtualKeyCode, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::{Window, WindowBuilder},
 };
@@ -18,7 +19,9 @@ mod camera;
 mod controller;
 pub mod pc;
 mod renderer;
+mod scene;
 mod uniform;
+mod utils;
 
 use camera::Camera;
 
@@ -37,6 +40,7 @@ struct WindowContext {
     renderer: GaussianRenderer,
     camera: SimpleCamera,
     controller: CameraController,
+    scene: Option<Scene>,
 }
 
 impl WindowContext {
@@ -111,9 +115,6 @@ impl WindowContext {
             build_proj(0.01, 100., 0.9, 0.6),
         );
 
-        println!("{:?}", view_camera.view_matrix());
-        println!("{:?}", view_camera.proj_matrix());
-
         let controller = CameraController::new(1., 1.);
         Self {
             device,
@@ -127,6 +128,7 @@ impl WindowContext {
             pc: None,
             camera: view_camera,
             controller,
+            scene: None,
         }
     }
 
@@ -194,9 +196,24 @@ impl WindowContext {
 
         Ok(())
     }
+
+    fn set_scene(&mut self, scene: Scene) {
+        self.scene.replace(scene);
+    }
+
+    fn set_camera(&mut self, camera: SimpleCamera) {
+        println!("set to {camera:?}");
+        self.camera = camera;
+        if let Some(pc) =&mut self.pc{
+            pc.sort(&self.queue, self.camera);
+        }
+    }
 }
 
-pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(file: P) {
+pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
+    file: P,
+    scene_file: Option<P>,
+) {
     let event_loop = EventLoop::new();
 
     let window = WindowBuilder::new()
@@ -207,6 +224,11 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(file: P
     let mut state = WindowContext::new(window).await;
 
     let pc = PointCloud::load_ply(&state.device, file).unwrap();
+
+    if let Some(scene_file) = scene_file {
+        let scene = Scene::from_json(scene_file).unwrap();
+        state.set_scene(scene);
+    }
 
     let mut last = Instant::now();
 
@@ -230,9 +252,29 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(file: P
             WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
             WindowEvent::KeyboardInput { input, .. } => {
                 if let Some(key) = input.virtual_keycode {
+                    if input.state == ElementState::Released{
+                    if key == VirtualKeyCode::G{
+                        if let Some(pc) = &mut state.pc{
+                            pc.sort(&state.queue, state.camera.clone());
+                        }
+                    }
+                    else if let Some(num) = utils::key_to_num(key){
+                        if let Some(scene) = &state.scene{
+                            state.set_camera(scene.camera(num as usize));
+                        }
+                    }
+                    else if key == VirtualKeyCode::R{
+                        if let Some(scene) = &state.scene{
+                            let rnd_idx = rand::random::<usize>();
+                            println!("{:}",rnd_idx % scene.num_cameras());
+                            state.set_camera(scene.camera(rnd_idx % scene.num_cameras()));
+                        }   
+                    }}
+                
                     state
                         .controller
                         .process_keyboard(key, input.state == ElementState::Pressed);
+                    
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => match delta {

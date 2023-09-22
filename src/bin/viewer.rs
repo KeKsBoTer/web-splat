@@ -8,9 +8,13 @@ struct Opt {
     /// Input file
     #[structopt(parse(from_os_str))]
     input: PathBuf,
+
+    /// Scene json file
+    #[structopt(parse(from_os_str))]
+    scene: Option<PathBuf>,
 }
 
 fn main() {
     let opt = Opt::from_args();
-    pollster::block_on(open_window(opt.input));
+    pollster::block_on(open_window(opt.input, opt.scene));
 }

@@ -102,8 +102,6 @@ impl CameraController {
         // Move up/down. Since we don't use roll, we can just
         // modify the y coordinate directly.
         camera.position.y += (self.amount.y) * self.speed * dt;
-        println!("{:?}", camera.position);
-
         // Rotate
         camera.yaw += Rad(self.rotate_horizontal) * self.sensitivity * dt;
         camera.pitch += Rad(-self.rotate_vertical) * self.sensitivity * dt;
