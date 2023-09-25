@@ -1,10 +1,12 @@
 use std::{
     path::Path,
-    time::{Duration, Instant}, thread, sync::{RwLock, Arc},
+    sync::{Arc, RwLock},
+    thread,
+    time::{Duration, Instant},
 };
 
 use camera::{PerspectiveCamera, PerspectiveProjection};
-use cgmath::{Deg, EuclideanSpace, One, Point3, Quaternion, Vector2, Transform};
+use cgmath::{Deg, EuclideanSpace, One, Point3, Quaternion, Transform, Vector2};
 use controller::CameraController;
 use pc::PointCloud;
 use renderer::GaussianRenderer;
@@ -40,10 +42,11 @@ struct WindowContext {
     pc: Option<Arc<RwLock<PointCloud>>>,
     renderer: GaussianRenderer,
     camera: Arc<RwLock<PerspectiveCamera>>,
-    next_camera: Option<((Duration,Duration),(PerspectiveCamera,PerspectiveCamera))>,
+    next_camera: Option<((Duration, Duration), (PerspectiveCamera, PerspectiveCamera))>,
     controller: CameraController,
     scene: Option<Scene>,
-    pause_sort:Arc<RwLock<bool>>
+    pause_sort: Arc<RwLock<bool>>,
+    current_view: Option<usize>,
 }
 
 impl WindowContext {
@@ -73,6 +76,7 @@ impl WindowContext {
                     limits: wgpu::Limits {
                         max_vertex_attributes: 20,
                         max_buffer_size: 2 << 29,
+                        max_storage_buffer_binding_size: 2<<29,
                         ..Default::default()
                     },
                     label: None,
@@ -115,7 +119,7 @@ impl WindowContext {
         let controller = CameraController::new(1., 1.);
         Self {
             device,
-            queue:Arc::new(queue),
+            queue: Arc::new(queue),
             adapter,
             scale_factor: window.scale_factor() as f32,
             window,
@@ -124,10 +128,11 @@ impl WindowContext {
             renderer,
             pc: None,
             camera: Arc::new(RwLock::new(view_camera)),
-            next_camera:None,
+            next_camera: None,
             controller,
             scene: None,
-            pause_sort:Arc::new(RwLock::new(false))
+            pause_sort: Arc::new(RwLock::new(false)),
+            current_view: None,
         }
     }
 
@@ -139,7 +144,9 @@ impl WindowContext {
         if new_size.width > 0 && new_size.height > 0 {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
-            self.camera.write().unwrap()
+            self.camera
+                .write()
+                .unwrap()
                 .projection
                 .resize(new_size.width, new_size.height);
 
@@ -153,17 +160,18 @@ impl WindowContext {
     }
 
     fn update(&mut self, dt: Duration) {
-        if let Some(((time_left,duration),(start_camera,target_camera)))=self.next_camera{
-            match time_left.checked_sub(dt){
+        if let Some(((time_left, duration), (start_camera, target_camera))) = self.next_camera {
+            match time_left.checked_sub(dt) {
                 Some(new_left) => {
-                    // set time left 
-                    if let Some(c) = &mut self.next_camera{
-                        c.0.0 = new_left;
-                    }  
-                    let elapsed = 1.-new_left.as_secs_f32()/duration.as_secs_f32();
+                    // set time left
+                    if let Some(c) = &mut self.next_camera {
+                        c.0 .0 = new_left;
+                    }
+                    let elapsed = 1. - new_left.as_secs_f32() / duration.as_secs_f32();
                     let amount = smoothstep(elapsed);
-                    *self.camera.write().unwrap() = start_camera.lerp(&target_camera, amount)
-                },
+                    let new_camera =start_camera.lerp(&target_camera, amount);
+                    *self.camera.write().unwrap() = new_camera;
+                }
                 None => {
                     let mut camera = self.camera.write().unwrap();
                     *camera = target_camera.clone();
@@ -172,12 +180,12 @@ impl WindowContext {
                         .resize(self.config.width, self.config.height);
                     self.next_camera.take();
                     *self.pause_sort.write().unwrap() = false;
-                },
+                }
             }
-        }else{
-            self.controller.update_camera(&mut self.camera.write().unwrap(), dt);
+        } else {
+            self.controller
+                .update_camera(&mut self.camera.write().unwrap(), dt);
         }
-        
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -192,8 +200,6 @@ impl WindowContext {
                 label: Some("Render Encoder Compare"),
             });
         {
-           
-
             if let Some(pc) = &self.pc {
                 let viewport = Vector2::new(self.config.width, self.config.height);
                 let pc = pc.read().unwrap();
@@ -215,7 +221,7 @@ impl WindowContext {
                     &self.queue,
                     &pc,
                     self.camera.read().unwrap().clone(),
-                    viewport
+                    viewport,
                 )
             }
         }
@@ -231,12 +237,21 @@ impl WindowContext {
         self.scene.replace(scene);
     }
 
-    pub fn set_camera<C: Into<PerspectiveCamera>>(&mut self, camera: C,animation_duration:Duration) {
-        if animation_duration.is_zero(){
+    pub fn set_camera<C: Into<PerspectiveCamera>>(
+        &mut self,
+        camera: C,
+        animation_duration: Duration,
+    ) {
+        if animation_duration.is_zero() {
             self.update_camera(camera.into())
-        }else{
+        } else {
             *self.pause_sort.write().unwrap() = true;
-            self.next_camera = Some(((animation_duration,animation_duration),(self.camera.read().unwrap().clone(),camera.into())));
+            let mut target_camera =camera.into();
+            target_camera.projection.resize(self.config.width,self.config.height);
+            self.next_camera = Some((
+                (animation_duration, animation_duration),
+                (self.camera.read().unwrap().clone(),target_camera ),
+            ));
         }
     }
 
@@ -259,8 +274,11 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
 
     let window_size = if let Some(scene) = &scene {
         let camera = scene.camera(0);
-        let factor = 1200. /camera.width as f32;
-        PhysicalSize::new((camera.width as f32*factor) as u32, (camera.height as f32*factor) as u32)
+        let factor = 1200. / camera.width as f32;
+        PhysicalSize::new(
+            (camera.width as f32 * factor) as u32,
+            (camera.height as f32 * factor) as u32,
+        )
     } else {
         PhysicalSize::new(800, 600)
     };
@@ -273,7 +291,9 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
 
     let mut state = WindowContext::new(window).await;
 
-    let pc = Arc::new(RwLock::new(PointCloud::load_ply(&state.device, file).unwrap()));
+    let pc = Arc::new(RwLock::new(
+        PointCloud::load_ply(&state.device, file).unwrap(),
+    ));
 
     if let Some(scene) = scene {
         state.set_scene(scene);
@@ -291,21 +311,23 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
     // this thread copies the point cloud, sorts it and copies the result
     // back to the point cloud that is rendered
     // TODO do this on the GPU!
-    thread::spawn(move ||{
+    thread::spawn(move || {
         let mut last_camera = camera.read().unwrap().clone();
         loop {
-            let perform_sort = !{*pause_sort.read().unwrap()};
-            if perform_sort{
-                let curr_camera = {*camera.read().unwrap()};
-                if last_camera != curr_camera{
-                    let mut curr_pc = {pc.read().unwrap().points().clone()};
+            let perform_sort = !{ *pause_sort.read().unwrap() };
+            if perform_sort {
+                let curr_camera = { *camera.read().unwrap() };
+                if last_camera != curr_camera {
+                    let mut curr_pc = { pc.read().unwrap().points().clone() };
                     let view = curr_camera.view_matrix();
                     let proj = curr_camera.proj_matrix();
                     let transform = proj * view;
-                
-                    curr_pc.sort_by_cached_key(|p|(-transform.transform_point(p.xyz).z * (2f32).powi(24)) as i32);
-                    
-                    pc.write().unwrap().update_points(&queue,curr_pc);
+
+                    curr_pc.sort_by_cached_key(|p| {
+                        (-transform.transform_point(p.xyz).z * (2f32).powi(24)) as i32
+                    });
+
+                    pc.write().unwrap().update_points(&queue, curr_pc);
                     last_camera = curr_camera;
                 }
                 thread::sleep(Duration::from_millis(100));
@@ -331,23 +353,30 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
             WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
             WindowEvent::KeyboardInput { input, .. } => {
                 if let Some(key) = input.virtual_keycode {
-                    if input.state == ElementState::Released{
-                    if let Some(num) = utils::key_to_num(key){
-                        if let Some(scene) = &state.scene{
-                            state.set_camera(scene.camera(num as usize),Duration::from_millis(500));
+                    if let Some(scene) = &state.scene{
+                        if input.state == ElementState::Released{
+                            let new_camera = 
+                            if let Some(num) = utils::key_to_num(key){
+                                Some(num as usize)
+                            }
+                            else if key == VirtualKeyCode::R{
+                                Some(rand::random::<usize>()%scene.num_cameras())
+                            }else if key == VirtualKeyCode::PageUp{
+                                Some(state.current_view.map_or(0, |v|v+1) % scene.num_cameras())
+                            }
+                            else if key == VirtualKeyCode::PageDown{
+                                Some(state.current_view.map_or(0, |v|v-1) % scene.num_cameras())
+                            }else{None};
+
+                            if let Some(new_camera) = new_camera{
+                                state.current_view.replace(new_camera as usize);
+                                state.set_camera(scene.camera(new_camera as usize),Duration::from_millis(500));
+                            }
                         }
                     }
-                    else if key == VirtualKeyCode::R{
-                        if let Some(scene) = &state.scene{
-                            let rnd_idx = rand::random::<usize>();
-                            state.set_camera(scene.camera(rnd_idx % scene.num_cameras()),Duration::from_millis(500));
-                        }   
-                    }}
-                
                     state
                         .controller
                         .process_keyboard(key, input.state == ElementState::Pressed);
-                    
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => match delta {
@@ -396,5 +425,4 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
         }
         _ => {}
     });
-
 }

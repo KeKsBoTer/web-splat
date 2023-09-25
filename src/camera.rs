@@ -29,7 +29,7 @@ impl PerspectiveCamera {
                 self.position.to_vec().lerp(other.position.to_vec(), amount),
             ),
             rotation: self.rotation.slerp(other.rotation, amount),
-            projection: self.projection,
+            projection: self.projection.lerp(&other.projection, amount),
         }
     }
 }
@@ -96,6 +96,18 @@ impl PerspectiveProjection {
             fov2focal(self.fov.x, viewport.x),
             fov2focal(self.fov.y, viewport.y),
         );
+    }
+
+    pub fn lerp(&self, other: &PerspectiveProjection, amount: f32) -> PerspectiveProjection {
+        PerspectiveProjection {
+            fov: self
+                .fov
+                .map(|v| v.0)
+                .lerp(other.fov.map(|v| v.0), amount)
+                .map(|v| Rad(v)),
+            znear: self.znear * (1. - amount) + other.znear * amount,
+            zfar: self.zfar * (1. - amount) + other.zfar * amount,
+        }
     }
 }
 
