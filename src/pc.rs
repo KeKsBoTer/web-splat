@@ -1,5 +1,5 @@
 use anyhow::Ok;
-use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
+use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt};
 use cgmath::{Matrix, Matrix3, Point3, Quaternion, SquareMatrix, Transform, Vector3, Zero};
 use ply_rs;
 use std::io::{self, BufReader};
@@ -17,7 +17,6 @@ pub struct GaussianSplat {
     pub covariance_2: Vector3<f32>,
     pub opacity: f32,
 }
-
 pub struct PointCloud {
     vertex_buffer: wgpu::Buffer,
     points: Vec<GaussianSplat>,
@@ -29,16 +28,22 @@ impl PointCloud {
         let f = std::fs::File::open(path.as_ref())?;
         let mut reader = BufReader::new(f);
 
+        // TODO this is very unsafe and just assumes a specific ply format
+        // the format in the file is never checked
+
         let p = ply_rs::parser::Parser::<ply_rs::ply::DefaultElement>::new();
         let header = p.read_header(&mut reader).unwrap();
 
-        // if header.encoding != Encoding::BinaryLittleEndian
-
         let num_points = header.elements.get("vertex").unwrap().count;
-
-        let points: Vec<GaussianSplat> = (0..num_points)
-            .map(|_| read_line::<LittleEndian, _>(&mut reader))
-            .collect();
+        let points: Vec<GaussianSplat> = match header.encoding {
+            ply_rs::ply::Encoding::Ascii => todo!("implement me"),
+            ply_rs::ply::Encoding::BinaryBigEndian => (0..num_points)
+                .map(|_| read_line::<BigEndian, _>(&mut reader))
+                .collect(),
+            ply_rs::ply::Encoding::BinaryLittleEndian => (0..num_points)
+                .map(|_| read_line::<LittleEndian, _>(&mut reader))
+                .collect(),
+        };
 
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("vertex buffer"),
@@ -59,6 +64,10 @@ impl PointCloud {
         self.num_points
     }
 
+    pub fn points(&self) -> &Vec<GaussianSplat> {
+        &self.points
+    }
+
     pub fn sort(&mut self, queue: &wgpu::Queue, camera: impl Camera) {
         let view = camera.view_matrix();
         let proj = camera.proj_matrix();
@@ -71,8 +80,19 @@ impl PointCloud {
             bytemuck::cast_slice(self.points.as_slice()),
         );
     }
+
+    pub fn update_points(&mut self, queue: &wgpu::Queue, new_points: Vec<GaussianSplat>) {
+        queue.write_buffer(
+            &self.vertex_buffer,
+            0,
+            bytemuck::cast_slice(new_points.as_slice()),
+        );
+    }
 }
 
+/// builds a covariance matrix based on a quaterion and rotation
+/// the matrix is symmetric so we only return the upper right half
+/// see "3D Gaussian Splatting" Kerbel et al.
 fn build_cov(rot: Quaternion<f32>, scale: Vector3<f32>) -> [f32; 6] {
     let r = Matrix3::from(rot);
     let s = Matrix3::from_diagonal(scale);
@@ -84,6 +104,7 @@ fn build_cov(rot: Quaternion<f32>, scale: Vector3<f32>) -> [f32; 6] {
     return [m[0][0], m[0][1], m[0][2], m[1][1], m[1][2], m[2][2]];
 }
 
+/// numerical stable sigmoid function
 fn sigmoid(x: f32) -> f32 {
     if x >= 0. {
         1. / (1. + (-x).exp())
@@ -96,6 +117,8 @@ fn read_line<B: ByteOrder, R: io::Read + io::Seek>(reader: &mut BufReader<R>) ->
     let x = reader.read_f32::<B>().unwrap();
     let y = reader.read_f32::<B>().unwrap();
     let z = reader.read_f32::<B>().unwrap();
+
+    // skip normals
     reader
         .seek_relative(std::mem::size_of::<f32>() as i64 * 3)
         .unwrap();
@@ -114,16 +137,17 @@ fn read_line<B: ByteOrder, R: io::Read + io::Seek>(reader: &mut BufReader<R>) ->
     }
 
     let opacity = sigmoid(reader.read_f32::<B>().unwrap());
+
     let scale_1 = reader.read_f32::<B>().unwrap().exp();
     let scale_2 = reader.read_f32::<B>().unwrap().exp();
     let scale_3 = reader.read_f32::<B>().unwrap().exp();
+    let scale = Vector3::new(scale_1, scale_2, scale_3);
+
     let rot_0 = reader.read_f32::<B>().unwrap();
     let rot_1 = reader.read_f32::<B>().unwrap();
     let rot_2 = reader.read_f32::<B>().unwrap();
     let rot_3 = reader.read_f32::<B>().unwrap();
-
     let rot_q = Quaternion::new(rot_0, rot_1, rot_2, rot_3);
-    let scale = Vector3::new(scale_1, scale_2, scale_3);
 
     let cov = build_cov(rot_q, scale);
     return GaussianSplat {

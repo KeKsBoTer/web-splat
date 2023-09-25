@@ -40,6 +40,7 @@ struct CameraUniforms{
 
 struct VertexInput {
     @location(0) xyz: vec3<f32>,
+    // spherical harmonics coefficients up to degree 3
     @location(1) sh_0: vec3<f32>,
     @location(2) sh_1: vec3<f32>,
     @location(3) sh_2: vec3<f32>,
@@ -69,8 +70,6 @@ var<uniform> camera: CameraUniforms;
 
 // spherical harmonics evaluation with Condon–Shortley phase
 fn evaluate_sh(dir:vec3<f32>,vertex:VertexInput,sh_deg:u32)->vec3<f32>{
-
-
     var result = SH_C0 * vertex.sh_0;
 
     if sh_deg > 0u{
@@ -125,11 +124,18 @@ fn vs_main(
     let focal = camera.focal;
     let viewport = camera.viewport;
 
+    // TODO
+    // all this code is performed per vertex at this time
+    // because each splat has 4 vertices (quad) the code is executed
+    // 4 times :(
+    // one could easily move this to a compute shader and therefore
+    // execute the code only once per vertex
 
     var camspace = camera.view *  vec4<f32>(vertex.xyz,1.);
     let pos2d = camera.proj * camspace;
     let bounds = 1.2 * pos2d.w;
 
+    // frustum culling hack
     if pos2d.z < -pos2d.w || pos2d.x < -bounds || pos2d.x > bounds
 		 || pos2d.y < -bounds || pos2d.y > bounds {
         out.position = vec4(0.0, 0.0, 2.0, 1.0);
@@ -159,14 +165,19 @@ fn vs_main(
 
 	let mid = 0.5 * (diagonal1 + diagonal2);
 	let radius = length(vec2<f32>((diagonal1 - diagonal2) / 2.0, offDiagonal));
+    // eigenvalues of the 2D screen space splat
 	let lambda1 = mid + radius;
 	let lambda2 = max(mid - radius, 0.1);
+
 	let diagonalVector = normalize(vec2<f32>(offDiagonal, lambda1 - diagonal1));
+    // scaled eigenvectors in screen space 
 	let v1 = sqrt(2.0 * lambda1) * diagonalVector;
 	let v2 = sqrt(2.0 * lambda2) * vec2<f32>(diagonalVector.y, -diagonalVector.x);
 
     let v_center = pos2d.xy / pos2d.w;
 
+    // splat rectangle with left lower corner at (-2,-2)
+    // and upper right corner at (2,2)
     let x = f32(in_vertex_index%2u == 0u)*4.-(2.);
     let y = f32(in_vertex_index<2u)*4.-(2.);
 

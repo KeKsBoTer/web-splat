@@ -3,7 +3,7 @@
 
 use cgmath::*;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PerspectiveCamera {
     pub position: Point3<f32>,
     pub rotation: Quaternion<f32>,
@@ -58,7 +58,7 @@ impl Camera for PerspectiveCamera {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PerspectiveProjection {
     pub fov: Vector2<Rad<f32>>,
     pub znear: f32,

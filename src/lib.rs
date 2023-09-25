@@ -1,10 +1,10 @@
 use std::{
     path::Path,
-    time::{Duration, Instant},
+    time::{Duration, Instant}, thread, sync::{RwLock, Arc},
 };
 
 use camera::{PerspectiveCamera, PerspectiveProjection};
-use cgmath::{Deg, EuclideanSpace, One, Point3, Quaternion, Vector2};
+use cgmath::{Deg, EuclideanSpace, One, Point3, Quaternion, Vector2, Transform};
 use controller::CameraController;
 use pc::PointCloud;
 use renderer::GaussianRenderer;
@@ -17,6 +17,8 @@ use winit::{
     window::{Window, WindowBuilder},
 };
 
+use crate::camera::Camera;
+
 mod camera;
 mod controller;
 pub mod pc;
@@ -27,7 +29,7 @@ mod utils;
 
 struct WindowContext {
     device: wgpu::Device,
-    queue: wgpu::Queue,
+    queue: Arc<wgpu::Queue>,
     #[allow(dead_code)]
     adapter: wgpu::Adapter,
     surface: wgpu::Surface,
@@ -35,12 +37,13 @@ struct WindowContext {
     window: Window,
     scale_factor: f32,
 
-    pc: Option<PointCloud>,
+    pc: Option<Arc<RwLock<PointCloud>>>,
     renderer: GaussianRenderer,
-    camera: PerspectiveCamera,
+    camera: Arc<RwLock<PerspectiveCamera>>,
     next_camera: Option<((Duration,Duration),(PerspectiveCamera,PerspectiveCamera))>,
     controller: CameraController,
     scene: Option<Scene>,
+    pause_sort:Arc<RwLock<bool>>
 }
 
 impl WindowContext {
@@ -112,7 +115,7 @@ impl WindowContext {
         let controller = CameraController::new(1., 1.);
         Self {
             device,
-            queue,
+            queue:Arc::new(queue),
             adapter,
             scale_factor: window.scale_factor() as f32,
             window,
@@ -120,16 +123,15 @@ impl WindowContext {
             config,
             renderer,
             pc: None,
-            camera: view_camera,
+            camera: Arc::new(RwLock::new(view_camera)),
             next_camera:None,
             controller,
             scene: None,
+            pause_sort:Arc::new(RwLock::new(false))
         }
     }
 
-    pub fn set_point_cloud(&mut self, pc: PointCloud) {
-        let mut pc = pc;
-        pc.sort(&self.queue, self.camera);
+    pub fn set_point_cloud(&mut self, pc: Arc<RwLock<PointCloud>>) {
         self.pc = Some(pc);
     }
 
@@ -137,7 +139,7 @@ impl WindowContext {
         if new_size.width > 0 && new_size.height > 0 {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
-            self.camera
+            self.camera.write().unwrap()
                 .projection
                 .resize(new_size.width, new_size.height);
 
@@ -160,21 +162,20 @@ impl WindowContext {
                     }  
                     let elapsed = 1.-new_left.as_secs_f32()/duration.as_secs_f32();
                     let amount = smoothstep(elapsed);
-                    self.camera = start_camera.lerp(&target_camera, amount)
+                    *self.camera.write().unwrap() = start_camera.lerp(&target_camera, amount)
                 },
                 None => {
-                    self.camera = target_camera.clone();
-                    self.camera
+                    let mut camera = self.camera.write().unwrap();
+                    *camera = target_camera.clone();
+                    camera
                         .projection
                         .resize(self.config.width, self.config.height);
-                    if let Some(pc) = &mut self.pc {
-                        pc.sort(&self.queue, self.camera);
-                    }
                     self.next_camera.take();
+                    *self.pause_sort.write().unwrap() = false;
                 },
             }
         }else{
-            self.controller.update_camera(&mut self.camera, dt);
+            self.controller.update_camera(&mut self.camera.write().unwrap(), dt);
         }
         
     }
@@ -191,26 +192,29 @@ impl WindowContext {
                 label: Some("Render Encoder Compare"),
             });
         {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("render pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: true,
-                    },
-                })],
-                depth_stencil_attachment: None,
-            });
+           
 
             if let Some(pc) = &self.pc {
                 let viewport = Vector2::new(self.config.width, self.config.height);
+                let pc = pc.read().unwrap();
+
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("render pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: true,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                });
                 self.renderer.render(
                     &mut render_pass,
                     &self.queue,
-                    pc,
-                    self.camera,
+                    &pc,
+                    self.camera.read().unwrap().clone(),
                     viewport
                 )
             }
@@ -231,18 +235,17 @@ impl WindowContext {
         if animation_duration.is_zero(){
             self.update_camera(camera.into())
         }else{
-            self.next_camera = Some(((animation_duration,animation_duration),(self.camera.clone(),camera.into())));
+            *self.pause_sort.write().unwrap() = true;
+            self.next_camera = Some(((animation_duration,animation_duration),(self.camera.read().unwrap().clone(),camera.into())));
         }
     }
 
     fn update_camera(&mut self, camera: PerspectiveCamera) {
-        self.camera = camera.into();
-        self.camera
+        let mut curr_camera = self.camera.write().unwrap();
+        *curr_camera = camera;
+        curr_camera
             .projection
             .resize(self.config.width, self.config.height);
-        if let Some(pc) = &mut self.pc {
-            pc.sort(&self.queue, self.camera);
-        }
     }
 }
 
@@ -270,7 +273,7 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
 
     let mut state = WindowContext::new(window).await;
 
-    let pc = PointCloud::load_ply(&state.device, file).unwrap();
+    let pc = Arc::new(RwLock::new(PointCloud::load_ply(&state.device, file).unwrap()));
 
     if let Some(scene) = scene {
         state.set_scene(scene);
@@ -278,7 +281,37 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
 
     let mut last = Instant::now();
 
-    state.set_point_cloud(pc);
+    state.set_point_cloud(pc.clone());
+
+    let queue = state.queue.clone();
+    let camera = state.camera.clone();
+    let pause_sort = state.pause_sort.clone();
+
+    // sorting thread
+    // this thread copies the point cloud, sorts it and copies the result
+    // back to the point cloud that is rendered
+    // TODO do this on the GPU!
+    thread::spawn(move ||{
+        let mut last_camera = camera.read().unwrap().clone();
+        loop {
+            let perform_sort = !{*pause_sort.read().unwrap()};
+            if perform_sort{
+                let curr_camera = {*camera.read().unwrap()};
+                if last_camera != curr_camera{
+                    let mut curr_pc = {pc.read().unwrap().points().clone()};
+                    let view = curr_camera.view_matrix();
+                    let proj = curr_camera.proj_matrix();
+                    let transform = proj * view;
+                
+                    curr_pc.sort_by_cached_key(|p|(-transform.transform_point(p.xyz).z * (2f32).powi(24)) as i32);
+                    
+                    pc.write().unwrap().update_points(&queue,curr_pc);
+                    last_camera = curr_camera;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+    });
 
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent {
@@ -299,20 +332,15 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
             WindowEvent::KeyboardInput { input, .. } => {
                 if let Some(key) = input.virtual_keycode {
                     if input.state == ElementState::Released{
-                    if key == VirtualKeyCode::G{
-                        if let Some(pc) = &mut state.pc{
-                            pc.sort(&state.queue, state.camera.clone());
-                        }
-                    }
-                    else if let Some(num) = utils::key_to_num(key){
+                    if let Some(num) = utils::key_to_num(key){
                         if let Some(scene) = &state.scene{
-                            state.set_camera(scene.camera(num as usize),Duration::from_millis(200));
+                            state.set_camera(scene.camera(num as usize),Duration::from_millis(500));
                         }
                     }
                     else if key == VirtualKeyCode::R{
                         if let Some(scene) = &state.scene{
                             let rnd_idx = rand::random::<usize>();
-                            state.set_camera(scene.camera(rnd_idx % scene.num_cameras()),Duration::from_millis(200));
+                            state.set_camera(scene.camera(rnd_idx % scene.num_cameras()),Duration::from_millis(500));
                         }   
                     }}
                 
@@ -368,4 +396,5 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
         }
         _ => {}
     });
+
 }
