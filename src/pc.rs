@@ -1,6 +1,9 @@
 use anyhow::Ok;
+use bytemuck::Zeroable;
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt};
-use cgmath::{Matrix, Matrix3, Point3, Quaternion, SquareMatrix, Transform, Vector3, Zero};
+use cgmath::{
+    Matrix, Matrix3, Point3, Quaternion, SquareMatrix, Transform, Vector2, Vector3, Zero,
+};
 use ply_rs;
 use std::io::{self, BufReader};
 use std::{mem, path::Path};
@@ -12,13 +15,34 @@ use crate::camera::Camera;
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GaussianSplat {
     pub xyz: Point3<f32>,
-    pub color: [Vector3<f32>; 16],
+    _pad0: u32,
+    pub color: Vector3<f32>,
+    _pad1: u32,
     pub covariance_1: Vector3<f32>,
+    _pad2: u32,
     pub covariance_2: Vector3<f32>,
+    // _pad3: u32,
     pub opacity: f32,
+}
+
+impl Default for GaussianSplat {
+    fn default() -> Self {
+        GaussianSplat::zeroed()
+    }
+}
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct Splat2D {
+    pos: Vector2<f32>,
+    v1: Vector2<f32>,
+    color: Vector3<f32>,
+    opacity: f32,
+    v2: Vector2<f32>,
 }
 pub struct PointCloud {
     vertex_buffer: wgpu::Buffer,
+    splats_2d_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
     points: Vec<GaussianSplat>,
     num_points: u32,
 }
@@ -45,20 +69,44 @@ impl PointCloud {
                 .collect(),
         };
 
-        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("vertex buffer"),
             contents: bytemuck::cast_slice(points.as_slice()),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
+        let splat_2d_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("vertex buffer"),
+            size: (points.len() * mem::size_of::<Splat2D>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("point cloud bind group"),
+            layout: &Self::bind_group_layout(device),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: vertex_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: splat_2d_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
         Ok(Self {
-            vertex_buffer: buffer,
+            vertex_buffer,
+            splats_2d_buffer: splat_2d_buffer,
+            bind_group,
             num_points: num_points as u32,
             points,
         })
     }
 
-    pub(crate) fn vertex_buffer(&self) -> &wgpu::Buffer {
-        &self.vertex_buffer
+    pub(crate) fn splats_2d_buffer(&self) -> &wgpu::Buffer {
+        &self.splats_2d_buffer
     }
     pub fn num_points(&self) -> u32 {
         self.num_points
@@ -87,6 +135,38 @@ impl PointCloud {
             0,
             bytemuck::cast_slice(new_points.as_slice()),
         );
+    }
+
+    pub(crate) fn bind_group(&self) -> &wgpu::BindGroup {
+        &self.bind_group
+    }
+
+    pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("point cloud bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        })
     }
 }
 
@@ -152,16 +232,19 @@ fn read_line<B: ByteOrder, R: io::Read + io::Seek>(reader: &mut BufReader<R>) ->
     let cov = build_cov(rot_q, scale);
     return GaussianSplat {
         xyz: Point3::new(x, y, z),
-        color: sh_coefs,
+        color: sh_coefs[0],
         covariance_1: Vector3::new(cov[0], cov[1], cov[2]),
         covariance_2: Vector3::new(cov[3], cov[4], cov[5]),
         opacity: opacity,
+        ..Default::default()
     };
 }
 
 impl GaussianSplat {
     pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
         const VEC3_SIZE: u64 = wgpu::VertexFormat::Float32x3.size();
+        const VEC2_SIZE: u64 = wgpu::VertexFormat::Float32x2.size();
+        const FLOAT_SIZE: u64 = wgpu::VertexFormat::Float32.size();
         wgpu::VertexBufferLayout {
             array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
@@ -170,121 +253,31 @@ impl GaussianSplat {
                 wgpu::VertexAttribute {
                     offset: 0,
                     shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 1,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 2,
-                    shader_location: 2,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 3,
-                    shader_location: 3,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 4,
-                    shader_location: 4,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 5,
-                    shader_location: 5,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 6,
-                    shader_location: 6,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 7,
-                    shader_location: 7,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 8,
-                    shader_location: 8,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 9,
-                    shader_location: 9,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 10,
-                    shader_location: 10,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 11,
-                    shader_location: 11,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 12,
-                    shader_location: 12,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 13,
-                    shader_location: 13,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 14,
-                    shader_location: 14,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 15,
-                    shader_location: 15,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 16,
-                    shader_location: 16,
-                    format: wgpu::VertexFormat::Float32x3,
+                    format: wgpu::VertexFormat::Float32x2,
                 },
                 // covariance_1
                 wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 17,
-                    shader_location: 17,
-                    format: wgpu::VertexFormat::Float32x3,
+                    offset: VEC2_SIZE,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x2,
                 },
-                // covariance_2
+                // color
                 wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 18,
-                    shader_location: 18,
+                    offset: VEC2_SIZE * 2,
+                    shader_location: 2,
                     format: wgpu::VertexFormat::Float32x3,
                 },
                 // opacity
                 wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 19,
-                    shader_location: 19,
+                    offset: VEC2_SIZE * 2 + VEC3_SIZE,
+                    shader_location: 3,
                     format: wgpu::VertexFormat::Float32,
+                },
+                // covariance_2
+                wgpu::VertexAttribute {
+                    offset: VEC2_SIZE * 2 + VEC3_SIZE + FLOAT_SIZE,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float32x3,
                 },
             ],
         }

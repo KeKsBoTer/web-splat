@@ -204,6 +204,8 @@ impl WindowContext {
                 let viewport = Vector2::new(self.config.width, self.config.height);
                 let pc = pc.read().unwrap();
 
+                self.renderer.preprocess(&mut encoder, &self.queue, &pc, self.camera.read().unwrap().clone(), viewport);
+
                 let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("render pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -218,10 +220,7 @@ impl WindowContext {
                 });
                 self.renderer.render(
                     &mut render_pass,
-                    &self.queue,
                     &pc,
-                    self.camera.read().unwrap().clone(),
-                    viewport,
                 )
             }
         }

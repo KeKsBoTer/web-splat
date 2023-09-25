@@ -1,3 +1,5 @@
+use std::num::NonZeroU64;
+
 use cgmath::{Matrix4, SquareMatrix, Vector2};
 
 use crate::{
@@ -9,15 +11,16 @@ use crate::{
 pub struct GaussianRenderer {
     pipeline: wgpu::RenderPipeline,
     camera: UniformBuffer<CameraUniform>,
+    preprocess: PreprocessPointCloud,
+    draw_indirect_buffer: wgpu::Buffer,
+    draw_indirect: wgpu::BindGroup,
 }
 
 impl GaussianRenderer {
     pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
-        let bind_group_layout = UniformBuffer::<CameraUniform>::bind_group_layout(device);
-
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout],
+            bind_group_layouts: &[],
             push_constant_ranges: &[],
         });
 
@@ -54,14 +57,39 @@ impl GaussianRenderer {
             multiview: None,
         });
 
-        let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
+        let draw_indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("indirect draw buffer"),
+            size: std::mem::size_of::<wgpu::util::DrawIndirect>() as u64,
+            usage: wgpu::BufferUsages::INDIRECT
+                | wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
-        GaussianRenderer { pipeline, camera }
+        let indirect_layout = Self::bind_group_layout(device);
+        let draw_indirect = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("draw indirect buffer"),
+            layout: &indirect_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: draw_indirect_buffer.as_entire_binding(),
+            }],
+        });
+
+        let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
+        let preprocess = PreprocessPointCloud::new(device);
+        GaussianRenderer {
+            pipeline,
+            camera,
+            preprocess,
+            draw_indirect_buffer,
+            draw_indirect,
+        }
     }
 
-    pub fn render<'a>(
+    pub fn preprocess<'a>(
         &'a mut self,
-        render_pass: &mut wgpu::RenderPass<'a>,
+        encoder: &'a mut wgpu::CommandEncoder,
         queue: &wgpu::Queue,
         pc: &'a PointCloud,
         camera: PerspectiveCamera,
@@ -72,10 +100,46 @@ impl GaussianRenderer {
         uniform.set_focal(camera.projection.focal(viewport));
         uniform.set_viewport(viewport.cast().unwrap());
         self.camera.sync(queue);
+        queue.write_buffer(
+            &self.draw_indirect_buffer,
+            0,
+            wgpu::util::DrawIndirect {
+                vertex_count: 4,
+                instance_count: 0,
+                base_vertex: 0,
+                base_instance: 0,
+            }
+            .as_bytes(),
+        );
+        self.preprocess
+            .run(encoder, pc, &self.camera, &self.draw_indirect);
+    }
+
+    pub fn render<'a>(&'a mut self, render_pass: &mut wgpu::RenderPass<'a>, pc: &'a PointCloud) {
         render_pass.set_pipeline(&self.pipeline);
-        render_pass.set_bind_group(0, self.camera.bind_group(), &[]);
-        render_pass.set_vertex_buffer(0, pc.vertex_buffer().slice(..));
-        render_pass.draw(0..4, 0..pc.num_points()); //pc.num_points())
+
+        render_pass.set_vertex_buffer(0, pc.splats_2d_buffer().slice(..));
+        // render_pass.draw(0..4, 0..pc.num_points()); //pc.num_points())
+        render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
+    }
+
+    pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("draw indirect"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: Some(
+                        NonZeroU64::new(std::mem::size_of::<wgpu::util::DrawIndirect>() as u64)
+                            .unwrap(),
+                    ),
+                },
+                count: None,
+            }],
+        })
     }
 }
 
@@ -131,5 +195,50 @@ impl CameraUniform {
     }
     pub fn set_focal(&mut self, focal: Vector2<f32>) {
         self.focal = focal
+    }
+}
+
+struct PreprocessPointCloud {
+    pipeline: wgpu::ComputePipeline,
+}
+
+impl PreprocessPointCloud {
+    fn new(device: &wgpu::Device) -> Self {
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("preprocess pipeline layout"),
+            bind_group_layouts: &[
+                &UniformBuffer::<CameraUniform>::bind_group_layout(device),
+                &PointCloud::bind_group_layout(device),
+                &GaussianRenderer::bind_group_layout(device),
+            ],
+            push_constant_ranges: &[],
+        });
+
+        let shader = device.create_shader_module(wgpu::include_wgsl!("shaders/preprocess.wgsl"));
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("preprocess pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: "preprocess",
+        });
+        Self { pipeline }
+    }
+
+    fn run<'a>(
+        &mut self,
+        encoder: &'a mut wgpu::CommandEncoder,
+        pc: &PointCloud,
+        camera: &UniformBuffer<CameraUniform>,
+        draw_indirect: &wgpu::BindGroup,
+    ) {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("preprocess compute pass"),
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, camera.bind_group(), &[]);
+        pass.set_bind_group(1, pc.bind_group(), &[]);
+        pass.set_bind_group(2, draw_indirect, &[]);
+        let num_grous = (pc.num_points() + 31) / 32;
+        pass.dispatch_workgroups(num_grous, 1, 1);
     }
 }
