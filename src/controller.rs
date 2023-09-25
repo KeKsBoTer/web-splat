@@ -83,8 +83,9 @@ impl CameraController {
 
     pub fn update_camera(&mut self, camera: &mut PerspectiveCamera, dt: Duration) {
         let dt: f32 = dt.as_secs_f32();
+        let mut rotation: Euler<Rad<f32>> = camera.rotation.into();
         // Move forward/backward and left/right
-        let (yaw_sin, yaw_cos) = camera.yaw.0.sin_cos();
+        let (yaw_sin, yaw_cos) = rotation.y.sin_cos();
         let forward = Vector3::new(yaw_cos, 0.0, yaw_sin).normalize();
         let right = Vector3::new(-yaw_sin, 0.0, yaw_cos).normalize();
         camera.position += forward * (self.amount.z) * self.speed * dt;
@@ -94,7 +95,7 @@ impl CameraController {
         // Note: this isn't an actual zoom. The camera's position
         // changes when zooming. I've added this to make it easier
         // to get closer to an object you want to focus on.
-        let (pitch_sin, pitch_cos) = camera.pitch.0.sin_cos();
+        let (pitch_sin, pitch_cos) = rotation.x.sin_cos();
         let scrollward =
             Vector3::new(pitch_cos * yaw_cos, pitch_sin, pitch_cos * yaw_sin).normalize();
         camera.position -= scrollward * self.scroll * self.speed * self.sensitivity * dt;
@@ -103,13 +104,15 @@ impl CameraController {
         // modify the y coordinate directly.
         camera.position.y += (self.amount.y) * self.speed * dt;
         // Rotate
-        camera.yaw += Rad(self.rotate_horizontal) * self.sensitivity * dt;
-        camera.pitch += Rad(-self.rotate_vertical) * self.sensitivity * dt;
-        camera.yaw = camera.yaw.normalize();
+        rotation.y += Rad(self.rotate_horizontal) * self.sensitivity * dt;
+        rotation.x += Rad(-self.rotate_vertical) * self.sensitivity * dt;
+        rotation.y = rotation.y.normalize();
 
         // reset
         self.rotate_horizontal = 0.0;
         self.rotate_vertical = 0.0;
         self.scroll = 0.0;
+
+        camera.rotation = rotation.into();
     }
 }

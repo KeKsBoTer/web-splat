@@ -1,10 +1,7 @@
 use std::{mem, num::NonZeroU64};
 
-use bytemuck::{NoUninit, Pod, Zeroable};
-use cgmath::*;
+use bytemuck::{NoUninit, Pod};
 use wgpu::{util::DeviceExt, Device};
-
-use crate::camera::{PerspectiveCamera, OPENGL_TO_WGPU_MATRIX};
 
 #[derive(Debug)]
 pub struct UniformBuffer<T: NoUninit + Pod> {
@@ -48,6 +45,7 @@ impl<T> UniformBuffer<T>
 where
     T: NoUninit + Pod,
 {
+    #[allow(dead_code)]
     pub fn new(device: &wgpu::Device, data: T, label: Option<&str>) -> Self {
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: label,
@@ -72,10 +70,12 @@ where
         }
     }
 
+    #[allow(dead_code)]
     pub fn buffer(&self) -> &wgpu::Buffer {
         &self.buffer
     }
 
+    #[allow(dead_code)]
     pub fn data(&self) -> &T {
         &self.data
     }
@@ -105,6 +105,7 @@ where
         }
     }
 
+    #[allow(dead_code)]
     pub fn clone(&self, device: &Device, queue: &wgpu::Queue) -> Self {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: self.label.as_deref(),

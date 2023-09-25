@@ -1,7 +1,7 @@
-use cgmath::{Matrix4, SquareMatrix};
+use cgmath::{Matrix4, SquareMatrix, Vector2};
 
 use crate::{
-    camera::{Camera, OPENGL_TO_WGPU_MATRIX},
+    camera::{Camera, PerspectiveCamera, OPENGL_TO_WGPU_MATRIX},
     pc::{GaussianSplat, PointCloud},
     uniform::UniformBuffer,
 };
@@ -64,10 +64,13 @@ impl GaussianRenderer {
         render_pass: &mut wgpu::RenderPass<'a>,
         queue: &wgpu::Queue,
         pc: &'a PointCloud,
-        camera: impl Camera,
+        camera: PerspectiveCamera,
+        viewport: Vector2<u32>,
     ) {
         let uniform = self.camera.as_mut();
         uniform.set_camera(camera);
+        uniform.set_focal(camera.projection.focal(viewport));
+        uniform.set_viewport(viewport.cast().unwrap());
         self.camera.sync(queue);
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, self.camera.bind_group(), &[]);
@@ -89,6 +92,9 @@ pub struct CameraUniform {
 
     // inverse projection matrix
     pub(crate) proj_inv_matrix: Matrix4<f32>,
+
+    pub(crate) viewport: Vector2<f32>,
+    pub(crate) focal: Vector2<f32>,
 }
 
 impl Default for CameraUniform {
@@ -98,6 +104,8 @@ impl Default for CameraUniform {
             view_inv_matrix: Matrix4::identity(),
             proj_matrix: Matrix4::identity(),
             proj_inv_matrix: Matrix4::identity(),
+            viewport: Vector2::new(1., 1.),
+            focal: Vector2::new(1., 1.),
         }
     }
 }
@@ -116,5 +124,12 @@ impl CameraUniform {
     pub fn set_camera(&mut self, camera: impl Camera) {
         self.set_proj_mat(camera.proj_matrix());
         self.set_view_mat(camera.view_matrix());
+    }
+
+    pub fn set_viewport(&mut self, viewport: Vector2<f32>) {
+        self.viewport = viewport;
+    }
+    pub fn set_focal(&mut self, focal: Vector2<f32>) {
+        self.focal = focal
     }
 }

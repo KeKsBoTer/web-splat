@@ -6,23 +6,30 @@ use cgmath::*;
 #[derive(Debug, Clone, Copy)]
 pub struct PerspectiveCamera {
     pub position: Point3<f32>,
-    pub yaw: Rad<f32>,
-    pub pitch: Rad<f32>,
+    pub rotation: Quaternion<f32>,
     pub projection: PerspectiveProjection,
 }
 
 impl PerspectiveCamera {
     pub fn new(
-        pos: Point3<f32>,
-        yaw: Rad<f32>,
-        pitch: Rad<f32>,
+        position: Point3<f32>,
+        rotation: Quaternion<f32>,
         projection: PerspectiveProjection,
     ) -> Self {
         PerspectiveCamera {
-            position: pos,
-            yaw: yaw,
-            pitch: pitch,
+            position,
+            rotation,
             projection: projection,
+        }
+    }
+
+    pub fn lerp(&self, other: &PerspectiveCamera, amount: f32) -> PerspectiveCamera {
+        PerspectiveCamera {
+            position: Point3::from_vec(
+                self.position.to_vec().lerp(other.position.to_vec(), amount),
+            ),
+            rotation: self.rotation.slerp(other.rotation, amount),
+            projection: self.projection,
         }
     }
 }
@@ -31,11 +38,9 @@ impl Default for PerspectiveCamera {
     fn default() -> Self {
         Self {
             position: Point3::new(0., 0., -1.),
-            yaw: Rad::zero(),
-            pitch: Rad::zero(),
+            rotation: Quaternion::new(1., 0., 0., 0.),
             projection: PerspectiveProjection {
-                aspect: 1.,
-                fovy: Deg(45.).into(),
+                fov: Vector2::new(Deg(45.).into(), Deg(45.).into()),
                 znear: 0.1,
                 zfar: 100.,
             },
@@ -45,14 +50,7 @@ impl Default for PerspectiveCamera {
 
 impl Camera for PerspectiveCamera {
     fn view_matrix(&self) -> Matrix4<f32> {
-        let (sin_pitch, cos_pitch) = self.pitch.0.sin_cos();
-        let (sin_yaw, cos_yaw) = self.yaw.0.sin_cos();
-
-        Matrix4::look_to_rh(
-            self.position,
-            Vector3::new(cos_pitch * cos_yaw, sin_pitch, cos_pitch * sin_yaw).normalize(),
-            Vector3::unit_y(),
-        )
+        world2view(Matrix3::from(self.rotation), self.position.to_vec())
     }
 
     fn proj_matrix(&self) -> Matrix4<f32> {
@@ -62,8 +60,7 @@ impl Camera for PerspectiveCamera {
 
 #[derive(Debug, Clone, Copy)]
 pub struct PerspectiveProjection {
-    pub aspect: f32,
-    pub fovy: Rad<f32>,
+    pub fov: Vector2<Rad<f32>>,
     pub znear: f32,
     pub zfar: f32,
 }
@@ -78,42 +75,27 @@ pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
 );
 
 impl PerspectiveProjection {
-    pub fn new<F: Into<Rad<f32>>>(aspect: f32, fovy: F, znear: f32, zfar: f32) -> Self {
+    pub fn new<F: Into<Rad<f32>>>(fov: Vector2<F>, znear: f32, zfar: f32) -> Self {
         Self {
-            aspect,
-            fovy: fovy.into(),
+            fov: fov.map(|v| v.into()),
             znear,
             zfar,
         }
     }
     pub fn resize(&mut self, width: u32, height: u32) {
-        self.aspect = width as f32 / height as f32;
+        self.fov.x = self.fov.y * width as f32 / height as f32;
     }
 
     pub fn projection_matrix(&self) -> Matrix4<f32> {
-        perspective(self.fovy, self.aspect, self.znear, self.zfar)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct SimpleCamera {
-    pub view: Matrix4<f32>,
-    pub projection: Matrix4<f32>,
-}
-impl SimpleCamera {
-    pub fn new(view: Matrix4<f32>, projection: Matrix4<f32>) -> Self {
-        Self { view, projection }
-    }
-}
-
-impl Camera for SimpleCamera {
-    fn view_matrix(&self) -> Matrix4<f32> {
-        // Matrix4::from(self.rot) * Matrix4::from_translation(self.pos.to_vec())
-        self.view
+        build_proj(self.znear, self.zfar, self.fov.x, self.fov.y)
     }
 
-    fn proj_matrix(&self) -> Matrix4<f32> {
-        self.projection
+    pub(crate) fn focal(&self, viewport: Vector2<u32>) -> Vector2<f32> {
+        let viewport: Vector2<f32> = viewport.cast().unwrap();
+        return Vector2::new(
+            fov2focal(self.fov.x, viewport.x),
+            fov2focal(self.fov.y, viewport.y),
+        );
     }
 }
 
@@ -123,12 +105,15 @@ pub trait Camera {
 }
 
 pub fn world2view(r: Matrix3<f32>, t: Vector3<f32>) -> Matrix4<f32> {
-    let mut rt = Matrix4::from(r.transpose());
-    rt[3] = Vector4::new(t.x, t.y, t.z, 1.);
-    return rt;
+    let mut rt = Matrix4::from(r);
+    rt[0].w = t.x;
+    rt[1].w = t.y;
+    rt[2].w = t.z;
+    rt[3].w = 1.;
+    return rt.invert().unwrap().transpose();
 }
 
-pub fn build_proj(znear: f32, zfar: f32, fov_x: f32, fov_y: f32) -> Matrix4<f32> {
+pub fn build_proj(znear: f32, zfar: f32, fov_x: Rad<f32>, fov_y: Rad<f32>) -> Matrix4<f32> {
     let tan_half_fov_y = (fov_y / 2.).tan();
     let tan_half_fov_x = (fov_x / 2.).tan();
 
@@ -149,4 +134,12 @@ pub fn build_proj(znear: f32, zfar: f32, fov_x: f32, fov_y: f32) -> Matrix4<f32>
     p[2][2] = z_sign * zfar / (zfar - znear);
     p[2][3] = -(zfar * znear) / (zfar - znear);
     return p.transpose();
+}
+
+pub fn focal2fov(focal: f32, pixels: f32) -> Rad<f32> {
+    return Rad(2. * (pixels / (2. * focal)).atan());
+}
+
+pub fn fov2focal(fov: Rad<f32>, pixels: f32) -> f32 {
+    pixels / (2. * (fov * 0.5).tan())
 }

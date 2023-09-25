@@ -15,3 +15,7 @@ pub fn key_to_num(key: VirtualKeyCode) -> Option<u32> {
         _ => None,
     }
 }
+
+pub fn smoothstep(x: f32) -> f32 {
+    return x * x * (3.0 - 2.0 * x);
+}

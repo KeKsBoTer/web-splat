@@ -1,30 +1,30 @@
 use std::{fs::File, io::BufReader, path::Path};
 
-use cgmath::{Matrix3, Vector3};
+use cgmath::{Matrix3, Vector2};
 use serde::{Deserialize, Serialize};
 
-use crate::camera::{build_proj, world2view, SimpleCamera};
+use crate::camera::{focal2fov, PerspectiveCamera, PerspectiveProjection};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct SceneCamera {
-    id: u32,
-    width: u32,
-    height: u32,
-    position: [f32; 3],
-    rotation: [[f32; 3]; 3],
-    fx: f32,
-    fy: f32,
+    pub id: u32,
+    pub width: u32,
+    pub height: u32,
+    pub position: [f32; 3],
+    pub rotation: [[f32; 3]; 3],
+    pub fx: f32,
+    pub fy: f32,
 }
 
-impl Into<SimpleCamera> for SceneCamera {
-    fn into(self) -> SimpleCamera {
-        let pos: Vector3<f32> = self.position.into();
-        let rot: Matrix3<f32> = self.rotation.into();
-        let view_matrix = world2view(rot, pos);
+impl Into<PerspectiveCamera> for SceneCamera {
+    fn into(self) -> PerspectiveCamera {
         let fovx = focal2fov(self.fx, self.width as f32);
         let fovy = focal2fov(self.fy, self.height as f32);
-        let proj_matrix = build_proj(0.01, 100., fovx, fovy);
-        SimpleCamera::new(view_matrix, proj_matrix)
+        PerspectiveCamera {
+            position: self.position.into(),
+            rotation: Matrix3::from(self.rotation).into(),
+            projection: PerspectiveProjection::new(Vector2::new(fovx, fovy), 0.01, 100.),
+        }
     }
 }
 
@@ -41,15 +41,11 @@ impl Scene {
         Ok(Scene { cameras })
     }
 
-    pub fn camera(&self, i: usize) -> SimpleCamera {
+    pub fn camera(&self, i: usize) -> SceneCamera {
         self.cameras[i].into()
     }
 
     pub fn num_cameras(&self) -> usize {
         self.cameras.len()
     }
-}
-
-fn focal2fov(focal: f32, pixels: f32) -> f32 {
-    return 2. * (pixels / (2. * focal)).atan();
 }
