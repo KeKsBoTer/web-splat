@@ -131,6 +131,9 @@ fn preprocess(@builtin(global_invocation_id) gid : vec3<u32>){
         return;
     }
 
+    // store
+    let store_idx = atomicAdd(&indirect_draw_call.instance_count,1u);
+    
     let focal = camera.focal;
     let viewport = camera.viewport;
     let vertex = vertices[idx];
@@ -142,6 +145,7 @@ fn preprocess(@builtin(global_invocation_id) gid : vec3<u32>){
     // frustum culling hack
     if pos2d.z < -pos2d.w || pos2d.x < -bounds || pos2d.x > bounds
 		 || pos2d.y < -bounds || pos2d.y > bounds {
+        points_2d[idx].pos = vec2<f32>(-10.,-10.);
         return;
     }
     let Vrk = mat3x3<f32>(
@@ -179,9 +183,7 @@ fn preprocess(@builtin(global_invocation_id) gid : vec3<u32>){
 
     let v_center = pos2d.xy / pos2d.w;
 
-    // store
-    let store_idx = atomicAdd(&indirect_draw_call.instance_count,1u);
 
     let color = saturate(vertex.color*SH_C0 + 0.5);
-    points_2d[store_idx] = Splats2D(v_center,v1/viewport,color,vertex.opacity,v2/viewport);
+    points_2d[idx] = Splats2D(v_center,v1/viewport,color,vertex.opacity,v2/viewport);
 }

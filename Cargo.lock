@@ -1956,6 +1956,7 @@ dependencies = [
  "byteorder",
  "cgmath",
  "env_logger",
+ "num-traits",
  "ply-rs",
  "pollster",
  "rand",
