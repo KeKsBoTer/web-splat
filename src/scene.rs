@@ -1,4 +1,8 @@
-use std::{fs::File, io::BufReader, path::Path};
+use std::{
+    fs::File,
+    io::{BufReader, Read, Seek},
+    path::Path,
+};
 
 use cgmath::{Matrix3, Vector2};
 use serde::{Deserialize, Serialize};
@@ -34,9 +38,8 @@ pub struct Scene {
 }
 
 impl Scene {
-    pub fn from_json<P: AsRef<Path>>(file: P) -> Result<Self, anyhow::Error> {
-        let f = File::open(file)?;
-        let mut reader = BufReader::new(f);
+    pub fn from_json<R: Read + Seek>(file: R) -> Result<Self, anyhow::Error> {
+        let mut reader = BufReader::new(file);
         let cameras: Vec<SceneCamera> = serde_json::from_reader(&mut reader)?;
         Ok(Scene { cameras })
     }

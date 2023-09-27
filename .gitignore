@@ -1,3 +1,5 @@
 /target
-*.ply
-*.json
+**/*.ply
+**/*.json
+public/*
+!public/index.html

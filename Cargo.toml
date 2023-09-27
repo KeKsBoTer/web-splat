@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-wgpu = "0.17"
+wgpu = { version = "0.17", features = ["fragile-send-sync-non-atomic-wasm"] }
 winit = "0.28.1"
 cgmath = { version = "0.18.0", features = [
     "bytemuck",
@@ -22,8 +22,34 @@ serde_json = "1.0.107"
 serde = { version = "1.0.188", features = ["derive"] }
 rand = "0.8.5"
 
+# wasm
+getrandom = { version = "0.2", features = ["js"] }
+wasm-bindgen = "0.2.84"
+console_error_panic_hook = "0.1.7"
+wasm-bindgen-futures = "0.4.37"
+console_log = "1"
+log = "0.4"
+instant = "0.1.12"
+[dependencies.web-sys]
+version = "0.3.64"
+features = [
+    'Headers',
+    'Request',
+    'RequestInit',
+    'RequestMode',
+    'Response',
+    'Window',
+    'Element',
+]
+
+
 [lib]
 path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
 
 [[bin]]
 name = "viewer"
+
+[profile.release]
+# Tell `rustc` to optimize for small code size.
+opt-level = "s"

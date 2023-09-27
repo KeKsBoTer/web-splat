@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{fs::File, path::PathBuf};
 use structopt::StructOpt;
 use web_splats::open_window;
 
@@ -16,5 +16,9 @@ struct Opt {
 
 fn main() {
     let opt = Opt::from_args();
-    pollster::block_on(open_window(opt.input, opt.scene));
+
+    let pc = File::open(opt.input).unwrap();
+    let scene = opt.scene.map(|f| File::open(f).unwrap());
+
+    pollster::block_on(open_window(pc, scene));
 }

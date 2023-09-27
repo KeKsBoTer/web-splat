@@ -1,9 +1,10 @@
 use anyhow::Ok;
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt};
 use cgmath::{Matrix, Matrix3, Point3, Quaternion, SquareMatrix, Transform, Vector3, Zero};
+use console_log::log;
 use ply_rs;
-use std::io::{self, BufReader};
-use std::{mem, path::Path};
+use std::io::{self, BufRead, BufReader, Read, Seek};
+use std::mem;
 use wgpu::util::DeviceExt;
 
 use crate::camera::Camera;
@@ -12,7 +13,7 @@ use crate::camera::Camera;
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GaussianSplat {
     pub xyz: Point3<f32>,
-    pub color: [Vector3<f32>; 16],
+    pub color: Vector3<f32>,
     pub covariance_1: Vector3<f32>,
     pub covariance_2: Vector3<f32>,
     pub opacity: f32,
@@ -24,9 +25,8 @@ pub struct PointCloud {
 }
 
 impl PointCloud {
-    pub fn load_ply<P: AsRef<Path>>(device: &wgpu::Device, path: P) -> Result<Self, anyhow::Error> {
-        let f = std::fs::File::open(path.as_ref())?;
-        let mut reader = BufReader::new(f);
+    pub fn load_ply<R: Read + Seek>(device: &wgpu::Device, file: R) -> Result<Self, anyhow::Error> {
+        let mut reader = BufReader::new(file);
 
         // TODO this is very unsafe and just assumes a specific ply format
         // the format in the file is never checked
@@ -152,7 +152,7 @@ fn read_line<B: ByteOrder, R: io::Read + io::Seek>(reader: &mut BufReader<R>) ->
     let cov = build_cov(rot_q, scale);
     return GaussianSplat {
         xyz: Point3::new(x, y, z),
-        color: sh_coefs,
+        color: sh_coefs[0],
         covariance_1: Vector3::new(cov[0], cov[1], cov[2]),
         covariance_2: Vector3::new(cov[3], cov[4], cov[5]),
         opacity: opacity,
@@ -178,112 +178,22 @@ impl GaussianSplat {
                     shader_location: 1,
                     format: wgpu::VertexFormat::Float32x3,
                 },
-                // color
+                // covariance_1
                 wgpu::VertexAttribute {
                     offset: VEC3_SIZE * 2,
                     shader_location: 2,
                     format: wgpu::VertexFormat::Float32x3,
                 },
-                // color
+                // covariance_2
                 wgpu::VertexAttribute {
                     offset: VEC3_SIZE * 3,
                     shader_location: 3,
                     format: wgpu::VertexFormat::Float32x3,
                 },
-                // color
+                // opacity
                 wgpu::VertexAttribute {
                     offset: VEC3_SIZE * 4,
                     shader_location: 4,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 5,
-                    shader_location: 5,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 6,
-                    shader_location: 6,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 7,
-                    shader_location: 7,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 8,
-                    shader_location: 8,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 9,
-                    shader_location: 9,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 10,
-                    shader_location: 10,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 11,
-                    shader_location: 11,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 12,
-                    shader_location: 12,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 13,
-                    shader_location: 13,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 14,
-                    shader_location: 14,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 15,
-                    shader_location: 15,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // color
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 16,
-                    shader_location: 16,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // covariance_1
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 17,
-                    shader_location: 17,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // covariance_2
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 18,
-                    shader_location: 18,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // opacity
-                wgpu::VertexAttribute {
-                    offset: VEC3_SIZE * 19,
-                    shader_location: 19,
                     format: wgpu::VertexFormat::Float32,
                 },
             ],
