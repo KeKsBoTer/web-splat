@@ -74,9 +74,8 @@ impl WindowContext {
                 &wgpu::DeviceDescriptor {
                     features: wgpu::Features::empty(),
                     limits: wgpu::Limits {
-                        max_vertex_attributes: 20,
-                        max_buffer_size: 2 << 29,
-                        max_storage_buffer_binding_size: 2<<29,
+                        max_buffer_size: 2 << 30,
+                        max_storage_buffer_binding_size: 2 << 30,
                         ..Default::default()
                     },
                     label: None,
@@ -101,7 +100,7 @@ impl WindowContext {
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode: wgpu::PresentMode::AutoVsync,
+            present_mode: wgpu::PresentMode::AutoNoVsync,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             view_formats: vec![],
         };

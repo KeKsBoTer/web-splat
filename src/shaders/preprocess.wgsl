@@ -33,7 +33,7 @@ struct CameraUniforms{
 
 struct GaussianSplat {
     xyz: vec3<f32>,
-    color:vec3<f32>,
+    color:array<vec4<f32>,16>,
     cov1: vec3<f32>,
     cov2: vec3<f32>,
     opacity: f32,
@@ -68,54 +68,54 @@ var<storage,write> indirect_draw_call : DrawIndirect;
 
 
 // spherical harmonics evaluation with Condon–Shortley phase
-// fn evaluate_sh(dir:vec3<f32>,vertex:VertexInput,sh_deg:u32)->vec3<f32>{
-//     var result = SH_C0 * vertex.sh_0;
+fn evaluate_sh(dir:vec3<f32>,vertex:GaussianSplat,sh_deg:u32)->vec3<f32>{
+    var result = SH_C0 * vertex.color[0].rgb;
 
-//     if sh_deg > 0u{
+    if sh_deg > 0u{
 
-//         let x = dir.x;
-//         let y = dir.y;
-//         let z = dir.z;
+        let x = dir.x;
+        let y = dir.y;
+        let z = dir.z;
 
-//         result +=  
-//             - SH_C1 * y * vertex.sh_1
-//             + SH_C1 * z * vertex.sh_2
-//             - SH_C1 * x * vertex.sh_3;
+        result +=  
+            - SH_C1 * y * vertex.color[1].rgb
+            + SH_C1 * z * vertex.color[2].rgb
+            - SH_C1 * x * vertex.color[3].rgb;
 
-//         if sh_deg > 1u{
+        if sh_deg > 1u{
 
-//             let xx = dir.x * dir.x;
-//             let yy = dir.y * dir.y;
-//             let zz = dir.z * dir.z;
-//             let xy = dir.x * dir.y;
-//             let yz = dir.y * dir.z;
-//             let xz = dir.x * dir.z;
+            let xx = dir.x * dir.x;
+            let yy = dir.y * dir.y;
+            let zz = dir.z * dir.z;
+            let xy = dir.x * dir.y;
+            let yz = dir.y * dir.z;
+            let xz = dir.x * dir.z;
 
-//             result +=  SH_C2[0] * xy * vertex.sh_4
-//             + SH_C2[1] * yz * vertex.sh_5
-//             + SH_C2[2] * (2.0 * zz - xx - yy) * vertex.sh_6
-//             + SH_C2[3] * xz * vertex.sh_7
-//             + SH_C2[4] * (xx - yy) * vertex.sh_8;
+            result +=  SH_C2[0] * xy * vertex.color[4].rgb
+            + SH_C2[1] * yz * vertex.color[5].rgb
+            + SH_C2[2] * (2.0 * zz - xx - yy) * vertex.color[6].rgb
+            + SH_C2[3] * xz * vertex.color[7].rgb
+            + SH_C2[4] * (xx - yy) * vertex.color[8].rgb;
 
-//             if sh_deg > 2u{
-//                 result +=  SH_C3[0] * y * (3.0 * xx - yy) * vertex.sh_9 
-//                     + SH_C3[1] * xy * z * vertex.sh_10 
-//                     + SH_C3[2] * y * (4.0 * zz - xx - yy) * vertex.sh_11 
-//                     + SH_C3[3] * z * (2.0 * zz - 3.0 * xx - 3.0 * yy) * vertex.sh_12 
-//                     + SH_C3[4] * x * (4.0 * zz - xx - yy) * vertex.sh_13 
-//                     + SH_C3[5] * z * (xx - yy) * vertex.sh_14 
-//                     + SH_C3[6] * x * (xx - 3.0 * yy) * vertex.sh_15;
-//             }
-//         }
-//     }
-//     result += 0.5;
+            if sh_deg > 2u {
+                result +=  SH_C3[0] * y * (3.0 * xx - yy) * vertex.color[9].rgb
+                    + SH_C3[1] * xy * z * vertex.color[10].rgb
+                    + SH_C3[2] * y * (4.0 * zz - xx - yy) * vertex.color[11].rgb
+                    + SH_C3[3] * z * (2.0 * zz - 3.0 * xx - 3.0 * yy) * vertex.color[12].rgb
+                    + SH_C3[4] * x * (4.0 * zz - xx - yy) * vertex.color[13].rgb
+                    + SH_C3[5] * z * (xx - yy) * vertex.color[14].rgb
+                    + SH_C3[6] * x * (xx - 3.0 * yy) * vertex.color[15].rgb;
+            }
+        }
+    }
+    result += 0.5;
 
-//     return result;
-// }
+    return result;
+}
 
-@compute @workgroup_size(32,1,1)
-fn preprocess(@builtin(global_invocation_id) gid : vec3<u32>){
-    let idx = gid.x;
+@compute @workgroup_size(16,16,1)
+fn preprocess(@builtin(global_invocation_id) gid : vec3<u32>,@builtin(num_workgroups) wgs : vec3<u32>){
+    let idx = gid.x*wgs.y*16u + gid.y;
     if idx > arrayLength(&vertices){
         return;
     }
@@ -171,7 +171,9 @@ fn preprocess(@builtin(global_invocation_id) gid : vec3<u32>){
     let v_center = pos2d.xyz / pos2d.w;
 
 
-    let color = saturate(vertex.color*SH_C0 + 0.5);
+    let camera_pos = camera.view_inv[3].xyz;
+    let dir = normalize(vertex.xyz-camera_pos);
+    let color = saturate(evaluate_sh(dir,vertex,3u));
     let color_a = vec4<f32>(color,vertex.opacity);
     let v = vec4<f32>(v1/viewport,v2/viewport);
     points_2d[idx] = Splats2D(color_a,v,v_center);

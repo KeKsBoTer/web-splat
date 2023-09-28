@@ -4,6 +4,7 @@ use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt};
 use cgmath::{
     Matrix, Matrix3, Point3, Quaternion, SquareMatrix, Transform, Vector2, Vector3, Vector4, Zero,
 };
+use half::f16;
 use ply_rs;
 use std::io::{self, BufReader};
 use std::{mem, path::Path};
@@ -16,8 +17,7 @@ use crate::camera::Camera;
 pub struct GaussianSplat {
     pub xyz: Point3<f32>,
     _pad0: u32,
-    pub color: Vector3<f32>,
-    _pad1: u32,
+    pub color: [Vector4<f32>; 16],
     pub covariance_1: Vector3<f32>,
     _pad2: u32,
     pub covariance_2: Vector3<f32>,
@@ -203,7 +203,7 @@ fn read_line<B: ByteOrder, R: io::Read + io::Seek>(reader: &mut BufReader<R>) ->
         .seek_relative(std::mem::size_of::<f32>() as i64 * 3)
         .unwrap();
 
-    let mut sh_coefs = [Vector3::zero(); 16];
+    let mut sh_coefs = [Vector4::zero(); 16];
 
     sh_coefs[0].x = reader.read_f32::<B>().unwrap();
     sh_coefs[0].y = reader.read_f32::<B>().unwrap();
@@ -212,7 +212,10 @@ fn read_line<B: ByteOrder, R: io::Read + io::Seek>(reader: &mut BufReader<R>) ->
     // higher order coeffcients are stored with channel first
     for j in 0..3 {
         for i in 1..16 {
-            sh_coefs[i][j] = reader.read_f32::<B>().unwrap();
+            let v = reader.read_f32::<B>().unwrap();
+            if i < sh_coefs.len() {
+                sh_coefs[i][j] = v;
+            }
         }
     }
 
@@ -232,7 +235,7 @@ fn read_line<B: ByteOrder, R: io::Read + io::Seek>(reader: &mut BufReader<R>) ->
     let cov = build_cov(rot_q, scale);
     return GaussianSplat {
         xyz: Point3::new(x, y, z),
-        color: sh_coefs[0],
+        color: sh_coefs,
         covariance_1: Vector3::new(cov[0], cov[1], cov[2]),
         covariance_2: Vector3::new(cov[3], cov[4], cov[5]),
         opacity: opacity,
@@ -242,10 +245,7 @@ fn read_line<B: ByteOrder, R: io::Read + io::Seek>(reader: &mut BufReader<R>) ->
 
 impl Splat2D {
     pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
-        const VEC3_SIZE: u64 = wgpu::VertexFormat::Float32x3.size();
-        const VEC2_SIZE: u64 = wgpu::VertexFormat::Float32x2.size();
         const VEC4_SIZE: u64 = wgpu::VertexFormat::Float32x4.size();
-        const FLOAT_SIZE: u64 = wgpu::VertexFormat::Float32.size();
         wgpu::VertexBufferLayout {
             array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
