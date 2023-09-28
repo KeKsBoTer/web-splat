@@ -40,13 +40,10 @@ struct GaussianSplat {
 };
 
 struct Splats2D {
-    pos: vec2<f32>,
-    v1: vec2<f32>,
-    color: vec3<f32>,
-    opacity:f32,
-    v2: vec2<f32>,
+    color: vec4<f32>,
+    v: vec4<f32>,
+    pos: vec3<f32>,
 };
-
 struct DrawIndirect {
     /// The number of vertices to draw.
     vertex_count: u32,
@@ -119,19 +116,10 @@ var<storage,write> indirect_draw_call : DrawIndirect;
 @compute @workgroup_size(32,1,1)
 fn preprocess(@builtin(global_invocation_id) gid : vec3<u32>){
     let idx = gid.x;
-    // if idx == 0u{
-    //     indirect_draw_call.vertex_count = 4u;
-    //     atomicStore(&indirect_draw_call.instance_count,0u);
-    //     indirect_draw_call.base_vertex = 0u;
-    //     indirect_draw_call.base_instance = 0u;
-    // }
-    // storageBarrier();
-
     if idx > arrayLength(&vertices){
         return;
     }
 
-    // store
     let store_idx = atomicAdd(&indirect_draw_call.instance_count,1u);
     
     let focal = camera.focal;
@@ -145,7 +133,8 @@ fn preprocess(@builtin(global_invocation_id) gid : vec3<u32>){
     // frustum culling hack
     if pos2d.z < -pos2d.w || pos2d.x < -bounds || pos2d.x > bounds
 		 || pos2d.y < -bounds || pos2d.y > bounds {
-        points_2d[idx].pos = vec2<f32>(-10.,-10.);
+        points_2d[idx].pos = vec3<f32>(-10.,-10.,-10.);
+        points_2d[idx].color = vec4<f32>(1.,0.,0.,1.);
         return;
     }
     let Vrk = mat3x3<f32>(
@@ -164,8 +153,6 @@ fn preprocess(@builtin(global_invocation_id) gid : vec3<u32>){
     let T = W * J;
     let cov = transpose(T) * Vrk * T;
     
-    let vCenter = pos2d.xy / pos2d.w;
-
     let diagonal1 = cov[0][0] + 0.3;
     let offDiagonal = cov[0][1];
     let diagonal2 = cov[1][1] + 0.3;
@@ -181,9 +168,11 @@ fn preprocess(@builtin(global_invocation_id) gid : vec3<u32>){
 	let v1 = sqrt(2.0 * lambda1) * diagonalVector;
 	let v2 = sqrt(2.0 * lambda2) * vec2<f32>(diagonalVector.y, -diagonalVector.x);
 
-    let v_center = pos2d.xy / pos2d.w;
+    let v_center = pos2d.xyz / pos2d.w;
 
 
     let color = saturate(vertex.color*SH_C0 + 0.5);
-    points_2d[idx] = Splats2D(v_center,v1/viewport,color,vertex.opacity,v2/viewport);
+    let color_a = vec4<f32>(color,vertex.opacity);
+    let v = vec4<f32>(v1/viewport,v2/viewport);
+    points_2d[idx] = Splats2D(color_a,v,v_center);
 }

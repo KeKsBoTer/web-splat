@@ -2,7 +2,7 @@ use anyhow::Ok;
 use bytemuck::Zeroable;
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt};
 use cgmath::{
-    Matrix, Matrix3, Point3, Quaternion, SquareMatrix, Transform, Vector2, Vector3, Zero,
+    Matrix, Matrix3, Point3, Quaternion, SquareMatrix, Transform, Vector2, Vector3, Vector4, Zero,
 };
 use ply_rs;
 use std::io::{self, BufReader};
@@ -32,12 +32,11 @@ impl Default for GaussianSplat {
 }
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Splat2D {
-    pos: Vector2<f32>,
-    v1: Vector2<f32>,
-    color: Vector3<f32>,
-    opacity: f32,
-    v2: Vector2<f32>,
+pub struct Splat2D {
+    color: Vector4<f32>,
+    v: Vector4<f32>,
+    pos: Vector3<f32>,
+    _pad: u32,
 }
 pub struct PointCloud {
     vertex_buffer: wgpu::Buffer,
@@ -74,6 +73,7 @@ impl PointCloud {
             contents: bytemuck::cast_slice(points.as_slice()),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
+
         let splat_2d_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("vertex buffer"),
             size: (points.len() * mem::size_of::<Splat2D>()) as u64,
@@ -240,44 +240,33 @@ fn read_line<B: ByteOrder, R: io::Read + io::Seek>(reader: &mut BufReader<R>) ->
     };
 }
 
-impl GaussianSplat {
+impl Splat2D {
     pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
         const VEC3_SIZE: u64 = wgpu::VertexFormat::Float32x3.size();
         const VEC2_SIZE: u64 = wgpu::VertexFormat::Float32x2.size();
+        const VEC4_SIZE: u64 = wgpu::VertexFormat::Float32x4.size();
         const FLOAT_SIZE: u64 = wgpu::VertexFormat::Float32.size();
         wgpu::VertexBufferLayout {
             array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &[
-                // xyz
+                // color + opacity
                 wgpu::VertexAttribute {
                     offset: 0,
                     shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x2,
+                    format: wgpu::VertexFormat::Float32x4,
                 },
-                // covariance_1
+                // cov_1 + cov_2
                 wgpu::VertexAttribute {
-                    offset: VEC2_SIZE,
+                    offset: VEC4_SIZE,
                     shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x2,
+                    format: wgpu::VertexFormat::Float32x4,
                 },
-                // color
+                // xyz
                 wgpu::VertexAttribute {
-                    offset: VEC2_SIZE * 2,
+                    offset: 2 * VEC4_SIZE,
                     shader_location: 2,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                // opacity
-                wgpu::VertexAttribute {
-                    offset: VEC2_SIZE * 2 + VEC3_SIZE,
-                    shader_location: 3,
-                    format: wgpu::VertexFormat::Float32,
-                },
-                // covariance_2
-                wgpu::VertexAttribute {
-                    offset: VEC2_SIZE * 2 + VEC3_SIZE + FLOAT_SIZE,
-                    shader_location: 4,
-                    format: wgpu::VertexFormat::Float32x3,
+                    format: wgpu::VertexFormat::Float32x2,
                 },
             ],
         }

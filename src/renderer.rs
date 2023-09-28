@@ -4,7 +4,7 @@ use cgmath::{Matrix4, SquareMatrix, Vector2};
 
 use crate::{
     camera::{Camera, PerspectiveCamera, OPENGL_TO_WGPU_MATRIX},
-    pc::{GaussianSplat, PointCloud},
+    pc::{PointCloud, Splat2D},
     uniform::UniformBuffer,
 };
 
@@ -32,7 +32,7 @@ impl GaussianRenderer {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[GaussianSplat::desc()],
+                buffers: &[Splat2D::desc()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
