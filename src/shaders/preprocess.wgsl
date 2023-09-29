@@ -1,3 +1,4 @@
+//const MAX_SH_DEG:u32 = <injected>u;
 const SH_C0:f32 = 0.28209479177387814;
 
 const SH_C1 = 0.4886025119029199;
@@ -33,17 +34,21 @@ struct CameraUniforms{
 
 struct GaussianSplat {
     xyz: vec3<f32>,
-    color:array<vec4<f32>,16>,
-    cov1: vec3<f32>,
-    cov2: vec3<f32>,
-    opacity: f32,
+    sh_idx:u32,
+    // 6 f16 values
+    cov: array<u32,3>,
+    opacity:f32
 };
 
 struct Splats2D {
-    color: vec4<f32>,
-    v: vec4<f32>,
-    pos: vec3<f32>,
+    // 4x f16 packed as u8
+    v: vec2<u32>,
+    // 4x f16 packed as u8
+    pos: vec2<u32>,
+    // rgba packed as u8
+    color: u32,
 };
+
 struct DrawIndirect {
     /// The number of vertices to draw.
     vertex_count: u32,
@@ -61,15 +66,36 @@ var<uniform> camera: CameraUniforms;
 
 @group(1) @binding(0) 
 var<storage,read> vertices : array<GaussianSplat>;
+
+// sh coefs packed as 2x f16 = 1x u32
 @group(1) @binding(1) 
+var<storage,read> sh_coefs : array<u32>;
+
+@group(1) @binding(2) 
 var<storage,write> points_2d : array<Splats2D>;
 @group(2) @binding(0) 
 var<storage,write> indirect_draw_call : DrawIndirect;
 
 
+/// reads the ith sh coef from the vertex
+/// the coefs are packed as 2xf16 in one u32 
+fn sh_coef(v_idx:u32,c_idx:u32)->vec3<f32>{
+    let n = (MAX_SH_DEG+1u)*(MAX_SH_DEG+1u);
+    let idx = 3u*(v_idx*n+c_idx)/2u;
+    let v = vec4<f32>(unpack2x16float(sh_coefs[idx]),unpack2x16float(sh_coefs[idx+1u]));
+    let r = (c_idx*3u)%2u;
+    if r == 0u{
+        return v.rgb;
+    }else if r==1u{
+        return v.gba;
+    }
+    // unreachable
+    return vec3<f32>(0.);
+}
+
 // spherical harmonics evaluation with Condon–Shortley phase
-fn evaluate_sh(dir:vec3<f32>,vertex:GaussianSplat,sh_deg:u32)->vec3<f32>{
-    var result = SH_C0 * vertex.color[0].rgb;
+fn evaluate_sh(dir:vec3<f32>,v_idx:u32,sh_deg:u32)->vec3<f32>{
+    var result = SH_C0 * sh_coef(v_idx,0u);
 
     if sh_deg > 0u{
 
@@ -78,9 +104,9 @@ fn evaluate_sh(dir:vec3<f32>,vertex:GaussianSplat,sh_deg:u32)->vec3<f32>{
         let z = dir.z;
 
         result +=  
-            - SH_C1 * y * vertex.color[1].rgb
-            + SH_C1 * z * vertex.color[2].rgb
-            - SH_C1 * x * vertex.color[3].rgb;
+            - SH_C1 * y * sh_coef(v_idx,1u)
+            + SH_C1 * z * sh_coef(v_idx,2u)
+            - SH_C1 * x * sh_coef(v_idx,3u);
 
         if sh_deg > 1u{
 
@@ -91,20 +117,20 @@ fn evaluate_sh(dir:vec3<f32>,vertex:GaussianSplat,sh_deg:u32)->vec3<f32>{
             let yz = dir.y * dir.z;
             let xz = dir.x * dir.z;
 
-            result +=  SH_C2[0] * xy * vertex.color[4].rgb
-            + SH_C2[1] * yz * vertex.color[5].rgb
-            + SH_C2[2] * (2.0 * zz - xx - yy) * vertex.color[6].rgb
-            + SH_C2[3] * xz * vertex.color[7].rgb
-            + SH_C2[4] * (xx - yy) * vertex.color[8].rgb;
+            result +=  SH_C2[0] * xy * sh_coef(v_idx,4u)
+            + SH_C2[1] * yz * sh_coef(v_idx,5u)
+            + SH_C2[2] * (2.0 * zz - xx - yy) * sh_coef(v_idx,6u)
+            + SH_C2[3] * xz * sh_coef(v_idx,7u)
+            + SH_C2[4] * (xx - yy) * sh_coef(v_idx,8u);
 
             if sh_deg > 2u {
-                result +=  SH_C3[0] * y * (3.0 * xx - yy) * vertex.color[9].rgb
-                    + SH_C3[1] * xy * z * vertex.color[10].rgb
-                    + SH_C3[2] * y * (4.0 * zz - xx - yy) * vertex.color[11].rgb
-                    + SH_C3[3] * z * (2.0 * zz - 3.0 * xx - 3.0 * yy) * vertex.color[12].rgb
-                    + SH_C3[4] * x * (4.0 * zz - xx - yy) * vertex.color[13].rgb
-                    + SH_C3[5] * z * (xx - yy) * vertex.color[14].rgb
-                    + SH_C3[6] * x * (xx - 3.0 * yy) * vertex.color[15].rgb;
+                result +=  SH_C3[0] * y * (3.0 * xx - yy) * sh_coef(v_idx,9u)
+                    + SH_C3[1] * xy * z * sh_coef(v_idx,10u)
+                    + SH_C3[2] * y * (4.0 * zz - xx - yy) * sh_coef(v_idx,11u)
+                    + SH_C3[3] * z * (2.0 * zz - 3.0 * xx - 3.0 * yy) * sh_coef(v_idx,12u)
+                    + SH_C3[4] * x * (4.0 * zz - xx - yy) * sh_coef(v_idx,13u)
+                    + SH_C3[5] * z * (xx - yy) * sh_coef(v_idx,14u)
+                    + SH_C3[6] * x * (xx - 3.0 * yy) * sh_coef(v_idx,15u);
             }
         }
     }
@@ -124,7 +150,7 @@ fn preprocess(@builtin(global_invocation_id) gid : vec3<u32>,@builtin(num_workgr
     
     let focal = camera.focal;
     let viewport = camera.viewport;
-    let vertex = vertices[idx];
+    var vertex = vertices[idx];
 
     var camspace = camera.view *  vec4<f32>(vertex.xyz,1.);
     let pos2d = camera.proj * camspace;
@@ -133,16 +159,19 @@ fn preprocess(@builtin(global_invocation_id) gid : vec3<u32>,@builtin(num_workgr
     // frustum culling hack
     if pos2d.z < -pos2d.w || pos2d.x < -bounds || pos2d.x > bounds
 		 || pos2d.y < -bounds || pos2d.y > bounds {
-        points_2d[idx].pos = vec3<f32>(-10.,-10.,-10.);
-        points_2d[idx].color = vec4<f32>(1.,0.,0.,1.);
+        points_2d[idx].pos = vec2<u32>(pack2x16float(vec2<f32>(-10.,-10.)),pack2x16float(vec2<f32>(-10.,-10.)));
         return;
     }
+
+	let cov1:vec2<f32> = unpack2x16float(vertex.cov[0]);
+	let cov2:vec2<f32> = unpack2x16float(vertex.cov[1]);
+	let cov3:vec2<f32> = unpack2x16float(vertex.cov[2]);
+    let covPacked =array<f32,6>(cov1[0],cov1[1],cov2[0],cov2[1],cov3[0],cov3[1]);
     let Vrk = mat3x3<f32>(
-        vertex.cov1.x, vertex.cov1.y, vertex.cov1.z, 
-        vertex.cov1.y, vertex.cov2.x, vertex.cov2.y,
-        vertex.cov1.z, vertex.cov2.y, vertex.cov2.z
+        covPacked[0], covPacked[1], covPacked[2], 
+        covPacked[1], covPacked[3], covPacked[4],
+        covPacked[2], covPacked[4], covPacked[5]
     );
-	
     let J = mat3x3<f32>(
         focal.x / camspace.z, 0., -(focal.x * camspace.x) / (camspace.z * camspace.z), 
         0., -focal.y / camspace.z, (focal.y * camspace.y) / (camspace.z * camspace.z), 
@@ -168,13 +197,18 @@ fn preprocess(@builtin(global_invocation_id) gid : vec3<u32>,@builtin(num_workgr
 	let v1 = sqrt(2.0 * lambda1) * diagonalVector;
 	let v2 = sqrt(2.0 * lambda2) * vec2<f32>(diagonalVector.y, -diagonalVector.x);
 
-    let v_center = pos2d.xyz / pos2d.w;
-
+    let v_center = pos2d.xyzw / pos2d.w;
 
     let camera_pos = camera.view_inv[3].xyz;
     let dir = normalize(vertex.xyz-camera_pos);
-    let color = saturate(evaluate_sh(dir,vertex,3u));
-    let color_a = vec4<f32>(color,vertex.opacity);
+    let color = vec4<f32>(
+        saturate(evaluate_sh(dir,vertex.sh_idx,MAX_SH_DEG)),
+        vertex.opacity
+    );
     let v = vec4<f32>(v1/viewport,v2/viewport);
-    points_2d[idx] = Splats2D(color_a,v,v_center);
+    points_2d[idx] = Splats2D(
+        vec2<u32>(pack2x16float(v.xy),pack2x16float(v.zw)),
+        vec2<u32>(pack2x16float(v_center.xy),pack2x16float(v_center.zw)),
+        pack4x8unorm(color),
+    );
 }

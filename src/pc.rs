@@ -1,12 +1,12 @@
 use anyhow::Ok;
 use bytemuck::Zeroable;
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt};
-use cgmath::{
-    Matrix, Matrix3, Point3, Quaternion, SquareMatrix, Transform, Vector2, Vector3, Vector4, Zero,
-};
+use cgmath::{Matrix, Matrix3, Point3, Quaternion, SquareMatrix, Transform, Vector3, Vector4};
 use half::f16;
+use num_traits::Float;
 use ply_rs;
-use std::io::{self, BufReader};
+use std::fmt::Debug;
+use std::io::{self, BufReader, Read, Seek};
 use std::{mem, path::Path};
 use wgpu::util::DeviceExt;
 
@@ -16,12 +16,8 @@ use crate::camera::Camera;
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GaussianSplat {
     pub xyz: Point3<f32>,
-    _pad0: u32,
-    pub color: [Vector4<f32>; 16],
-    pub covariance_1: Vector3<f32>,
-    _pad2: u32,
-    pub covariance_2: Vector3<f32>,
-    // _pad3: u32,
+    pub sh_idx: u32,
+    pub covariance: [f16; 6],
     pub opacity: f32,
 }
 
@@ -30,20 +26,46 @@ impl Default for GaussianSplat {
         GaussianSplat::zeroed()
     }
 }
+
 #[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Clone, Copy)]
+pub struct SHCoefs<const C: usize, F: Float>([Vector3<F>; C]);
+
+unsafe impl bytemuck::Pod for SHCoefs<16, f16> {}
+unsafe impl bytemuck::Zeroable for SHCoefs<16, f16> {}
+unsafe impl bytemuck::Pod for SHCoefs<9, f16> {}
+unsafe impl bytemuck::Zeroable for SHCoefs<9, f16> {}
+unsafe impl bytemuck::Pod for SHCoefs<4, f16> {}
+unsafe impl bytemuck::Zeroable for SHCoefs<4, f16> {}
+unsafe impl bytemuck::Pod for SHCoefs<1, f16> {}
+unsafe impl bytemuck::Zeroable for SHCoefs<1, f16> {}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Splat2D {
-    color: Vector4<f32>,
-    v: Vector4<f32>,
-    pos: Vector3<f32>,
+    v: Vector4<f16>,
+    pos: Vector4<f16>,
+    color: Vector4<u8>,
     _pad: u32,
 }
+
 pub struct PointCloud {
     vertex_buffer: wgpu::Buffer,
-    splats_2d_buffer: wgpu::Buffer,
+    #[allow(dead_code)]
+    sh_coef_buffer: wgpu::Buffer,
+    splat_2d_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     points: Vec<GaussianSplat>,
     num_points: u32,
+    sh_deg: u32,
+}
+
+impl Debug for PointCloud {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PointCloud")
+            .field("num_points", &self.num_points)
+            .finish()
+    }
 }
 
 impl PointCloud {
@@ -57,26 +79,109 @@ impl PointCloud {
         let p = ply_rs::parser::Parser::<ply_rs::ply::DefaultElement>::new();
         let header = p.read_header(&mut reader).unwrap();
 
+        let num_sh_coefs = header.elements["vertex"]
+            .properties
+            .keys()
+            .filter(|k| k.starts_with("f_"))
+            .count();
+
+        let file_sh_deg = ((num_sh_coefs / 3) as f32).sqrt() as u32 - 1;
+
         let num_points = header.elements.get("vertex").unwrap().count;
-        let points: Vec<GaussianSplat> = match header.encoding {
-            ply_rs::ply::Encoding::Ascii => todo!("implement me"),
-            ply_rs::ply::Encoding::BinaryBigEndian => (0..num_points)
-                .map(|_| read_line::<BigEndian, _>(&mut reader))
-                .collect(),
-            ply_rs::ply::Encoding::BinaryLittleEndian => (0..num_points)
-                .map(|_| read_line::<LittleEndian, _>(&mut reader))
-                .collect(),
+
+        let splat_sizes = [
+            mem::size_of::<SHCoefs<1, f16>>(),
+            mem::size_of::<SHCoefs<4, f16>>(),
+            mem::size_of::<SHCoefs<9, f16>>(),
+            mem::size_of::<SHCoefs<16, f16>>(),
+        ];
+
+        // maximum allowed size for buffer
+        let max_size = device
+            .limits()
+            .max_buffer_size
+            .max(device.limits().max_storage_buffer_binding_size as u64);
+
+        let mut sh_deg: u32 = file_sh_deg;
+        for (i, s) in splat_sizes.iter().enumerate().rev() {
+            let sh_buffer_size = *s as u64 * num_points as u64;
+            if sh_buffer_size < max_size && i <= sh_deg as usize {
+                sh_deg = i as u32;
+                break;
+            }
+        }
+
+        let (vertices, sh_coef_buffer) = match sh_deg {
+            0 => {
+                let (vertices, sh_coefs) =
+                    read_ply::<1, _>(header.encoding, num_points, &mut reader);
+
+                (
+                    vertices,
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("sh coefs buffer"),
+                        contents: bytemuck::cast_slice(sh_coefs.as_slice()),
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    }),
+                )
+            }
+            1 => {
+                let (vertices, sh_coefs) =
+                    read_ply::<4, _>(header.encoding, num_points, &mut reader);
+
+                (
+                    vertices,
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("sh coefs buffer"),
+                        contents: bytemuck::cast_slice(sh_coefs.as_slice()),
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    }),
+                )
+            }
+            2 => {
+                let (vertices, sh_coefs) =
+                    read_ply::<9, _>(header.encoding, num_points, &mut reader);
+
+                (
+                    vertices,
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("sh coefs buffer"),
+                        contents: bytemuck::cast_slice(sh_coefs.as_slice()),
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    }),
+                )
+            }
+            3 => {
+                let (vertices, sh_coefs) =
+                    read_ply::<16, _>(header.encoding, num_points, &mut reader);
+                (
+                    vertices,
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("sh coefs buffer"),
+                        contents: bytemuck::cast_slice(sh_coefs.as_slice()),
+                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    }),
+                )
+            }
+            _ => unreachable!("how?"),
         };
 
+        if sh_deg != file_sh_deg {
+            let buff_size = sh_coef_buffer.size();
+            log::warn!("the sh coef buffer size ({buff_size}) exceeds the maximum allowed size ({max_size}). The degree of sh coefficients was reduced from {file_sh_deg} to {sh_deg}.");
+        } else {
+            log::info!("sh_deg: {sh_deg}");
+        }
+
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("vertex buffer"),
-            contents: bytemuck::cast_slice(points.as_slice()),
+            label: Some("3d gaussians buffer"),
+            contents: bytemuck::cast_slice(vertices.as_slice()),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
         let splat_2d_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("vertex buffer"),
-            size: (points.len() * mem::size_of::<Splat2D>()) as u64,
+            label: Some("2d gaussians buffer"),
+            size: (vertices.len() * mem::size_of::<Splat2D>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
@@ -91,6 +196,10 @@ impl PointCloud {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
+                    resource: sh_coef_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
                     resource: splat_2d_buffer.as_entire_binding(),
                 },
             ],
@@ -98,15 +207,17 @@ impl PointCloud {
 
         Ok(Self {
             vertex_buffer,
-            splats_2d_buffer: splat_2d_buffer,
+            sh_coef_buffer,
+            splat_2d_buffer,
             bind_group,
             num_points: num_points as u32,
-            points,
+            points: vertices,
+            sh_deg,
         })
     }
 
     pub(crate) fn splats_2d_buffer(&self) -> &wgpu::Buffer {
-        &self.splats_2d_buffer
+        &self.splat_2d_buffer
     }
     pub fn num_points(&self) -> u32 {
         self.num_points
@@ -114,6 +225,9 @@ impl PointCloud {
 
     pub fn points(&self) -> &Vec<GaussianSplat> {
         &self.points
+    }
+    pub fn sh_deg(&self) -> u32 {
+        self.sh_deg
     }
 
     pub fn sort(&mut self, queue: &wgpu::Queue, camera: impl Camera) {
@@ -159,6 +273,16 @@ impl PointCloud {
                     binding: 1,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: false },
                         has_dynamic_offset: false,
                         min_binding_size: None,
@@ -173,7 +297,7 @@ impl PointCloud {
 /// builds a covariance matrix based on a quaterion and rotation
 /// the matrix is symmetric so we only return the upper right half
 /// see "3D Gaussian Splatting" Kerbel et al.
-fn build_cov(rot: Quaternion<f32>, scale: Vector3<f32>) -> [f32; 6] {
+fn build_cov(rot: Quaternion<f32>, scale: Vector3<f32>) -> [f16; 6] {
     let r = Matrix3::from(rot);
     let s = Matrix3::from_diagonal(scale);
 
@@ -181,7 +305,14 @@ fn build_cov(rot: Quaternion<f32>, scale: Vector3<f32>) -> [f32; 6] {
 
     let m = l * l.transpose();
 
-    return [m[0][0], m[0][1], m[0][2], m[1][1], m[1][2], m[2][2]];
+    return [
+        f16::from_f32(m[0][0]),
+        f16::from_f32(m[0][1]),
+        f16::from_f32(m[0][2]),
+        f16::from_f32(m[1][1]),
+        f16::from_f32(m[1][2]),
+        f16::from_f32(m[2][2]),
+    ];
 }
 
 /// numerical stable sigmoid function
@@ -193,7 +324,26 @@ fn sigmoid(x: f32) -> f32 {
     }
 }
 
-fn read_line<B: ByteOrder, R: io::Read + io::Seek>(reader: &mut BufReader<R>) -> GaussianSplat {
+fn read_ply<const C: usize, R: Read + Seek>(
+    encoding: ply_rs::ply::Encoding,
+    num_points: usize,
+    reader: &mut BufReader<R>,
+) -> (Vec<GaussianSplat>, Vec<SHCoefs<C, f16>>) {
+    match encoding {
+        ply_rs::ply::Encoding::Ascii => todo!("acsii ply format not supported"),
+        ply_rs::ply::Encoding::BinaryBigEndian => (0..num_points)
+            .map(|i| read_line::<C, BigEndian, _>(reader, i as u32))
+            .unzip(),
+        ply_rs::ply::Encoding::BinaryLittleEndian => (0..num_points)
+            .map(|i| read_line::<C, LittleEndian, _>(reader, i as u32))
+            .unzip(),
+    }
+}
+
+fn read_line<const C: usize, B: ByteOrder, R: io::Read + io::Seek>(
+    reader: &mut BufReader<R>,
+    idx: u32,
+) -> (GaussianSplat, SHCoefs<C, f16>) {
     let x = reader.read_f32::<B>().unwrap();
     let y = reader.read_f32::<B>().unwrap();
     let z = reader.read_f32::<B>().unwrap();
@@ -203,18 +353,18 @@ fn read_line<B: ByteOrder, R: io::Read + io::Seek>(reader: &mut BufReader<R>) ->
         .seek_relative(std::mem::size_of::<f32>() as i64 * 3)
         .unwrap();
 
-    let mut sh_coefs = [Vector4::zero(); 16];
+    let mut sh_coefs = [Vector3::zeroed(); C];
 
-    sh_coefs[0].x = reader.read_f32::<B>().unwrap();
-    sh_coefs[0].y = reader.read_f32::<B>().unwrap();
-    sh_coefs[0].z = reader.read_f32::<B>().unwrap();
+    sh_coefs[0].x = f16::from_f32(reader.read_f32::<B>().unwrap());
+    sh_coefs[0].y = f16::from_f32(reader.read_f32::<B>().unwrap());
+    sh_coefs[0].z = f16::from_f32(reader.read_f32::<B>().unwrap());
 
     // higher order coeffcients are stored with channel first
     for j in 0..3 {
         for i in 1..16 {
             let v = reader.read_f32::<B>().unwrap();
             if i < sh_coefs.len() {
-                sh_coefs[i][j] = v;
+                sh_coefs[i][j] = f16::from_f32(v);
             }
         }
     }
@@ -232,41 +382,43 @@ fn read_line<B: ByteOrder, R: io::Read + io::Seek>(reader: &mut BufReader<R>) ->
     let rot_3 = reader.read_f32::<B>().unwrap();
     let rot_q = Quaternion::new(rot_0, rot_1, rot_2, rot_3);
 
-    let cov = build_cov(rot_q, scale);
-    return GaussianSplat {
-        xyz: Point3::new(x, y, z),
-        color: sh_coefs,
-        covariance_1: Vector3::new(cov[0], cov[1], cov[2]),
-        covariance_2: Vector3::new(cov[3], cov[4], cov[5]),
-        opacity: opacity,
-        ..Default::default()
-    };
+    return (
+        GaussianSplat {
+            xyz: Point3::new(x, y, z),
+            opacity,
+            covariance: build_cov(rot_q, scale),
+            sh_idx: idx,
+            ..Default::default()
+        },
+        SHCoefs(sh_coefs),
+    );
 }
 
 impl Splat2D {
     pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
-        const VEC4_SIZE: u64 = wgpu::VertexFormat::Float32x4.size();
+        const COV_SIZE: u64 = wgpu::VertexFormat::Float16x4.size();
+        const XYZ_SIZE: u64 = wgpu::VertexFormat::Float16x4.size();
         wgpu::VertexBufferLayout {
             array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &[
-                // color + opacity
+                // cov_1 + cov_2
                 wgpu::VertexAttribute {
                     offset: 0,
                     shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                // cov_1 + cov_2
-                wgpu::VertexAttribute {
-                    offset: VEC4_SIZE,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x4,
+                    format: wgpu::VertexFormat::Float16x4,
                 },
                 // xyz
                 wgpu::VertexAttribute {
-                    offset: 2 * VEC4_SIZE,
+                    offset: COV_SIZE,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float16x4,
+                },
+                // color + opacity
+                wgpu::VertexAttribute {
+                    offset: COV_SIZE + XYZ_SIZE,
                     shader_location: 2,
-                    format: wgpu::VertexFormat::Float32x2,
+                    format: wgpu::VertexFormat::Unorm8x4,
                 },
             ],
         }

@@ -17,7 +17,7 @@ pub struct GaussianRenderer {
 }
 
 impl GaussianRenderer {
-    pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
+    pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat, sh_deg: u32) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render pipeline layout"),
             bind_group_layouts: &[],
@@ -77,7 +77,7 @@ impl GaussianRenderer {
         });
 
         let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
-        let preprocess = PreprocessPointCloud::new(device);
+        let preprocess = PreprocessPointCloud::new(device, sh_deg);
         GaussianRenderer {
             pipeline,
             camera,
@@ -203,7 +203,7 @@ struct PreprocessPointCloud {
 }
 
 impl PreprocessPointCloud {
-    fn new(device: &wgpu::Device) -> Self {
+    fn new(device: &wgpu::Device, sh_deg: u32) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("preprocess pipeline layout"),
             bind_group_layouts: &[
@@ -214,7 +214,12 @@ impl PreprocessPointCloud {
             push_constant_ranges: &[],
         });
 
-        let shader = device.create_shader_module(wgpu::include_wgsl!("shaders/preprocess.wgsl"));
+        const SHADER_SRC: &str = include_str!("shaders/preprocess.wgsl");
+        let consts = format!("const MAX_SH_DEG:u32 = {:}u;\n{:}", sh_deg, SHADER_SRC);
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("preprocess shader"),
+            source: wgpu::ShaderSource::Wgsl(consts.into()),
+        });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("preprocess pipeline"),
             layout: Some(&pipeline_layout),

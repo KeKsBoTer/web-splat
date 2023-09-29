@@ -7,9 +7,9 @@ struct VertexOutput {
 
 
 struct VertexInput {
-    @location(0) color: vec4<f32>,
-    @location(1) v: vec4<f32>,
-    @location(2) pos: vec3<f32>,
+    @location(0) v: vec4<f32>,
+    @location(1) pos: vec4<f32>,
+    @location(2) color: vec4<f32>,
 };
 
 @vertex

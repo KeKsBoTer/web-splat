@@ -39,7 +39,7 @@ struct WindowContext {
     window: Window,
     scale_factor: f32,
 
-    pc: Option<Arc<RwLock<PointCloud>>>,
+    pc: Arc<RwLock<PointCloud>>,
     renderer: GaussianRenderer,
     camera: Arc<RwLock<PerspectiveCamera>>,
     next_camera: Option<((Duration, Duration), (PerspectiveCamera, PerspectiveCamera))>,
@@ -51,7 +51,7 @@ struct WindowContext {
 
 impl WindowContext {
     // Creating some of the wgpu types requires async code
-    async fn new(window: Window) -> Self {
+    async fn new<P: AsRef<Path>> (window: Window,pc_file:P) -> Self {
         let size = window.inner_size();
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -74,8 +74,8 @@ impl WindowContext {
                 &wgpu::DeviceDescriptor {
                     features: wgpu::Features::empty(),
                     limits: wgpu::Limits {
-                        max_buffer_size: 2 << 30,
-                        max_storage_buffer_binding_size: 2 << 30,
+                        max_storage_buffer_binding_size:1<<28,
+                        max_buffer_size:1<<28,
                         ..Default::default()
                     },
                     label: None,
@@ -84,6 +84,7 @@ impl WindowContext {
             )
             .await
             .unwrap();
+
 
         let surface_caps = surface.get_capabilities(&adapter);
 
@@ -105,8 +106,11 @@ impl WindowContext {
             view_formats: vec![],
         };
         surface.configure(&device, &config);
+        let pc = PointCloud::load_ply(&device, pc_file).unwrap();
+        log::info!("loaded point cloud with {:} points",pc.num_points());
 
-        let renderer = GaussianRenderer::new(&device, surface_format);
+
+        let renderer = GaussianRenderer::new(&device, surface_format,pc.sh_deg());
 
         let aspect = size.width as f32 / size.height as f32;
         let view_camera = PerspectiveCamera::new(
@@ -125,7 +129,7 @@ impl WindowContext {
             surface,
             config,
             renderer,
-            pc: None,
+            pc:Arc::new(RwLock::new(pc)),
             camera: Arc::new(RwLock::new(view_camera)),
             next_camera: None,
             controller,
@@ -135,9 +139,6 @@ impl WindowContext {
         }
     }
 
-    pub fn set_point_cloud(&mut self, pc: Arc<RwLock<PointCloud>>) {
-        self.pc = Some(pc);
-    }
 
     fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>, scale_factor: Option<f32>) {
         if new_size.width > 0 && new_size.height > 0 {
@@ -199,9 +200,8 @@ impl WindowContext {
                 label: Some("Render Encoder Compare"),
             });
         {
-            if let Some(pc) = &self.pc {
                 let viewport = Vector2::new(self.config.width, self.config.height);
-                let pc = pc.read().unwrap();
+                let pc = self.pc.read().unwrap();
 
                 self.renderer.preprocess(&mut encoder, &self.queue, &pc, self.camera.read().unwrap().clone(), viewport);
 
@@ -221,7 +221,6 @@ impl WindowContext {
                     &mut render_pass,
                     &pc,
                 )
-            }
         }
 
         self.queue.submit([encoder.finish()]);
@@ -266,6 +265,7 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
     file: P,
     scene_file: Option<P>,
 ) {
+    env_logger::init();
     let event_loop = EventLoop::new();
 
     let scene = scene_file.map(|f| Scene::from_json(f).unwrap());
@@ -287,11 +287,8 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
         .build(&event_loop)
         .unwrap();
 
-    let mut state = WindowContext::new(window).await;
+    let mut state = WindowContext::new(window,file).await;
 
-    let pc = Arc::new(RwLock::new(
-        PointCloud::load_ply(&state.device, file).unwrap(),
-    ));
 
     if let Some(scene) = scene {
         state.set_scene(scene);
@@ -299,12 +296,12 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
 
     let mut last = Instant::now();
 
-    state.set_point_cloud(pc.clone());
 
     let queue = state.queue.clone();
     let camera = state.camera.clone();
     let pause_sort = state.pause_sort.clone();
 
+    let pc = state.pc.clone();
     // sorting thread
     // this thread copies the point cloud, sorts it and copies the result
     // back to the point cloud that is rendered
