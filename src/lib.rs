@@ -28,6 +28,7 @@ mod renderer;
 mod scene;
 mod uniform;
 mod utils;
+pub mod gpu_rs;
 
 struct WindowContext {
     device: wgpu::Device,

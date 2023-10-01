@@ -21,9 +21,13 @@ byteorder = "1.4.3"
 serde_json = "1.0.107"
 serde = { version = "1.0.188", features = ["derive"] }
 rand = "0.8.5"
+futures-intrusive = "0.4"
 
 [lib]
 path = "src/lib.rs"
 
 [[bin]]
 name = "viewer"
+
+[[bin]]
+name = "sort_test"
