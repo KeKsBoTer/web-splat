@@ -5,10 +5,12 @@ use cgmath::{
     InnerSpace, Matrix, Matrix3, Point3, Quaternion, SquareMatrix, Transform, Vector3, Vector4,
 };
 use half::f16;
-use num_traits::Float;
+use log::debug;
+use num_traits::{Float, Zero};
 use ply_rs;
 use std::fmt::Debug;
 use std::io::{self, BufReader, Read, Seek};
+use std::time::Instant;
 use std::{mem, path::Path};
 use wgpu::util::DeviceExt;
 
@@ -114,58 +116,31 @@ impl PointCloud {
         }
 
         let (vertices, sh_coef_buffer) = match sh_deg {
-            0 => {
-                let (vertices, sh_coefs) =
-                    read_ply::<1, _>(header.encoding, num_points, &mut reader);
-
-                (
-                    vertices,
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("sh coefs buffer"),
-                        contents: bytemuck::cast_slice(sh_coefs.as_slice()),
-                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    }),
-                )
-            }
-            1 => {
-                let (vertices, sh_coefs) =
-                    read_ply::<4, _>(header.encoding, num_points, &mut reader);
-
-                (
-                    vertices,
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("sh coefs buffer"),
-                        contents: bytemuck::cast_slice(sh_coefs.as_slice()),
-                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    }),
-                )
-            }
-            2 => {
-                let (vertices, sh_coefs) =
-                    read_ply::<9, _>(header.encoding, num_points, &mut reader);
-
-                (
-                    vertices,
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("sh coefs buffer"),
-                        contents: bytemuck::cast_slice(sh_coefs.as_slice()),
-                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    }),
-                )
-            }
-            3 => {
-                let (vertices, sh_coefs) =
-                    read_ply::<16, _>(header.encoding, num_points, &mut reader);
-                (
-                    vertices,
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("sh coefs buffer"),
-                        contents: bytemuck::cast_slice(sh_coefs.as_slice()),
-                        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    }),
-                )
-            }
-            _ => unreachable!("how?"),
+            0 => read_ply::<{ (0 + 1) * (0 + 1) }, _>(
+                device,
+                header.encoding,
+                num_points,
+                &mut reader,
+            ),
+            1 => read_ply::<{ (1 + 1) * (1 + 1) }, _>(
+                device,
+                header.encoding,
+                num_points,
+                &mut reader,
+            ),
+            2 => read_ply::<{ (2 + 1) * (2 + 1) }, _>(
+                device,
+                header.encoding,
+                num_points,
+                &mut reader,
+            ),
+            3 => read_ply::<{ (3 + 1) * (3 + 1) }, _>(
+                device,
+                header.encoding,
+                num_points,
+                &mut reader,
+            ),
+            _ => unimplemented!("only up the sh degree 3 is supported"),
         };
 
         if sh_deg != file_sh_deg {
@@ -327,18 +302,48 @@ fn sigmoid(x: f32) -> f32 {
 }
 
 fn read_ply<const C: usize, R: Read + Seek>(
+    device: &wgpu::Device,
     encoding: ply_rs::ply::Encoding,
     num_points: usize,
     reader: &mut BufReader<R>,
-) -> (Vec<GaussianSplat>, Vec<SHCoefs<C, f16>>) {
+) -> (Vec<GaussianSplat>, wgpu::Buffer)
+where
+    SHCoefs<C, f16>: bytemuck::Pod,
+{
     match encoding {
         ply_rs::ply::Encoding::Ascii => todo!("acsii ply format not supported"),
-        ply_rs::ply::Encoding::BinaryBigEndian => (0..num_points)
-            .map(|i| read_line::<C, BigEndian, _>(reader, i as u32))
-            .unzip(),
-        ply_rs::ply::Encoding::BinaryLittleEndian => (0..num_points)
-            .map(|i| read_line::<C, LittleEndian, _>(reader, i as u32))
-            .unzip(),
+        ply_rs::ply::Encoding::BinaryBigEndian => {
+            let start_read = Instant::now();
+            let (vertices, sh_coefs): (Vec<GaussianSplat>, Vec<SHCoefs<C, f16>>) = (0..num_points)
+                .map(|i| read_line::<C, BigEndian, _>(reader, i as u32))
+                .unzip();
+            debug!(
+                "reading ply took {}ms",
+                (Instant::now() - start_read).as_millis()
+            );
+            let sh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("sh coefs buffer"),
+                contents: bytemuck::cast_slice(sh_coefs.as_slice()),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+            return (vertices, sh_buffer);
+        }
+        ply_rs::ply::Encoding::BinaryLittleEndian => {
+            let start_read = Instant::now();
+            let (vertices, sh_coefs): (Vec<GaussianSplat>, Vec<SHCoefs<C, f16>>) = (0..num_points)
+                .map(|i| read_line::<C, LittleEndian, _>(reader, i as u32))
+                .unzip();
+            debug!(
+                "reading ply took {}ms",
+                (Instant::now() - start_read).as_millis()
+            );
+            let sh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("sh coefs buffer"),
+                contents: bytemuck::cast_slice(sh_coefs.as_slice()),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+            return (vertices, sh_buffer);
+        }
     }
 }
 
@@ -346,28 +351,27 @@ fn read_line<const C: usize, B: ByteOrder, R: io::Read + io::Seek>(
     reader: &mut BufReader<R>,
     idx: u32,
 ) -> (GaussianSplat, SHCoefs<C, f16>) {
-    let x = reader.read_f32::<B>().unwrap();
-    let y = reader.read_f32::<B>().unwrap();
-    let z = reader.read_f32::<B>().unwrap();
+    let mut pos = [0.; 3];
+    reader.read_f32_into::<B>(&mut pos).unwrap();
 
     // skip normals
     reader
         .seek_relative(std::mem::size_of::<f32>() as i64 * 3)
         .unwrap();
 
-    let mut sh_coefs = [Vector3::zeroed(); C];
+    let mut sh_coefs_raw = [0.; 16 * 3];
 
-    sh_coefs[0].x = f16::from_f32(reader.read_f32::<B>().unwrap());
-    sh_coefs[0].y = f16::from_f32(reader.read_f32::<B>().unwrap());
-    sh_coefs[0].z = f16::from_f32(reader.read_f32::<B>().unwrap());
+    reader.read_f32_into::<B>(&mut sh_coefs_raw).unwrap();
 
-    // higher order coeffcients are stored with channel first
+    let mut sh_coefs = [Vector3::zero(); C];
+    sh_coefs[0].x = f16::from_f32(sh_coefs_raw[0]);
+    sh_coefs[0].y = f16::from_f32(sh_coefs_raw[1]);
+    sh_coefs[0].z = f16::from_f32(sh_coefs_raw[2]);
+
+    // higher order coeffcients are stored with channel first (shape:[N,3,C])
     for j in 0..3 {
-        for i in 1..16 {
-            let v = reader.read_f32::<B>().unwrap();
-            if i < sh_coefs.len() {
-                sh_coefs[i][j] = f16::from_f32(v);
-            }
+        for i in 1..C {
+            sh_coefs[i][j] = f16::from_f32(sh_coefs_raw[2 + j * 15 + i]);
         }
     }
 
@@ -386,7 +390,7 @@ fn read_line<const C: usize, B: ByteOrder, R: io::Read + io::Seek>(
 
     return (
         GaussianSplat {
-            xyz: Point3::new(x, y, z),
+            xyz: Point3::from(pos),
             opacity,
             covariance: build_cov(rot_q, scale),
             sh_idx: idx,

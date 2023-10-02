@@ -230,6 +230,7 @@ impl WindowContext {
         if animation_duration.is_zero() {
             self.update_camera(camera.into())
         } else {
+            println!("called!");
             *self.pause_sort.write().unwrap() = true;
             let mut target_camera =camera.into();
             target_camera.projection.resize(self.config.width,self.config.height);
@@ -294,7 +295,7 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
     // back to the point cloud that is rendered
     // TODO do this on the GPU!
     thread::spawn(move || {
-        let mut last_camera = camera.read().unwrap().clone();
+        let mut last_camera = <_>::default();
         loop {
             let perform_sort = !{ *pause_sort.read().unwrap() };
             if perform_sort {
