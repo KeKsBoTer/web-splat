@@ -25,6 +25,10 @@ fn print_first_n<T : std::fmt::Debug + Clone>(v: &Vec<T>, n: usize) {
     println!("{:?}", v[0..n].to_vec());
 }
 
+unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
+    ::core::slice::from_raw_parts((p as *const T) as *const u8, ::core::mem::size_of::<T>(),)
+}
+
 fn main() {
     // creating the context
     
@@ -60,17 +64,18 @@ fn main() {
     // testing the histogram counting
     let test_data: Vec<f32> = (0..10000).rev().map(|n| n as f32).collect();
     print_first_n(&test_data, 100);
+    let uniform_infos= gpu_rs::GeneralInfo{histogram_size: 0, keys_size: test_data.len() as u32};
     
     let gpu_data = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("data buffer"),
         contents: bytemuck::cast_slice(test_data.as_slice()),
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
     });
-    let histograms = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("histogram data"),
-        size: 100,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
+    let histograms = gpu_rs::GPURSSorter::create_internal_mem_buffer(&device, test_data.len());
+    let gpu_uniform_infos = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("uniform infos"),
+        contents: unsafe{any_as_u8_slice(&uniform_infos)},
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
     
     let mut compute_pipeline = gpu_rs::GPURSSorter::new(&device);
@@ -85,11 +90,17 @@ fn main() {
         wgpu::BindGroupEntry {
             binding: 1,
             resource: histograms.as_entire_binding(),
-        }
+        },
+        wgpu::BindGroupEntry {
+            binding: 2,
+            resource: gpu_uniform_infos.as_entire_binding(),
+        },
         ],
     });
 
-    compute_pipeline.fill_histogram(&bind_group, test_data.len(), &mut encoder);
+    compute_pipeline.record_calculate_histogram(&bind_group, &histograms, test_data.len(), &mut encoder);
+    
+    queue.submit([encoder.finish()]);
     
     println!("Kinda works...");
 }
