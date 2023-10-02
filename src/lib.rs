@@ -4,6 +4,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use animation::Animation;
 use log::{debug, info};
 use rayon::prelude::*;
 
@@ -13,7 +14,6 @@ use controller::CameraController;
 use pc::PointCloud;
 use renderer::GaussianRenderer;
 use scene::Scene;
-use utils::smoothstep;
 use winit::{
     dpi::PhysicalSize,
     event::{DeviceEvent, ElementState, Event, VirtualKeyCode, WindowEvent},
@@ -30,6 +30,7 @@ mod renderer;
 mod scene;
 mod uniform;
 mod utils;
+mod animation;
 
 struct WindowContext {
     device: wgpu::Device,
@@ -44,7 +45,7 @@ struct WindowContext {
     pc: Arc<RwLock<PointCloud>>,
     renderer: GaussianRenderer,
     camera: Arc<RwLock<PerspectiveCamera>>,
-    next_camera: Option<((Duration, Duration), (PerspectiveCamera, PerspectiveCamera))>,
+    next_camera: Option<Animation<PerspectiveCamera>>,
     controller: CameraController,
     scene: Option<Scene>,
     pause_sort: Arc<RwLock<bool>>,
@@ -162,27 +163,12 @@ impl WindowContext {
     }
 
     fn update(&mut self, dt: Duration) {
-        if let Some(((time_left, duration), (start_camera, target_camera))) = self.next_camera {
-            match time_left.checked_sub(dt) {
-                Some(new_left) => {
-                    // set time left
-                    if let Some(c) = &mut self.next_camera {
-                        c.0 .0 = new_left;
-                    }
-                    let elapsed = 1. - new_left.as_secs_f32() / duration.as_secs_f32();
-                    let amount = smoothstep(elapsed);
-                    let new_camera =start_camera.lerp(&target_camera, amount);
-                    *self.camera.write().unwrap() = new_camera;
-                }
-                None => {
-                    let mut camera = self.camera.write().unwrap();
-                    *camera = target_camera.clone();
-                    camera
-                        .projection
-                        .resize(self.config.width, self.config.height);
-                    self.next_camera.take();
-                    *self.pause_sort.write().unwrap() = false;
-                }
+        if let Some(next_camera) = &mut self.next_camera{
+            let mut curr_camera = self.camera.write().unwrap();
+            *curr_camera = next_camera.update(dt);
+            if next_camera.done(){
+                *self.pause_sort.write().unwrap() = false;
+                self.next_camera.take();
             }
         } else {
             self.controller
@@ -247,10 +233,7 @@ impl WindowContext {
             *self.pause_sort.write().unwrap() = true;
             let mut target_camera =camera.into();
             target_camera.projection.resize(self.config.width,self.config.height);
-            self.next_camera = Some((
-                (animation_duration, animation_duration),
-                (self.camera.read().unwrap().clone(),target_camera ),
-            ));
+            self.next_camera = Some(Animation::new(self.camera.read().unwrap().clone(),target_camera ,animation_duration));
         }
     }
 

@@ -3,6 +3,8 @@
 
 use cgmath::*;
 
+use crate::animation::Lerp;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PerspectiveCamera {
     pub position: Point3<f32>,
@@ -22,8 +24,10 @@ impl PerspectiveCamera {
             projection: projection,
         }
     }
+}
 
-    pub fn lerp(&self, other: &PerspectiveCamera, amount: f32) -> PerspectiveCamera {
+impl Lerp for PerspectiveCamera {
+    fn lerp(&self, other: &Self, amount: f32) -> Self {
         PerspectiveCamera {
             position: Point3::from_vec(
                 self.position.to_vec().lerp(other.position.to_vec(), amount),
