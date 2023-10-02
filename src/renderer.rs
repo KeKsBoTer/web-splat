@@ -4,7 +4,7 @@ use cgmath::{Matrix4, SquareMatrix, Vector2};
 
 use crate::{
     camera::{Camera, PerspectiveCamera, OPENGL_TO_WGPU_MATRIX},
-    pc::{PointCloud, Splat2D},
+    pc::{PointCloud, SHDtype, Splat2D},
     uniform::UniformBuffer,
 };
 
@@ -17,7 +17,12 @@ pub struct GaussianRenderer {
 }
 
 impl GaussianRenderer {
-    pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat, sh_deg: u32) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        color_format: wgpu::TextureFormat,
+        sh_deg: u32,
+        sh_dtype: SHDtype,
+    ) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render pipeline layout"),
             bind_group_layouts: &[],
@@ -77,7 +82,7 @@ impl GaussianRenderer {
         });
 
         let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
-        let preprocess = PreprocessPointCloud::new(device, sh_deg);
+        let preprocess = PreprocessPointCloud::new(device, sh_deg, sh_dtype);
         GaussianRenderer {
             pipeline,
             camera,
@@ -200,10 +205,12 @@ impl CameraUniform {
 
 struct PreprocessPointCloud {
     pipeline: wgpu::ComputePipeline,
+    sh_deg: u32,
+    sh_dtype: SHDtype,
 }
 
 impl PreprocessPointCloud {
-    fn new(device: &wgpu::Device, sh_deg: u32) -> Self {
+    fn new(device: &wgpu::Device, sh_deg: u32, sh_dtype: SHDtype) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("preprocess pipeline layout"),
             bind_group_layouts: &[
@@ -214,11 +221,9 @@ impl PreprocessPointCloud {
             push_constant_ranges: &[],
         });
 
-        const SHADER_SRC: &str = include_str!("shaders/preprocess.wgsl");
-        let consts = format!("const MAX_SH_DEG:u32 = {:}u;\n{:}", sh_deg, SHADER_SRC);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("preprocess shader"),
-            source: wgpu::ShaderSource::Wgsl(consts.into()),
+            source: wgpu::ShaderSource::Wgsl(Self::build_shader(sh_deg, sh_dtype).into()),
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("preprocess pipeline"),
@@ -226,7 +231,23 @@ impl PreprocessPointCloud {
             module: &shader,
             entry_point: "preprocess",
         });
-        Self { pipeline }
+        Self {
+            pipeline,
+            sh_deg,
+            sh_dtype,
+        }
+    }
+
+    fn build_shader(sh_deg: u32, sh_dtype: SHDtype) -> String {
+        const SHADER_SRC: &str = include_str!("shaders/preprocess.wgsl");
+        let shader_src = format!(
+            "
+        const MAX_SH_DEG:u32 = {:}u;
+        const SH_DTYPE:u32 = {:}u;
+        {:}",
+            sh_deg, sh_dtype as u32, SHADER_SRC
+        );
+        return shader_src;
     }
 
     fn run<'a>(

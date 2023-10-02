@@ -77,8 +77,8 @@ impl WindowContext {
                 &wgpu::DeviceDescriptor {
                     features: wgpu::Features::empty(),
                     limits: wgpu::Limits {
-                        max_storage_buffer_binding_size:1<<30,
-                        max_buffer_size:1<<30,
+                        max_storage_buffer_binding_size:1<<31,
+                        max_buffer_size:1<<31,
                         ..Default::default()
                     },
                     label: None,
@@ -109,11 +109,11 @@ impl WindowContext {
             view_formats: vec![],
         };
         surface.configure(&device, &config);
-        let pc = PointCloud::load_ply(&device, pc_file).unwrap();
+        let pc = PointCloud::load_ply(&device, pc_file,pc::SHDtype::Byte).unwrap();
         log::info!("loaded point cloud with {:} points",pc.num_points());
 
 
-        let renderer = GaussianRenderer::new(&device, surface_format,pc.sh_deg());
+        let renderer = GaussianRenderer::new(&device, surface_format,pc.sh_deg(),pc.sh_dtype());
 
         let aspect = size.width as f32 / size.height as f32;
         let view_camera = PerspectiveCamera::new(
@@ -230,7 +230,6 @@ impl WindowContext {
         if animation_duration.is_zero() {
             self.update_camera(camera.into())
         } else {
-            println!("called!");
             *self.pause_sort.write().unwrap() = true;
             let mut target_camera =camera.into();
             target_camera.projection.resize(self.config.width,self.config.height);

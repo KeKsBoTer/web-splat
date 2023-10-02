@@ -1,4 +1,12 @@
+
 //const MAX_SH_DEG:u32 = <injected>u;
+//const SH_DTYPE:u32 = <injected>u;
+
+// which precision/datatype the sh coefficients use
+const SH_DTYPE_FLOAT:u32 = 0u;
+const SH_DTYPE_HALF:u32 = 1u;
+const SH_DTYPE_BYTE:u32 = 2u;
+
 const SH_C0:f32 = 0.28209479177387814;
 
 const SH_C1 = 0.4886025119029199;
@@ -67,7 +75,7 @@ var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) 
 var<storage,read> vertices : array<GaussianSplat>;
 
-// sh coefs packed as 2x f16 = 1x u32
+// sh coefs packed as 4x u8 = 1x u32
 @group(1) @binding(1) 
 var<storage,read> sh_coefs : array<u32>;
 
@@ -81,14 +89,41 @@ var<storage,write> indirect_draw_call : DrawIndirect;
 /// the coefs are packed as 2xf16 in one u32 
 fn sh_coef(v_idx:u32,c_idx:u32)->vec3<f32>{
     let n = (MAX_SH_DEG+1u)*(MAX_SH_DEG+1u);
-    let idx = 3u*(v_idx*n+c_idx)/2u;
-    let v = vec4<f32>(unpack2x16float(sh_coefs[idx]),unpack2x16float(sh_coefs[idx+1u]));
-    let r = (c_idx*3u)%2u;
-    if r == 0u{
-        return v.rgb;
-    }else if r==1u{
-        return v.gba;
+    if SH_DTYPE == SH_DTYPE_BYTE{
+        let idx = 3u*(v_idx*n+c_idx)/4u;
+        var v1 = unpack4x8snorm(sh_coefs[idx]);
+        var v2 = unpack4x8snorm(sh_coefs[idx+1u]);
+        if c_idx == 0u{
+            v1 *= 4.;
+            v2 *= 4.;
+        }else{
+            v1 *= 0.5;
+            v2 *= 0.5;
+        }
+        let r = (c_idx*3u)%4u;
+        if r == 0u{
+            return vec3<f32>(v1.xyz);
+        }else if r==1u{
+            return vec3<f32>(v1.yzw);
+        }else if r==2u{
+            return vec3<f32>(v1.zw,v2.x);
+        }else if r==3u{
+            return vec3<f32>(v1.w,v2.xy);
+        }
+    }else if SH_DTYPE == SH_DTYPE_HALF{
+        let idx = 3u*(v_idx*n+c_idx)/2u;
+        let v = vec4<f32>(unpack2x16float(sh_coefs[idx]),unpack2x16float(sh_coefs[idx+1u]));
+        let r = (c_idx*3u)%2u;
+        if r == 0u{
+            return v.rgb;
+        }else if r==1u{
+            return v.gba;
+        }
+    }else if SH_DTYPE == SH_DTYPE_FLOAT{
+        let idx = 3u*(v_idx*n+c_idx)/1u;
+        return bitcast<vec3<f32>>(vec3<u32>(sh_coefs[idx],sh_coefs[idx+1u],sh_coefs[idx+2u]));
     }
+    
     // unreachable
     return vec3<f32>(0.);
 }
