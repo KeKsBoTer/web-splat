@@ -169,10 +169,10 @@ impl GPURSSorter{
         const scatter_wg_size: usize = histogram_wg_size;
         const scatter_block_kvs: usize = scatter_wg_size * rs_scatter_block_rows;
         let scatter_blocks_ru: usize = (keysize + scatter_block_kvs - 1) / scatter_block_kvs;
-        // let count_ru_scatter: usize = scatter_blocks_ru * scatter_block_kvs;
+        let count_ru_scatter: usize = scatter_blocks_ru * scatter_block_kvs;
 
-        // const histo_block_kvs: usize = histogram_wg_size * rs_histogram_block_rows;
-        // let histo_blocks_ru = (count_ru_scatter + histo_block_kvs - 1) / histo_block_kvs;
+        const histo_block_kvs: usize = histogram_wg_size * rs_histogram_block_rows;
+        let histo_blocks_ru = (count_ru_scatter + histo_block_kvs - 1) / histo_block_kvs;
         // let count_ru_histo = histo_blocks_ru * histo_block_kvs;
         
         let histo_size = rs_radix_size;
@@ -193,8 +193,7 @@ impl GPURSSorter{
 
             pass.set_pipeline(&self.histogram_p);
             pass.set_bind_group(0, bind_group, &[]);
-            let dispatch = ((keysize as f32) / (histogram_wg_size as f32)).ceil() as u32;
-            pass.dispatch_workgroups(dispatch, 1, 1);
+            pass.dispatch_workgroups(histo_blocks_ru as u32, 1, 1);
         }
     }
 }
