@@ -37,7 +37,8 @@ impl Scene {
     pub fn from_json<P: AsRef<Path>>(file: P) -> Result<Self, anyhow::Error> {
         let f = File::open(file)?;
         let mut reader = BufReader::new(f);
-        let cameras: Vec<SceneCamera> = serde_json::from_reader(&mut reader)?;
+        let mut cameras: Vec<SceneCamera> = serde_json::from_reader(&mut reader)?;
+        cameras.sort_by_key(|c| c.id);
         Ok(Scene { cameras })
     }
 

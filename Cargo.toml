@@ -24,7 +24,7 @@ rand = "0.8.5"
 num-traits = "0.2.16"
 half = { version = "2.3.1", features = ["bytemuck", "num-traits"] }
 log = "0.4.20"
-
+rayon = "1.8.0"
 
 [lib]
 path = "src/lib.rs"

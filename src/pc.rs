@@ -1,7 +1,9 @@
 use anyhow::Ok;
 use bytemuck::Zeroable;
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt};
-use cgmath::{Matrix, Matrix3, Point3, Quaternion, SquareMatrix, Transform, Vector3, Vector4};
+use cgmath::{
+    InnerSpace, Matrix, Matrix3, Point3, Quaternion, SquareMatrix, Transform, Vector3, Vector4,
+};
 use half::f16;
 use num_traits::Float;
 use ply_rs;
@@ -380,7 +382,7 @@ fn read_line<const C: usize, B: ByteOrder, R: io::Read + io::Seek>(
     let rot_1 = reader.read_f32::<B>().unwrap();
     let rot_2 = reader.read_f32::<B>().unwrap();
     let rot_3 = reader.read_f32::<B>().unwrap();
-    let rot_q = Quaternion::new(rot_0, rot_1, rot_2, rot_3);
+    let rot_q = Quaternion::new(rot_0, rot_1, rot_2, rot_3).normalize();
 
     return (
         GaussianSplat {

@@ -4,6 +4,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use log::{debug, info};
+use rayon::prelude::*;
 
 use camera::{PerspectiveCamera, PerspectiveProjection};
 use cgmath::{Deg, EuclideanSpace, One, Point3, Quaternion, Transform, Vector2};
@@ -74,8 +76,8 @@ impl WindowContext {
                 &wgpu::DeviceDescriptor {
                     features: wgpu::Features::empty(),
                     limits: wgpu::Limits {
-                        max_storage_buffer_binding_size:1<<28,
-                        max_buffer_size:1<<28,
+                        max_storage_buffer_binding_size:1<<30,
+                        max_buffer_size:1<<30,
                         ..Default::default()
                     },
                     label: None,
@@ -119,7 +121,7 @@ impl WindowContext {
             PerspectiveProjection::new(Vector2::new(Deg(45.), Deg(45. * aspect)), 0.1, 100.),
         );
 
-        let controller = CameraController::new(1., 1.);
+        let controller = CameraController::new(3., 0.25);
         Self {
             device,
             queue: Arc::new(queue),
@@ -291,7 +293,9 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
 
 
     if let Some(scene) = scene {
+        let init_camera = scene.camera(0);
         state.set_scene(scene);
+        state.set_camera(init_camera, Duration::ZERO);
     }
 
     let mut last = Instant::now();
@@ -318,9 +322,13 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
                     let proj = curr_camera.proj_matrix();
                     let transform = proj * view;
 
-                    curr_pc.sort_by_cached_key(|p| {
-                        (-transform.transform_point(p.xyz).z * (2f32).powi(24)) as i32
-                    });
+                    let start = Instant::now();
+                    // par_sort_unstable_by_key is faster than stable cached sort
+                    // source: trust me bro
+                    curr_pc.par_sort_unstable_by_key(|p| {
+                             (-transform.transform_point(p.xyz).z * (2f32).powi(24)) as i32
+                        });
+                    debug!("sorting took: {:}ms",(Instant::now()-start).as_millis());
 
                     pc.write().unwrap().update_points(&queue, curr_pc);
                     last_camera = curr_camera;
@@ -365,6 +373,7 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
 
                             if let Some(new_camera) = new_camera{
                                 state.current_view.replace(new_camera as usize);
+                                info!("view moved to camera {new_camera}");
                                 state.set_camera(scene.camera(new_camera as usize),Duration::from_millis(500));
                             }
                         }
