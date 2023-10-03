@@ -1,14 +1,12 @@
-use anyhow::Ok;
 use bytemuck::Zeroable;
-use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt};
+use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 use cgmath::{
     InnerSpace, Matrix, Matrix3, Point3, Quaternion, SquareMatrix, Transform, Vector3, Vector4,
 };
 use half::f16;
-use log::debug;
-use num_traits::{Num, Zero};
+use log::{info, warn};
 use ply_rs;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::io::{self, BufReader, Read, Seek};
 use std::time::Instant;
 use std::{mem, path::Path};
@@ -28,51 +26,6 @@ pub struct GaussianSplat {
 impl Default for GaussianSplat {
     fn default() -> Self {
         GaussianSplat::zeroed()
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct SHCoefs<const C: usize, F: Num>([Vector3<F>; C]);
-
-unsafe impl bytemuck::Pod for SHCoefs<16, i8> {}
-unsafe impl bytemuck::Zeroable for SHCoefs<16, i8> {}
-unsafe impl bytemuck::Pod for SHCoefs<9, i8> {}
-unsafe impl bytemuck::Zeroable for SHCoefs<9, i8> {}
-unsafe impl bytemuck::Pod for SHCoefs<4, i8> {}
-unsafe impl bytemuck::Zeroable for SHCoefs<4, i8> {}
-unsafe impl bytemuck::Pod for SHCoefs<1, i8> {}
-unsafe impl bytemuck::Zeroable for SHCoefs<1, i8> {}
-
-unsafe impl bytemuck::Pod for SHCoefs<16, f16> {}
-unsafe impl bytemuck::Zeroable for SHCoefs<16, f16> {}
-unsafe impl bytemuck::Pod for SHCoefs<9, f16> {}
-unsafe impl bytemuck::Zeroable for SHCoefs<9, f16> {}
-unsafe impl bytemuck::Pod for SHCoefs<4, f16> {}
-unsafe impl bytemuck::Zeroable for SHCoefs<4, f16> {}
-unsafe impl bytemuck::Pod for SHCoefs<1, f16> {}
-unsafe impl bytemuck::Zeroable for SHCoefs<1, f16> {}
-
-unsafe impl bytemuck::Pod for SHCoefs<16, f32> {}
-unsafe impl bytemuck::Zeroable for SHCoefs<16, f32> {}
-unsafe impl bytemuck::Pod for SHCoefs<9, f32> {}
-unsafe impl bytemuck::Zeroable for SHCoefs<9, f32> {}
-unsafe impl bytemuck::Pod for SHCoefs<4, f32> {}
-unsafe impl bytemuck::Zeroable for SHCoefs<4, f32> {}
-unsafe impl bytemuck::Pod for SHCoefs<1, f32> {}
-unsafe impl bytemuck::Zeroable for SHCoefs<1, f32> {}
-
-impl<const C: usize> From<SHCoefs<C, f32>> for SHCoefs<C, i8> {
-    fn from(value: SHCoefs<C, f32>) -> Self {
-        let mut q_values = value.0.map(|v| v.map(|v| (v * 127. / 0.5) as i8));
-        // use scaling 4 for degree 0 coefs
-        q_values[0] = value.0[0].map(|v| (v * 127. / 4.) as i8);
-        SHCoefs(q_values)
-    }
-}
-impl<const C: usize> From<SHCoefs<C, f32>> for SHCoefs<C, f16> {
-    fn from(value: SHCoefs<C, f32>) -> Self {
-        SHCoefs(value.0.map(|v| v.map(|v| f16::from_f32(v))))
     }
 }
 
@@ -111,70 +64,6 @@ impl PointCloud {
         path: P,
         sh_dtype: SHDtype,
     ) -> Result<Self, anyhow::Error> {
-        let splat_sizes = [
-            sh_dtype.coef_size(),
-            sh_dtype.coef_size() * 4,
-            sh_dtype.coef_size() * 9,
-            sh_dtype.coef_size() * 16,
-        ];
-        let sh_dtype = SHDtype::Byte;
-
-        // maximum allowed size for buffer
-        let max_size = device
-            .limits()
-            .max_buffer_size
-            .max(device.limits().max_storage_buffer_binding_size as u64);
-
-        let mut sh_deg = 3u32;
-        // for (i, s) in splat_sizes.iter().enumerate().rev() {
-        //     let sh_buffer_size = *s as u64 * num_points as u64;
-        //     if sh_buffer_size < max_size && i <= sh_deg as usize {
-        //         sh_deg = i as u32;
-        //         break;
-        //     }
-        // }
-
-        // if sh_deg != file_sh_deg {
-        //     let buff_size = sh_coef_buffer.size();
-        //     log::warn!("the sh coef buffer size ({buff_size}) exceeds the maximum allowed size ({max_size}). The degree of sh coefficients was reduced from {file_sh_deg} to {sh_deg}.");
-        // } else {
-        //     log::info!("sh_deg: {sh_deg}");
-        // }
-        // TODO this is generic hell. remove the size as generic parameter
-        // we never do anything with it on the CPU anyway
-        match sh_deg {
-            0 => match sh_dtype {
-                SHDtype::Float => Self::load_ply_type::<_, 1, f32>(device, path, sh_dtype),
-                SHDtype::Half => Self::load_ply_type::<_, 1, f16>(device, path, sh_dtype),
-                SHDtype::Byte => Self::load_ply_type::<_, 1, i8>(device, path, sh_dtype),
-            },
-            1 => match sh_dtype {
-                SHDtype::Float => Self::load_ply_type::<_, 4, f32>(device, path, sh_dtype),
-                SHDtype::Half => Self::load_ply_type::<_, 4, f16>(device, path, sh_dtype),
-                SHDtype::Byte => Self::load_ply_type::<_, 4, i8>(device, path, sh_dtype),
-            },
-            2 => match sh_dtype {
-                SHDtype::Float => Self::load_ply_type::<_, 9, f32>(device, path, sh_dtype),
-                SHDtype::Half => Self::load_ply_type::<_, 9, f16>(device, path, sh_dtype),
-                SHDtype::Byte => Self::load_ply_type::<_, 9, i8>(device, path, sh_dtype),
-            },
-            3 => match sh_dtype {
-                SHDtype::Float => Self::load_ply_type::<_, 16, f32>(device, path, sh_dtype),
-                SHDtype::Half => Self::load_ply_type::<_, 16, f16>(device, path, sh_dtype),
-                SHDtype::Byte => Self::load_ply_type::<_, 16, i8>(device, path, sh_dtype),
-            },
-            _ => unreachable!("what?"),
-        }
-    }
-
-    fn load_ply_type<P: AsRef<Path>, const C: usize, F: Num>(
-        device: &wgpu::Device,
-        path: P,
-        sh_dtype: SHDtype,
-    ) -> Result<Self, anyhow::Error>
-    where
-        SHCoefs<C, F>: bytemuck::Pod + From<SHCoefs<C, f32>>,
-    {
         let f = std::fs::File::open(path.as_ref())?;
         let mut reader = BufReader::new(f);
 
@@ -190,16 +79,36 @@ impl PointCloud {
             .filter(|k| k.starts_with("f_"))
             .count();
 
-        let file_sh_deg = ((num_sh_coefs / 3) as f32).sqrt() as u32 - 1;
+        let file_sh_deg = sh_deg_from_num_coeffs(num_sh_coefs as u32 / 3).expect(&format!(
+            "number of sh coefficients {num_sh_coefs} cannot be mapped to sh degree"
+        ));
 
         let num_points = header.elements.get("vertex").unwrap().count;
 
-        let sh_deg: u32 = (C as f32).sqrt() as u32 - 1;
+        let max_buffer_size = device
+            .limits()
+            .max_buffer_size
+            .max(device.limits().max_storage_buffer_binding_size as u64);
 
-        let (vertices, sh_coef_buffer) =
-            read_ply::<C, F, _>(device, header.encoding, num_points, &mut reader);
+        let sh_deg =
+            max_supported_sh_deg(max_buffer_size, num_points as u64, sh_dtype, file_sh_deg).ok_or(
+                anyhow::anyhow!(
+                    "cannot fit sh coefs into a buffer (exceeds WebGPU's max_buffer_size)"
+                ),
+            )?;
+        log::info!("num_points: {num_points}, sh_deg: {sh_deg}, sh_dtype: {sh_dtype}");
+        if sh_deg < file_sh_deg {
+            warn!("color sh degree ({file_sh_deg}) was decreased to degree {sh_deg} to fit the coefficients into memory")
+        }
 
-        log::info!("sh_deg: {sh_deg}");
+        let (vertices, sh_coef_buffer) = read_ply::<_>(
+            device,
+            header.encoding,
+            num_points,
+            &mut reader,
+            sh_deg,
+            sh_dtype,
+        );
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("3d gaussians buffer"),
@@ -337,14 +246,7 @@ fn build_cov(rot: Quaternion<f32>, scale: Vector3<f32>) -> [f16; 6] {
 
     let m = l * l.transpose();
 
-    return [
-        f16::from_f32(m[0][0]),
-        f16::from_f32(m[0][1]),
-        f16::from_f32(m[0][2]),
-        f16::from_f32(m[1][1]),
-        f16::from_f32(m[1][2]),
-        f16::from_f32(m[2][2]),
-    ];
+    return [m[0][0], m[0][1], m[0][2], m[1][1], m[1][2], m[2][2]].map(|v| f16::from_f32(v));
 }
 
 /// numerical stable sigmoid function
@@ -356,59 +258,60 @@ fn sigmoid(x: f32) -> f32 {
     }
 }
 
-fn read_ply<const C: usize, F: Num, R: Read + Seek>(
+fn read_ply<R: Read + Seek>(
     device: &wgpu::Device,
     encoding: ply_rs::ply::Encoding,
     num_points: usize,
     reader: &mut BufReader<R>,
-) -> (Vec<GaussianSplat>, wgpu::Buffer)
-where
-    SHCoefs<C, F>: bytemuck::Pod + From<SHCoefs<C, f32>>,
-{
-    match encoding {
+    sh_deg: u32,
+    sh_dtype: SHDtype,
+) -> (Vec<GaussianSplat>, wgpu::Buffer) {
+    let start = Instant::now();
+    let mut sh_coef_buffer = Vec::new();
+    let vertices: Vec<GaussianSplat> = match encoding {
         ply_rs::ply::Encoding::Ascii => todo!("acsii ply format not supported"),
-        ply_rs::ply::Encoding::BinaryBigEndian => {
-            let start_read = Instant::now();
-            let (vertices, sh_coefs): (Vec<GaussianSplat>, Vec<SHCoefs<C, F>>) = (0..num_points)
-                .map(|i| read_line::<C, F, BigEndian, _>(reader, i as u32))
-                .unzip();
-            debug!(
-                "reading ply took {}ms",
-                (Instant::now() - start_read).as_millis()
-            );
-            let sh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("sh coefs buffer"),
-                contents: bytemuck::cast_slice(sh_coefs.as_slice()),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            });
-            return (vertices, sh_buffer);
-        }
-        ply_rs::ply::Encoding::BinaryLittleEndian => {
-            let start_read = Instant::now();
-            let (vertices, sh_coefs): (Vec<GaussianSplat>, Vec<SHCoefs<C, F>>) = (0..num_points)
-                .map(|i| read_line::<C, F, LittleEndian, _>(reader, i as u32))
-                .unzip();
-            debug!(
-                "reading ply took {}ms",
-                (Instant::now() - start_read).as_millis()
-            );
-            let sh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("sh coefs buffer"),
-                contents: bytemuck::cast_slice(sh_coefs.as_slice()),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            });
-            return (vertices, sh_buffer);
-        }
-    }
+        ply_rs::ply::Encoding::BinaryBigEndian => (0..num_points)
+            .map(|i| {
+                read_line::<BigEndian, _, _>(
+                    reader,
+                    i as u32,
+                    sh_deg,
+                    sh_dtype,
+                    &mut sh_coef_buffer,
+                )
+            })
+            .collect(),
+        ply_rs::ply::Encoding::BinaryLittleEndian => (0..num_points)
+            .map(|i| {
+                read_line::<LittleEndian, _, _>(
+                    reader,
+                    i as u32,
+                    sh_deg,
+                    sh_dtype,
+                    &mut sh_coef_buffer,
+                )
+            })
+            .collect(),
+    };
+    info!(
+        "reading ply file took {:}ms",
+        (Instant::now() - start).as_millis()
+    );
+    let sh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("sh coefs buffer"),
+        contents: bytemuck::cast_slice(sh_coef_buffer.as_slice()),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+    });
+    return (vertices, sh_buffer);
 }
 
-fn read_line<const C: usize, F: Num, B: ByteOrder, R: io::Read + io::Seek>(
+fn read_line<B: ByteOrder, R: io::Read + io::Seek, W: io::Write>(
     reader: &mut BufReader<R>,
     idx: u32,
-) -> (GaussianSplat, SHCoefs<C, F>)
-where
-    SHCoefs<C, F>: From<SHCoefs<C, f32>>,
-{
+    sh_deg: u32,
+    sh_dtype: SHDtype,
+    sh_coefs_buffer: &mut W,
+) -> GaussianSplat {
     let mut pos = [0.; 3];
     reader.read_f32_into::<B>(&mut pos).unwrap();
 
@@ -418,17 +321,28 @@ where
         .unwrap();
 
     let mut sh_coefs_raw = [0.; 16 * 3];
-
     reader.read_f32_into::<B>(&mut sh_coefs_raw).unwrap();
-    let mut sh_coefs = [Vector3::zero(); C];
-    sh_coefs[0].x = sh_coefs_raw[0];
-    sh_coefs[0].y = sh_coefs_raw[1];
-    sh_coefs[0].z = sh_coefs_raw[2];
+
+    sh_dtype
+        .write_to(sh_coefs_buffer, sh_coefs_raw[0], 0)
+        .unwrap();
+    sh_dtype
+        .write_to(sh_coefs_buffer, sh_coefs_raw[1], 0)
+        .unwrap();
+    sh_dtype
+        .write_to(sh_coefs_buffer, sh_coefs_raw[2], 0)
+        .unwrap();
 
     // higher order coeffcients are stored with channel first (shape:[N,3,C])
-    for j in 0..3 {
-        for i in 1..C {
-            sh_coefs[i][j] = sh_coefs_raw[2 + j * 15 + i];
+    for i in 1..num_coefficients(sh_deg) {
+        for j in 0..3 {
+            sh_dtype
+                .write_to(
+                    sh_coefs_buffer,
+                    sh_coefs_raw[(2 + j * 15 + i) as usize],
+                    i as u32,
+                )
+                .unwrap();
         }
     }
 
@@ -445,16 +359,13 @@ where
     let rot_3 = reader.read_f32::<B>().unwrap();
     let rot_q = Quaternion::new(rot_0, rot_1, rot_2, rot_3).normalize();
 
-    return (
-        GaussianSplat {
-            xyz: Point3::from(pos),
-            opacity,
-            covariance: build_cov(rot_q, scale),
-            sh_idx: idx,
-            ..Default::default()
-        },
-        SHCoefs(sh_coefs).into(),
-    );
+    return GaussianSplat {
+        xyz: Point3::from(pos),
+        opacity,
+        covariance: build_cov(rot_q, scale),
+        sh_idx: idx,
+        ..Default::default()
+    };
 }
 
 impl Splat2D {
@@ -488,7 +399,6 @@ impl Splat2D {
     }
 }
 
-#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub enum SHDtype {
     Float = 0,
@@ -496,12 +406,59 @@ pub enum SHDtype {
     Byte = 2,
 }
 
-impl SHDtype {
-    fn coef_size(&self) -> usize {
+impl Display for SHDtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SHDtype::Float => mem::size_of::<SHCoefs<2, f32>>() / 2,
-            SHDtype::Half => mem::size_of::<SHCoefs<2, f16>>() / 2,
-            SHDtype::Byte => mem::size_of::<SHCoefs<2, u8>>() / 2,
+            SHDtype::Float => f.write_str("f32"),
+            SHDtype::Half => f.write_str("f16"),
+            SHDtype::Byte => f.write_str("i8"),
         }
     }
+}
+
+impl SHDtype {
+    pub fn write_to<W: io::Write>(&self, writer: &mut W, v: f32, idx: u32) -> io::Result<()> {
+        let scale = if idx == 0 { 4. } else { 0.5 };
+        match self {
+            SHDtype::Float => writer.write_f32::<LittleEndian>(v),
+            SHDtype::Half => writer.write_u16::<LittleEndian>(f16::from_f32(v).to_bits()),
+            SHDtype::Byte => writer.write_i8((v * 127. / scale) as i8),
+        }
+    }
+
+    pub fn packed_size(&self) -> usize {
+        match self {
+            SHDtype::Float => mem::size_of::<f32>(),
+            SHDtype::Half => mem::size_of::<f16>(),
+            SHDtype::Byte => mem::size_of::<i8>(),
+        }
+    }
+}
+
+fn num_coefficients(sh_deg: u32) -> u32 {
+    (sh_deg + 1) * (sh_deg + 1)
+}
+
+fn sh_deg_from_num_coeffs(n: u32) -> Option<u32> {
+    let sqrt = (n as f32).sqrt();
+    if sqrt.fract() != 0. {
+        return None;
+    }
+    return Some((sqrt as u32) - 1);
+}
+
+fn max_supported_sh_deg(
+    max_buffer_size: u64,
+    num_points: u64,
+    sh_dtype: SHDtype,
+    max_deg: u32,
+) -> Option<u32> {
+    for i in (0..=max_deg).rev() {
+        let n_coefs = num_coefficients(i) * 3;
+        let buf_size = num_points as u64 * sh_dtype.packed_size() as u64 * n_coefs as u64;
+        if buf_size < max_buffer_size {
+            return Some(i);
+        }
+    }
+    return None;
 }

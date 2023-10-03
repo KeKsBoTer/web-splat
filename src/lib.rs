@@ -77,8 +77,8 @@ impl WindowContext {
                 &wgpu::DeviceDescriptor {
                     features: wgpu::Features::empty(),
                     limits: wgpu::Limits {
-                        max_storage_buffer_binding_size:1<<31,
-                        max_buffer_size:1<<31,
+                        max_storage_buffer_binding_size:1<<30,
+                        max_buffer_size:1<<30,
                         ..Default::default()
                     },
                     label: None,

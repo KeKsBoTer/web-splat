@@ -205,8 +205,6 @@ impl CameraUniform {
 
 struct PreprocessPointCloud {
     pipeline: wgpu::ComputePipeline,
-    sh_deg: u32,
-    sh_dtype: SHDtype,
 }
 
 impl PreprocessPointCloud {
@@ -231,11 +229,7 @@ impl PreprocessPointCloud {
             module: &shader,
             entry_point: "preprocess",
         });
-        Self {
-            pipeline,
-            sh_deg,
-            sh_dtype,
-        }
+        Self { pipeline }
     }
 
     fn build_shader(sh_deg: u32, sh_dtype: SHDtype) -> String {

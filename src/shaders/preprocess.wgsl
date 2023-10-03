@@ -85,14 +85,15 @@ var<storage,write> points_2d : array<Splats2D>;
 var<storage,write> indirect_draw_call : DrawIndirect;
 
 
-/// reads the ith sh coef from the vertex
-/// the coefs are packed as 2xf16 in one u32 
-fn sh_coef(v_idx:u32,c_idx:u32)->vec3<f32>{
+/// reads the ith sh coef from the vertex buffer
+fn sh_coef(splat_idx:u32,c_idx:u32)->vec3<f32>{
     let n = (MAX_SH_DEG+1u)*(MAX_SH_DEG+1u);
-    if SH_DTYPE == SH_DTYPE_BYTE{
-        let idx = 3u*(v_idx*n+c_idx)/4u;
-        var v1 = unpack4x8snorm(sh_coefs[idx]);
-        var v2 = unpack4x8snorm(sh_coefs[idx+1u]);
+    let coef_idx = 3u*(splat_idx*n+c_idx);
+    if SH_DTYPE == SH_DTYPE_BYTE {
+        // coefs are packed as  bytes (4x per u32)
+        let buff_idx = coef_idx/4u;
+        var v1 = unpack4x8snorm(sh_coefs[buff_idx]);
+        var v2 = unpack4x8snorm(sh_coefs[buff_idx+1u]);
         if c_idx == 0u{
             v1 *= 4.;
             v2 *= 4.;
@@ -100,7 +101,7 @@ fn sh_coef(v_idx:u32,c_idx:u32)->vec3<f32>{
             v1 *= 0.5;
             v2 *= 0.5;
         }
-        let r = (c_idx*3u)%4u;
+        let r = coef_idx%4u;
         if r == 0u{
             return vec3<f32>(v1.xyz);
         }else if r==1u{
@@ -111,17 +112,18 @@ fn sh_coef(v_idx:u32,c_idx:u32)->vec3<f32>{
             return vec3<f32>(v1.w,v2.xy);
         }
     }else if SH_DTYPE == SH_DTYPE_HALF{
-        let idx = 3u*(v_idx*n+c_idx)/2u;
-        let v = vec4<f32>(unpack2x16float(sh_coefs[idx]),unpack2x16float(sh_coefs[idx+1u]));
-        let r = (c_idx*3u)%2u;
+        // coefs are packed as half (2x per u32)
+        let buff_idx = coef_idx/2u;
+        let v = vec4<f32>(unpack2x16float(sh_coefs[buff_idx]),unpack2x16float(sh_coefs[buff_idx+1u]));
+        let r = coef_idx%2u;
         if r == 0u{
             return v.rgb;
         }else if r==1u{
             return v.gba;
         }
     }else if SH_DTYPE == SH_DTYPE_FLOAT{
-        let idx = 3u*(v_idx*n+c_idx)/1u;
-        return bitcast<vec3<f32>>(vec3<u32>(sh_coefs[idx],sh_coefs[idx+1u],sh_coefs[idx+2u]));
+        // coefs are packed as float (1x per u32)
+        return bitcast<vec3<f32>>(vec3<u32>(sh_coefs[coef_idx],sh_coefs[coef_idx+1u],sh_coefs[coef_idx+2u]));
     }
     
     // unreachable
