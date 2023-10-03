@@ -14,15 +14,18 @@
 struct GeneralInfo{
     histogram_size: u32,
     keys_size: u32,
+    padded_size: u32,
     passes: u32,
 };
 
 @group(0) @binding(0)
-var<storage, read> keys : array<f32>;
+var<uniform> infos: GeneralInfo;
 @group(0) @binding(1)
 var<storage, write> histograms : array<atomic<u32>>;
 @group(0) @binding(2)
-var<uniform> infos: GeneralInfo;
+var<storage, read_write> keys : array<f32>;
+@group(0) @binding(3)
+var<storage, read_write> keys_b : array<f32>;
 
 @compute @workgroup_size({histogram_wg_size})
 fn zero_histograms(@builtin(global_invocation_id) gid : vec3<u32>) {
@@ -32,7 +35,11 @@ fn zero_histograms(@builtin(global_invocation_id) gid : vec3<u32>) {
     let scatter_blocks_ru = (infos.keys_size + scatter_block_kvs - 1u) / scatter_block_kvs;
     
     let histo_size = rs_radix_size;
-    let n = (rs_keyval_size + scatter_blocks_ru - 1u) * histo_size;
+    var n = (rs_keyval_size + scatter_blocks_ru - 1u) * histo_size;
+    let b = n;
+    if infos.keys_size < infos.padded_size {
+        n += infos.padded_size - infos.keys_size;
+    }
     
     if gid.x >= n {
         return;
@@ -41,14 +48,16 @@ fn zero_histograms(@builtin(global_invocation_id) gid : vec3<u32>) {
     if gid.x < rs_keyval_size * histo_size {
         histograms[gid.x] = 0u;
     }
-    else {
+    else if gid.x < b {
         histograms[gid.x] = 0xFFFFFFFFu;
+    }
+    else {
+        keys[infos.keys_size + gid.x - b] = bitcast<f32>(0xFFFFFFFFu);
     }
 }
 
 var<workgroup> smem : array<atomic<u32>, rs_radix_size>;
 var<private> kv : array<f32, rs_histogram_block_rows>;
-var<private> max_v : u32;
 fn zero_smem(lid: u32) {
     if lid < rs_radix_size {
         smem[lid] = 0u;
@@ -58,7 +67,7 @@ fn histogram_pass(pass_: u32, lid: u32) {
     zero_smem(lid);
     workgroupBarrier();
     
-    for (var j = 0u; j < rs_histogram_block_rows && j < max_v; j++) {
+    for (var j = 0u; j < rs_histogram_block_rows; j++) {
         let u_val = bitcast<u32>(kv[j]);
         let digit = extractBits(u_val, pass_ * rs_radix_log2, rs_radix_log2);
         atomicAdd(&smem[digit], 1u);
@@ -77,13 +86,8 @@ fn calculate_histogram(@builtin(workgroup_id) gid : vec3<u32>, @builtin(local_in
     // efficient loading of multiple values
     let rs_block_keyvals : u32 = rs_histogram_block_rows * histogram_wg_size;
     let kv_in_offset = gid.x * rs_block_keyvals + lid.x;
-    max_v = rs_histogram_block_rows;
     for (var i = 0u; i < rs_histogram_block_rows; i++) {
         let pos = kv_in_offset + i * histogram_wg_size;
-        if pos >= 10000u /*infos.keys_size*/ {
-            max_v = i;
-            break;
-        }
         kv[i] = keys[pos];
     }
     

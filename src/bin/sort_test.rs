@@ -1,15 +1,15 @@
 // dont want to check out how to exactly setup tests...
 
-use web_splats::gpu_rs;
+use web_splats::gpu_rs::{self, GPURSSorter};
 use wgpu::util::DeviceExt;
 
-use crate::rs_ref::{calculate_histogram, compare_slice_beginning};
+use crate::rs_ref::{calculate_histogram, compare_slice_beginning, prefix_sum_histogram};
 mod rs_ref;
 
 async fn download_buffer<T: Clone>(buffer: &wgpu::Buffer, device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<T>{
     // copy buffer data
     let download_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Download bffer"),
+        label: Some("Download buffer"),
         size: buffer.size(),
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
@@ -38,12 +38,22 @@ async fn download_buffer<T: Clone>(buffer: &wgpu::Buffer, device: &wgpu::Device,
     return r;
 }
 
-fn print_first_n<T : std::fmt::Debug + Clone>(v: &Vec<T>, n: usize) {
-    println!("{:?}", v[0..n].to_vec());
+fn upload_to_buffer<T: bytemuck::Pod>(buffer: &wgpu::Buffer, device : &wgpu::Device, queue: &wgpu::Queue, values: &[T]){
+    let staging_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Staging buffer"),
+        contents: bytemuck::cast_slice(values),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {label: Some("Copye endoder")});
+    encoder.copy_buffer_to_buffer(&staging_buffer, 0, buffer, 0, staging_buffer.size());
+    queue.submit([encoder.finish()]);
+    
+    device.poll(wgpu::Maintain::Wait);
+    staging_buffer.destroy();
 }
 
-unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
-    ::core::slice::from_raw_parts((p as *const T) as *const u8, ::core::mem::size_of::<T>(),)
+fn print_first_n<T : std::fmt::Debug + Clone>(v: &Vec<T>, n: usize) {
+    println!("{:?}", v[0..n].to_vec());
 }
 
 fn main() {
@@ -79,52 +89,33 @@ fn main() {
         .unwrap();
 
     // testing the histogram counting
-    let test_data: Vec<f32> = (0..10000).rev().map(|n| n as f32).collect();
+    let n = 100;
+    let test_data: Vec<f32> = (0..n).rev().map(|n| n as f32).collect();
     print_first_n(&test_data, 100);
-    let uniform_infos= gpu_rs::GeneralInfo{histogram_size: 0, keys_size: test_data.len() as u32, passes: 4};
     
-    let gpu_data = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("data buffer"),
-        contents: bytemuck::cast_slice(test_data.as_slice()),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-    });
+    // creating the gpu buffers
     let histograms = gpu_rs::GPURSSorter::create_internal_mem_buffer(&device, test_data.len());
-    let gpu_uniform_infos = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("uniform infos"),
-        contents: unsafe{any_as_u8_slice(&uniform_infos)},
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_SRC,
-    });
-    
+    let (keyval_a, keyval_b) = GPURSSorter::create_keyval_buffers(&device, test_data.len());
     let mut compute_pipeline = gpu_rs::GPURSSorter::new(&device);
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: Some("auf gehts")});
-    let mut bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("main bind group"),
-        layout: &compute_pipeline.bind_group_layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: gpu_data.as_entire_binding(),
-        },
-        wgpu::BindGroupEntry {
-            binding: 1,
-            resource: histograms.as_entire_binding(),
-        },
-        wgpu::BindGroupEntry {
-            binding: 2,
-            resource: gpu_uniform_infos.as_entire_binding(),
-        },
-        ],
-    });
-
-    compute_pipeline.record_calculate_histogram(&bind_group, &histograms, test_data.len(), &mut encoder);
+    let (uniform_infos, bind_group) = compute_pipeline.create_bind_group(&device, test_data.len(), &histograms, &keyval_a, &keyval_b);
     
+    upload_to_buffer(&keyval_a, &device, &queue, test_data.as_slice());
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: Some("auf gehts")});
+    compute_pipeline.record_calculate_histogram(&bind_group, test_data.len(), &mut encoder);
     queue.submit([encoder.finish()]);
     device.poll(wgpu::Maintain::Wait);
     let res = pollster::block_on(download_buffer::<u32>(&histograms, &device, &queue));
     
     println!("Histogramm data: {:?}", res);
     
-    let ref_hist = calculate_histogram(test_data.as_slice());
+    println!("size of keyvals: {}", keyval_a.size() / 4);
+    let ref_hist = calculate_histogram(test_data.as_slice(), keyval_a.size() as usize);
+    println!("Ref Histogram: {:?}", ref_hist);
     compare_slice_beginning(res.as_slice(), ref_hist.as_slice());
+    
+    let prefix_histogram = prefix_sum_histogram(ref_hist.as_slice());
+    println!("{:?}", prefix_histogram);
     
     println!("Kinda works...");
 }
