@@ -33,6 +33,7 @@ pub struct GPURSSorter {
 pub struct GeneralInfo{
     pub histogram_size: u32,
     pub keys_size: u32,
+    pub passes: u32,
 }
 
 impl GPURSSorter{
@@ -153,7 +154,7 @@ impl GPURSSorter{
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Internal radix sort buffer"),
             size: internal_size as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false
         });
         return buffer;

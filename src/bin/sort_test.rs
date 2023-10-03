@@ -3,8 +3,23 @@
 use web_splats::gpu_rs;
 use wgpu::util::DeviceExt;
 
-async fn download_buffer<T: Clone>(buffer: &wgpu::Buffer, device: &wgpu::Device) -> Vec<T>{
-    let buffer_slice = buffer.slice(..);
+use crate::rs_ref::{calculate_histogram, compare_slice_beginning};
+mod rs_ref;
+
+async fn download_buffer<T: Clone>(buffer: &wgpu::Buffer, device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<T>{
+    // copy buffer data
+    let download_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Download bffer"),
+        size: buffer.size(),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut encoder= device.create_command_encoder(&wgpu::CommandEncoderDescriptor {label: Some("Copy encoder")});
+    encoder.copy_buffer_to_buffer(buffer, 0, &download_buffer, 0, buffer.size());
+    queue.submit([encoder.finish()]);
+    
+    // download buffer
+    let buffer_slice = download_buffer.slice(..);
     let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
     buffer_slice.map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
     device.poll(wgpu::Maintain::Wait);
@@ -17,6 +32,8 @@ async fn download_buffer<T: Clone>(buffer: &wgpu::Buffer, device: &wgpu::Device)
         let (prefix, d, suffix) = data.align_to::<T>();
         r = d.to_vec();
     }
+    
+    download_buffer.destroy();
     
     return r;
 }
@@ -64,7 +81,7 @@ fn main() {
     // testing the histogram counting
     let test_data: Vec<f32> = (0..10000).rev().map(|n| n as f32).collect();
     print_first_n(&test_data, 100);
-    let uniform_infos= gpu_rs::GeneralInfo{histogram_size: 0, keys_size: test_data.len() as u32};
+    let uniform_infos= gpu_rs::GeneralInfo{histogram_size: 0, keys_size: test_data.len() as u32, passes: 4};
     
     let gpu_data = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("data buffer"),
@@ -75,7 +92,7 @@ fn main() {
     let gpu_uniform_infos = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("uniform infos"),
         contents: unsafe{any_as_u8_slice(&uniform_infos)},
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_SRC,
     });
     
     let mut compute_pipeline = gpu_rs::GPURSSorter::new(&device);
@@ -101,6 +118,13 @@ fn main() {
     compute_pipeline.record_calculate_histogram(&bind_group, &histograms, test_data.len(), &mut encoder);
     
     queue.submit([encoder.finish()]);
+    device.poll(wgpu::Maintain::Wait);
+    let res = pollster::block_on(download_buffer::<u32>(&histograms, &device, &queue));
+    
+    println!("Histogramm data: {:?}", res);
+    
+    let ref_hist = calculate_histogram(test_data.as_slice());
+    compare_slice_beginning(res.as_slice(), ref_hist.as_slice());
     
     println!("Kinda works...");
 }

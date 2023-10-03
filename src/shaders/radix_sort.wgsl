@@ -10,7 +10,6 @@
 // const rs_keyval_size
 // const rs_histogram_block_rows
 // const rs_scatter_block_rows
-const rs_block_keyvals : u32 = rs_histogram_block_rows * histogram_wg_size;
 
 struct GeneralInfo{
     histogram_size: u32,
@@ -21,7 +20,7 @@ struct GeneralInfo{
 @group(0) @binding(0)
 var<storage, read> keys : array<f32>;
 @group(0) @binding(1)
-var<storage, write> histograms : array<u32>;
+var<storage, write> histograms : array<atomic<u32>>;
 @group(0) @binding(2)
 var<uniform> infos: GeneralInfo;
 
@@ -47,48 +46,54 @@ fn zero_histograms(@builtin(global_invocation_id) gid : vec3<u32>) {
     }
 }
 
-var<workgroup> smem : array<u32, rs_radix_size>;
+var<workgroup> smem : array<atomic<u32>, rs_radix_size>;
+var<private> kv : array<f32, rs_histogram_block_rows>;
+var<private> max_v : u32;
 fn zero_smem(lid: u32) {
     if lid < rs_radix_size {
         smem[lid] = 0u;
     }
 }
-fn histogram_pass(pass_: u32, lid: u32, kv: &array<f32, rs_histogram_block_rows>) {
+fn histogram_pass(pass_: u32, lid: u32) {
     zero_smem(lid);
     workgroupBarrier();
     
-    for (let j = 0u; j < rs_histogram_block_rows; j++) {
+    for (var j = 0u; j < rs_histogram_block_rows && j < max_v; j++) {
         let u_val = bitcast<u32>(kv[j]);
         let digit = extractBits(u_val, pass_ * rs_radix_log2, rs_radix_log2);
-        atomicAdd(smem[digit], 1u);
+        atomicAdd(&smem[digit], 1u);
     }
     
     workgroupBarrier();
     let histogram_offset = rs_radix_size * pass_ + lid;
-    if lid.x < rs_radix_size && smem[lid] > 0u {
-        atomicAdd(histogram[histogram_offset], smem[lid]);
+    if lid < rs_radix_size && smem[lid] >= 0u {
+        atomicAdd(&histograms[histogram_offset], smem[lid]);
     }
 }
 
 // the workgrpu_size can be gotten on the cpu by by calling pipeline.get_bind_group_layout(0).unwrap().get_local_workgroup_size();
 @compute @workgroup_size({histogram_wg_size})
-fn calculate_histogram(@builtin(global_invocation_id) gid : vec3<u32>, @builtin(local_invocation_id) lid : vec3<u32>) {
-    let test = extractBits(10, 0u, 2u);
-    
+fn calculate_histogram(@builtin(workgroup_id) gid : vec3<u32>, @builtin(local_invocation_id) lid : vec3<u32>) {
     // efficient loading of multiple values
-    var kv = array<float, rs_histogram_block_rows>();
-    let kv_in_offset = gid.x * rs_block + lid.x * rs_keyval_size;
-    for (let i = 0u; i < rs_histogram_block_rows; i++) {
-        kv[i] = keys[kv_in_offset + i * rs_histogram_block_rows];
+    let rs_block_keyvals : u32 = rs_histogram_block_rows * histogram_wg_size;
+    let kv_in_offset = gid.x * rs_block_keyvals + lid.x;
+    max_v = rs_histogram_block_rows;
+    for (var i = 0u; i < rs_histogram_block_rows; i++) {
+        let pos = kv_in_offset + i * histogram_wg_size;
+        if pos >= 10000u /*infos.keys_size*/ {
+            max_v = i;
+            break;
+        }
+        kv[i] = keys[pos];
     }
     
     // Accumulate and store histograms for passes
-    histogram_pass(3, lid.x, kv);
-    histogram_pass(2, lid.x, kv);
-    if infos.passes > 2 {
-        histogram_pass(1, lid.x, kv);
+    histogram_pass(3u, lid.x);
+    histogram_pass(2u, lid.x);
+    if infos.passes > 2u {
+        histogram_pass(1u, lid.x);
     }
-    if infos.passes > 3 {
-        histogram_pass(0, lid.x, kv);
+    if infos.passes > 3u {
+        histogram_pass(0u, lid.x);
     }
 }
