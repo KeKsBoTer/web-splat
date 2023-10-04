@@ -1,4 +1,5 @@
 // shader implementing gpu radix sort. More information in the beginning of gpu_rs.rs
+// info: 
 
 // also the workgroup sizes are added in these prepasses
 // before the pipeline is started the following constant definitionis are prepended to this shadercode
@@ -93,15 +94,18 @@ fn histogram_pass(pass_: u32, lid: u32) {
 }
 
 // the workgrpu_size can be gotten on the cpu by by calling pipeline.get_bind_group_layout(0).unwrap().get_local_workgroup_size();
-@compute @workgroup_size({histogram_wg_size})
-fn calculate_histogram(@builtin(workgroup_id) gid : vec3<u32>, @builtin(local_invocation_id) lid : vec3<u32>) {
-    // efficient loading of multiple values
+fn fill_kv(wid: u32, lid: u32) {
     let rs_block_keyvals : u32 = rs_histogram_block_rows * histogram_wg_size;
-    let kv_in_offset = gid.x * rs_block_keyvals + lid.x;
+    let kv_in_offset = wid * rs_block_keyvals + lid;
     for (var i = 0u; i < rs_histogram_block_rows; i++) {
         let pos = kv_in_offset + i * histogram_wg_size;
         kv[i] = keys[pos];
     }
+}
+@compute @workgroup_size({histogram_wg_size})
+fn calculate_histogram(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_id) lid : vec3<u32>) {
+    // efficient loading of multiple values
+    fill_kv(wid.x, lid.x);
     
     // Accumulate and store histograms for passes
     histogram_pass(3u, lid.x);
@@ -118,6 +122,9 @@ fn calculate_histogram(@builtin(workgroup_id) gid : vec3<u32>, @builtin(local_in
 // Prefix sum over histogram
 // --------------------------------------------------------------------------------------------------------------
 fn prefix_reduce_smem(lid: u32) {
+    if lid >= rs_radix_size / 2u {
+        return;
+    }
     var offset = 1u;
     for (var d = rs_radix_size >> 1u; d > 0u; d = d >> 1u) { // sum in place tree
         workgroupBarrier();
@@ -185,12 +192,13 @@ fn rs_prefix_store(lid: u32, idx: u32, val: u32) { scatter_smem[rs_radix_size + 
 fn is_first_local_invocation(lid: u32) -> bool { return lid == 0u;}
 
 @compute @workgroup_size({scatter_wg_size})
-fn scatter_even() {
+fn scatter_even(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
     infos.odd_pass = (infos.odd_pass + 1u) % 2u; // for this to work correctly the odd_pass has to start 1
-
+    fill_kv(wid.x, lid.x);
 }
 @compute @workgroup_size({scatter_wg_size})
-fn scatter_odd() { 
+fn scatter_odd(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) { 
     infos.even_pass = (infos.even_pass + 1u) % 2u; // for this to work correctly the even_pass has to start at 0
+    fill_kv(wid.x, lid.x);
 
 }
