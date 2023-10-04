@@ -89,9 +89,9 @@ fn main() {
         .unwrap();
 
     // testing the histogram counting
-    let n = 100;
+    let n = 10000;
     let test_data: Vec<f32> = (0..n).rev().map(|n| n as f32).collect();
-    print_first_n(&test_data, 100);
+    // print_first_n(&test_data, 100);
     
     // creating the gpu buffers
     let histograms = gpu_rs::GPURSSorter::create_internal_mem_buffer(&device, test_data.len());
@@ -102,20 +102,34 @@ fn main() {
     upload_to_buffer(&keyval_a, &device, &queue, test_data.as_slice());
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: Some("auf gehts")});
+    
+    // test histogram calculation ----------------------------------------------------------------------------------------------------------
     compute_pipeline.record_calculate_histogram(&bind_group, test_data.len(), &mut encoder);
     queue.submit([encoder.finish()]);
     device.poll(wgpu::Maintain::Wait);
-    let res = pollster::block_on(download_buffer::<u32>(&histograms, &device, &queue));
+    let gpu_hist = pollster::block_on(download_buffer::<u32>(&histograms, &device, &queue));
     
-    println!("Histogramm data: {:?}", res);
+    // println!("Histogramm data: {:?}", gpu_hist);
     
-    println!("size of keyvals: {}", keyval_a.size() / 4);
+    // println!("size of keyvals: {}", keyval_a.size() / 4);
     let ref_hist = calculate_histogram(test_data.as_slice(), keyval_a.size() as usize);
-    println!("Ref Histogram: {:?}", ref_hist);
-    compare_slice_beginning(res.as_slice(), ref_hist.as_slice());
+    // println!("Ref Histogram: {:?}", ref_hist);
+    println!("Checking histograms...");
+    compare_slice_beginning(gpu_hist.as_slice(), ref_hist.as_slice());
+    
+    // test prefix calculation ----------------------------------------------------------------------------------------------------------
+    encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {label: Some("auf ein neues")});
+    compute_pipeline.record_prefix_histogram(&bind_group, 4, &mut encoder);
+    queue.submit([encoder.finish()]);
+    device.poll(wgpu::Maintain::Wait);
+    let gpu_prefix = pollster::block_on(download_buffer::<u32>(&histograms, &device, &queue));
+    // println!("Prefixed histogram data: \n{:?}", gpu_prefix);
     
     let prefix_histogram = prefix_sum_histogram(ref_hist.as_slice());
-    println!("{:?}", prefix_histogram);
+    // println!("Reference histogram: \n{:?}", prefix_histogram);
+    println!("Checking prefixed histograms...");
+    compare_slice_beginning(gpu_prefix.as_slice(), prefix_histogram.as_slice());
     
+    // tests done ----------------------------------------------------------------------------------------------------------
     println!("Kinda works...");
 }

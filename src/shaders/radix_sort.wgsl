@@ -16,19 +16,28 @@ struct GeneralInfo{
     keys_size: u32,
     padded_size: u32,
     passes: u32,
+    even_pass: u32,
+    odd_pass: u32,
 };
 
 @group(0) @binding(0)
-var<uniform> infos: GeneralInfo;
+var<storage, read_write> infos: GeneralInfo;
 @group(0) @binding(1)
-var<storage, write> histograms : array<atomic<u32>>;
+var<storage, read_write> histograms : array<atomic<u32>>;
 @group(0) @binding(2)
 var<storage, read_write> keys : array<f32>;
 @group(0) @binding(3)
 var<storage, read_write> keys_b : array<f32>;
 
+// --------------------------------------------------------------------------------------------------------------
+// Filling histograms and keys with default values (also resets the pass infos for odd and even scattering)
+// --------------------------------------------------------------------------------------------------------------
 @compute @workgroup_size({histogram_wg_size})
 fn zero_histograms(@builtin(global_invocation_id) gid : vec3<u32>) {
+    if gid.x == 0u {
+        infos.even_pass = 0u;
+        infos.odd_pass = 1u;    // has to be one, as on the first call to even pass + 1 % 2 is calculated
+    }
     // here the histograms are set to zero and the partitions are set to 0xfffffffff to avoid sorting problems
     let scatter_wg_size = histogram_wg_size;
     let scatter_block_kvs = scatter_wg_size * rs_scatter_block_rows;
@@ -56,6 +65,9 @@ fn zero_histograms(@builtin(global_invocation_id) gid : vec3<u32>) {
     }
 }
 
+// --------------------------------------------------------------------------------------------------------------
+// Calculating the histograms
+// --------------------------------------------------------------------------------------------------------------
 var<workgroup> smem : array<atomic<u32>, rs_radix_size>;
 var<private> kv : array<f32, rs_histogram_block_rows>;
 fn zero_smem(lid: u32) {
@@ -100,4 +112,66 @@ fn calculate_histogram(@builtin(workgroup_id) gid : vec3<u32>, @builtin(local_in
     if infos.passes > 3u {
         histogram_pass(0u, lid.x);
     }
+}
+
+// --------------------------------------------------------------------------------------------------------------
+// Prefix sum over histogram
+// --------------------------------------------------------------------------------------------------------------
+@compute @workgroup_size({prefix_wg_size})
+fn prefix_histogram(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid : vec3<u32>) {
+    // the work group  id is the pass, and is inverted in the next line, such that pass 3 is at the first position in the histogram buffer
+    let histogram_base = (rs_keyval_size - 1u - wid.x) * rs_radix_size;
+    let histogram_offset = histogram_base + lid.x;
+    
+    // the following coode now corresponds to the prefix calc code in fuchsia/../shaders/prefix.h
+    // however the implementation is taken from https://www.eecs.umich.edu/courses/eecs570/hw/parprefix.pdf listing 2 (better overview, nw subgroup arithmetic)
+    // this also means that only half the amount of workgroups is spawned (one workgroup calculates for 2 positioons)
+    // the smemory is used from the previous section
+    var offset = 1u;
+    smem[lid.x] = histograms[histogram_offset];
+    smem[lid.x + {prefix_wg_size}u] = histograms[histogram_offset + {prefix_wg_size}u];
+    
+    for (var d = rs_radix_size >> 1u; d > 0u; d = d >> 1u) { // sum in place tree
+        workgroupBarrier();
+        if lid.x < d {
+            let ai = offset * (2u * lid.x + 1u) - 1u;
+            let bi = offset * (2u * lid.x + 2u) - 1u;
+            smem[bi] += smem[ai];
+        }
+        offset = offset << 1u;
+    }
+    
+    if lid.x == 0u { smem[rs_radix_size - 1u] = 0u; } // clear the last element
+        
+    for (var d = 1u; d < rs_radix_size; d = d << 1u) {
+        offset = offset >> 1u;
+        workgroupBarrier();
+        if lid.x < d {
+            let ai = offset * (2u * lid.x + 1u) - 1u;
+            let bi = offset * (2u * lid.x + 2u) - 1u;
+            
+            let t     = smem[ai];
+            smem[ai]  = smem[bi];
+            smem[bi] += t;
+        }
+    }
+    
+    workgroupBarrier();
+    histograms[histogram_offset] = smem[lid.x];
+    histograms[histogram_offset + {prefix_wg_size}u] = smem[lid.x + {prefix_wg_size}u];
+}
+
+// --------------------------------------------------------------------------------------------------------------
+// Scattering the keys
+// --------------------------------------------------------------------------------------------------------------
+fn partitions_offset() -> u32 { return rs_keyval_size * rs_radix_size;}
+@compute @workgroup_size({scatter_wg_size})
+fn scatter_even() {
+    infos.odd_pass = (infos.odd_pass + 1u) % 2u; // for this to work correctly the odd_pass has to start 1
+
+}
+@compute @workgroup_size({scatter_wg_size})
+fn scatter_odd() { 
+    infos.even_pass = (infos.even_pass + 1u) % 2u; // for this to work correctly the even_pass has to start at 0
+
 }

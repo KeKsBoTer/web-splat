@@ -23,18 +23,25 @@ const rs_radix_size: usize = 1 << rs_radix_log2;// 256 entries into the radix ta
 const rs_keyval_size: usize = 32 / rs_radix_log2;
 const rs_histogram_block_rows : usize = 15;
 const rs_scatter_block_rows : usize = 15;
+const prefix_wg_size: usize = 1 << 7;           // one thread operates on 2 prefixes at the same time
+const scatter_wg_size: usize = 1 << 8;
 
 pub struct GPURSSorter {
     pub bind_group_layout: wgpu::BindGroupLayout,
-    zero_p: wgpu::ComputePipeline,
-    histogram_p: wgpu::ComputePipeline,
+    zero_p:         wgpu::ComputePipeline,
+    histogram_p:    wgpu::ComputePipeline,
+    prefix_p:       wgpu::ComputePipeline,
+    scatter_even_p: wgpu::ComputePipeline,
+    scatter_odd_p : wgpu::ComputePipeline,
 }
 
 pub struct GeneralInfo{
     pub histogram_size: u32,
-    pub keys_size: u32,
-    pub padded_size: u32,
-    pub passes: u32,
+    pub keys_size:      u32,
+    pub padded_size:    u32,
+    pub passes:         u32,
+    pub even_pass:      u32,
+    pub odd_pass:       u32,
 }
 
 unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
@@ -50,7 +57,7 @@ impl GPURSSorter{
                             binding: 0,
                             visibility: wgpu::ShaderStages::COMPUTE,
                             ty: wgpu::BindingType::Buffer { 
-                                ty: wgpu::BufferBindingType::Uniform {}, 
+                                ty: wgpu::BufferBindingType::Storage { read_only: false } , 
                                 has_dynamic_offset: false,
                                 min_binding_size: None 
                             },
@@ -103,7 +110,9 @@ impl GPURSSorter{
                                             const rs_keyval_size: u32 = {:}u;\n\
                                             const rs_histogram_block_rows: u32 = {:}u;\n\
                                             const rs_scatter_block_rows: u32 = {:}u;\n{:}", histogram_sg_size, histogram_wg_size, rs_radix_log2, rs_radix_size, rs_keyval_size, rs_histogram_block_rows, rs_scatter_block_rows, raw_shader);
-        let shader_code = shader_w_const.replace("{histogram_wg_size}", histogram_wg_size.to_string().as_str());
+        let shader_code = shader_w_const.replace("{histogram_wg_size}", histogram_wg_size.to_string().as_str())
+            .replace("{prefix_wg_size}", prefix_wg_size.to_string().as_str())
+            .replace("{scatter_wg_size}", scatter_wg_size.to_string().as_str());
         println!("{}", shader_code);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Radix sort shader"),
@@ -121,7 +130,25 @@ impl GPURSSorter{
             module: &shader,
             entry_point: "calculate_histogram",
         });
-        Self { bind_group_layout, zero_p, histogram_p } 
+        let prefix_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("prefix_histogram"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: "prefix_histogram",
+        });
+        let scatter_even_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("scatter_even"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: "scatter_even",
+        });
+        let scatter_odd_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("scatter_odd"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: "scatter_odd",
+        });
+        return Self { bind_group_layout, zero_p, histogram_p, prefix_p, scatter_even_p, scatter_odd_p };
     }
     
     fn get_scatter_histogram_sizes(keysize: usize) -> (usize, usize, usize, usize, usize, usize) {
@@ -189,8 +216,8 @@ impl GPURSSorter{
         let mut internal_size= (rs_keyval_size + scatter_blocks_ru - 1) * histo_size;
         let internal_alignment = internal_sg_size * std::mem::size_of::<u32>();
         
-        println!("Created buffer for {keysize} keys, count_ru_scatter {count_ru_scatter}, count_ru_histo {count_ru_histo}, mr_keyval_size {mr_keyval_size}, histo_size {histo_size}");
-        println!("internal_size {internal_size}");
+        // println!("Created buffer for {keysize} keys, count_ru_scatter {count_ru_scatter}, count_ru_histo {count_ru_histo}, mr_keyval_size {mr_keyval_size}, histo_size {histo_size}");
+        // println!("internal_size {internal_size}");
         
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Internal radix sort buffer"),
@@ -206,11 +233,11 @@ impl GPURSSorter{
         if keyval_a.size() as usize != count_ru_histo * std::mem::size_of::<f32>() || keyval_b.size() as usize != count_ru_histo * std::mem::size_of::<f32>() {
             panic!("Keyval buffers are not padded correctly. Were they created with GPURSSorter::create_keyval_buffers()");
         }
-        let uniform_infos = GeneralInfo{histogram_size: 0, keys_size: keysize as u32, padded_size: count_ru_histo as u32, passes: 4};
+        let uniform_infos = GeneralInfo{histogram_size: 0, keys_size: keysize as u32, padded_size: count_ru_histo as u32, passes: 4, even_pass: 0, odd_pass: 0};
         let uniform_buffer= device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Radix uniform buffer"),
             contents: unsafe{any_as_u8_slice(&uniform_infos)},
-            usage: wgpu::BufferUsages::UNIFORM,
+            usage: wgpu::BufferUsages::STORAGE,
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Radix bind group"),
@@ -236,7 +263,7 @@ impl GPURSSorter{
         return (uniform_buffer, bind_group);
     }
     
-    pub fn record_calculate_histogram(&mut self, bind_group: &wgpu::BindGroup, keysize: usize, encoder: &mut wgpu::CommandEncoder) {
+    pub fn record_calculate_histogram(&self, bind_group: &wgpu::BindGroup, keysize: usize, encoder: &mut wgpu::CommandEncoder) {
         // histogram has to be zeroed out such that counts that might have been done in the past are erased and do not interfere with the new count
         // encoder.clear_buffer(histogram_buffer, 0, None);
         
@@ -256,7 +283,6 @@ impl GPURSSorter{
             let n = (rs_keyval_size + scatter_blocks_ru - 1) * histo_size + if count_ru_histo > keysize {count_ru_histo - keysize} else {0};
             let dispatch = ((n as f32 / histogram_wg_size as f32)).ceil() as u32;
             pass.dispatch_workgroups(dispatch, 1, 1);
-            println!("Having to clear {n} fields in the histogram buffer");
         }
 
         {
@@ -265,6 +291,21 @@ impl GPURSSorter{
             pass.set_pipeline(&self.histogram_p);
             pass.set_bind_group(0, bind_group, &[]);
             pass.dispatch_workgroups(hist_blocks_ru as u32, 1, 1);
+        }
+    }
+    
+    pub fn record_prefix_histogram(&self, bind_group: &wgpu::BindGroup, passes: usize, encoder: &mut wgpu::CommandEncoder) {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {label: Some("prefix histogram")});
+
+        pass.set_pipeline(&self.prefix_p);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.dispatch_workgroups(passes as u32, 1, 1);
+    }
+    
+    pub fn record_scatter_keys(&self, bind_group: &wgpu::BindGroup, passes: usize, encoder: &mut wgpu::CommandEncoder) {
+        assert!(passes == 4);   // currently the amount of passes is hardcoded in the shader
+        for pass_idx in (rs_keyval_size - passes)..rs_keyval_size {
+            
         }
     }
 }
