@@ -190,11 +190,34 @@ fn rs_prefix_sweep_2(idx: u32) -> u32 { return scatter_smem[smem_prefix_offset()
 fn rs_prefix_load(lid: u32, idx: u32) -> u32 { return scatter_smem[rs_radix_size + lid + idx];}
 fn rs_prefix_store(lid: u32, idx: u32, val: u32) { scatter_smem[rs_radix_size + lid + idx] = val;}
 fn is_first_local_invocation(lid: u32) -> bool { return lid == 0u;}
+fn histogram_load(digit: u32) -> u32 { return scatter_smem[rs_radix_size + digit];}
+fn histogram_store(digit: u32, count: u32) { scatter_smem[rs_radix_size + digit] = count; }
 
 @compute @workgroup_size({scatter_wg_size})
 fn scatter_even(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
     infos.odd_pass = (infos.odd_pass + 1u) % 2u; // for this to work correctly the odd_pass has to start 1
-    fill_kv(wid.x, lid.x);
+    let pass_ = infos.even_pass * 2u;
+    fill_kv(wid.x, lid.x);  // TODO: check if this has to be changed to a per subgroup basis
+    zero_smem(lid.x);
+    workgroupBarrier();
+
+    var kr = array<u32, rs_scatter_block_rows>();
+    // The following implements conceptually the same as the
+    // Emulate a "match" operation with broadcasts for small subgroup sizes (line 665 ff in scatter.glsl
+    // The difference however is, that instead of using subrgoupBroadcast each thread stores
+    // its current number in the smem at lid.x, and the looks up their neighbouring values of the subgroup
+    let subgroup_id = lid.x / histogram_sg_size;
+    let subgroup_offset = subgroup_id * histogram_sg_size;
+    let subgroup_tid = lid - subgroup_offset;
+    for (var i = 0u; i < rs_scatter_block_rows; i++) {
+        digit = extractBits(kv[i], pass_ * rs_radix_log2, rs_radix_log2);
+        smem[lid.x] = digit;
+        var count = 0u;
+        var rank = 0u;
+        
+        kr
+
+    }
 }
 @compute @workgroup_size({scatter_wg_size})
 fn scatter_odd(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) { 
