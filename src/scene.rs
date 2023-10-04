@@ -1,6 +1,6 @@
 use std::{fs::File, io::BufReader, path::Path};
 
-use cgmath::{Matrix3, Vector2};
+use cgmath::{Matrix3, MetricSpace, Point3, Vector2};
 use serde::{Deserialize, Serialize};
 
 use crate::camera::{focal2fov, PerspectiveCamera, PerspectiveProjection};
@@ -43,10 +43,25 @@ impl Scene {
     }
 
     pub fn camera(&self, i: usize) -> SceneCamera {
-        self.cameras[i].into()
+        self.cameras[i]
     }
 
     pub fn num_cameras(&self) -> usize {
         self.cameras.len()
+    }
+
+    pub fn cameras(&self) -> &Vec<SceneCamera> {
+        &self.cameras
+    }
+
+    /// index of nearest camera
+    pub fn nearest_camera(&self, pos: Point3<f32>) -> usize {
+        self.cameras
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, c)| (Point3::from(c.position).distance2(pos) * 1e6) as u32)
+            .unwrap()
+            .clone()
+            .0
     }
 }

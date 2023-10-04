@@ -27,6 +27,8 @@ impl PerspectiveCamera {
 }
 
 impl Lerp for PerspectiveCamera {
+    // using SPLIT interpolation to interpolate between two cameras
+    // see Kim et al. "A general construction scheme for unit quaternion curves with simple high order derivatives."
     fn lerp(&self, other: &Self, amount: f32) -> Self {
         PerspectiveCamera {
             position: Point3::from_vec(

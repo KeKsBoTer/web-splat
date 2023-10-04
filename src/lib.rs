@@ -1,12 +1,12 @@
+use animation::{smoothstep, Animation, TrackingShot, Transition};
+use log::{debug, info};
+use rayon::prelude::*;
 use std::{
     path::Path,
     sync::{Arc, RwLock},
     thread,
     time::{Duration, Instant},
 };
-use animation::Animation;
-use log::{debug, info};
-use rayon::prelude::*;
 
 use camera::{PerspectiveCamera, PerspectiveProjection};
 use cgmath::{Deg, EuclideanSpace, One, Point3, Quaternion, Transform, Vector2};
@@ -23,6 +23,7 @@ use winit::{
 
 use crate::camera::Camera;
 
+mod animation;
 mod camera;
 mod controller;
 pub mod pc;
@@ -30,7 +31,6 @@ mod renderer;
 mod scene;
 mod uniform;
 mod utils;
-mod animation;
 
 struct WindowContext {
     device: wgpu::Device,
@@ -45,7 +45,7 @@ struct WindowContext {
     pc: Arc<RwLock<PointCloud>>,
     renderer: GaussianRenderer,
     camera: Arc<RwLock<PerspectiveCamera>>,
-    next_camera: Option<Animation<PerspectiveCamera>>,
+    animation: Option<Box<dyn Animation<Animatable = PerspectiveCamera>>>,
     controller: CameraController,
     scene: Option<Scene>,
     pause_sort: Arc<RwLock<bool>>,
@@ -54,7 +54,7 @@ struct WindowContext {
 
 impl WindowContext {
     // Creating some of the wgpu types requires async code
-    async fn new<P: AsRef<Path>> (window: Window,pc_file:P) -> Self {
+    async fn new<P: AsRef<Path>>(window: Window, pc_file: P) -> Self {
         let size = window.inner_size();
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -77,8 +77,8 @@ impl WindowContext {
                 &wgpu::DeviceDescriptor {
                     features: wgpu::Features::empty(),
                     limits: wgpu::Limits {
-                        max_storage_buffer_binding_size:1<<30,
-                        max_buffer_size:1<<30,
+                        max_storage_buffer_binding_size: 1 << 30,
+                        max_buffer_size: 1 << 30,
                         ..Default::default()
                     },
                     label: None,
@@ -87,7 +87,6 @@ impl WindowContext {
             )
             .await
             .unwrap();
-
 
         let surface_caps = surface.get_capabilities(&adapter);
 
@@ -109,11 +108,10 @@ impl WindowContext {
             view_formats: vec![],
         };
         surface.configure(&device, &config);
-        let pc = PointCloud::load_ply(&device, pc_file,pc::SHDtype::Byte).unwrap();
-        log::info!("loaded point cloud with {:} points",pc.num_points());
+        let pc = PointCloud::load_ply(&device, pc_file, pc::SHDtype::Byte).unwrap();
+        log::info!("loaded point cloud with {:} points", pc.num_points());
 
-
-        let renderer = GaussianRenderer::new(&device, surface_format,pc.sh_deg(),pc.sh_dtype());
+        let renderer = GaussianRenderer::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype());
 
         let aspect = size.width as f32 / size.height as f32;
         let view_camera = PerspectiveCamera::new(
@@ -132,16 +130,15 @@ impl WindowContext {
             surface,
             config,
             renderer,
-            pc:Arc::new(RwLock::new(pc)),
+            pc: Arc::new(RwLock::new(pc)),
             camera: Arc::new(RwLock::new(view_camera)),
-            next_camera: None,
+            animation: None,
             controller,
             scene: None,
             pause_sort: Arc::new(RwLock::new(false)),
             current_view: None,
         }
     }
-
 
     fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>, scale_factor: Option<f32>) {
         if new_size.width > 0 && new_size.height > 0 {
@@ -163,12 +160,12 @@ impl WindowContext {
     }
 
     fn update(&mut self, dt: Duration) {
-        if let Some(next_camera) = &mut self.next_camera{
+        if let Some(next_camera) = &mut self.animation {
             let mut curr_camera = self.camera.write().unwrap();
             *curr_camera = next_camera.update(dt);
-            if next_camera.done(){
+            if next_camera.done() {
                 *self.pause_sort.write().unwrap() = false;
-                self.next_camera.take();
+                self.animation.take();
             }
         } else {
             self.controller
@@ -188,27 +185,30 @@ impl WindowContext {
                 label: Some("Render Encoder Compare"),
             });
         {
-                let viewport = Vector2::new(self.config.width, self.config.height);
-                let pc = self.pc.read().unwrap();
+            let viewport = Vector2::new(self.config.width, self.config.height);
+            let pc = self.pc.read().unwrap();
 
-                self.renderer.preprocess(&mut encoder, &self.queue, &pc, self.camera.read().unwrap().clone(), viewport);
+            self.renderer.preprocess(
+                &mut encoder,
+                &self.queue,
+                &pc,
+                self.camera.read().unwrap().clone(),
+                viewport,
+            );
 
-                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("render pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: true,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                });
-                self.renderer.render(
-                    &mut render_pass,
-                    &pc,
-                )
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("render pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: true,
+                    },
+                })],
+                depth_stencil_attachment: None,
+            });
+            self.renderer.render(&mut render_pass, &pc)
         }
 
         self.queue.submit([encoder.finish()]);
@@ -222,6 +222,13 @@ impl WindowContext {
         self.scene.replace(scene);
     }
 
+    fn start_tracking_shot(&mut self) {
+        if let Some(scene) = &self.scene {
+            self.animation = Some(Box::new(TrackingShot::from_scene(scene, 1.,Some(self.camera.read().unwrap().clone()))));
+        }
+    }
+
+
     pub fn set_camera<C: Into<PerspectiveCamera>>(
         &mut self,
         camera: C,
@@ -231,9 +238,16 @@ impl WindowContext {
             self.update_camera(camera.into())
         } else {
             *self.pause_sort.write().unwrap() = true;
-            let mut target_camera =camera.into();
-            target_camera.projection.resize(self.config.width,self.config.height);
-            self.next_camera = Some(Animation::new(self.camera.read().unwrap().clone(),target_camera ,animation_duration));
+            let mut target_camera = camera.into();
+            target_camera
+                .projection
+                .resize(self.config.width, self.config.height);
+            self.animation = Some(Box::new(Transition::new(
+                self.camera.read().unwrap().clone(),
+                target_camera,
+                animation_duration,
+                smoothstep,
+            )));
         }
     }
 
@@ -272,17 +286,16 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
         .build(&event_loop)
         .unwrap();
 
-    let mut state = WindowContext::new(window,file).await;
-
+    let mut state = WindowContext::new(window, file).await;
 
     if let Some(scene) = scene {
         let init_camera = scene.camera(0);
         state.set_scene(scene);
         state.set_camera(init_camera, Duration::ZERO);
+        state.start_tracking_shot();
     }
 
     let mut last = Instant::now();
-
 
     let queue = state.queue.clone();
     let camera = state.camera.clone();
@@ -309,9 +322,9 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
                     // par_sort_unstable_by_key is faster than stable cached sort
                     // source: trust me bro
                     curr_pc.par_sort_unstable_by_key(|p| {
-                             (-transform.transform_point(p.xyz).z * (2f32).powi(24)) as i32
-                        });
-                    debug!("sorting took: {:}ms",(Instant::now()-start).as_millis());
+                        (-transform.transform_point(p.xyz).z * (2f32).powi(24)) as i32
+                    });
+                    debug!("sorting took: {:}ms", (Instant::now() - start).as_millis());
 
                     pc.write().unwrap().update_points(&queue, curr_pc);
                     last_camera = curr_camera;
@@ -339,15 +352,24 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
             WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
             WindowEvent::KeyboardInput { input, .. } => {
                 if let Some(key) = input.virtual_keycode {
-                    if let Some(scene) = &state.scene{
-                        if input.state == ElementState::Released{
+                    if input.state == ElementState::Released{
+                        if key == VirtualKeyCode::T{
+                            state.start_tracking_shot();
+                            
+                        }else
+                        if let Some(scene) = &state.scene{
+
                             let new_camera = 
                             if let Some(num) = utils::key_to_num(key){
                                 Some(num as usize)
                             }
                             else if key == VirtualKeyCode::R{
                                 Some(rand::random::<usize>()%scene.num_cameras())
+                            }else if key == VirtualKeyCode::N{
+                                Some(scene.nearest_camera(state.camera.read().unwrap().position))
                             }else if key == VirtualKeyCode::PageUp{
+                                Some(state.current_view.map_or(0, |v|v+1) % scene.num_cameras())
+                            }else if key == VirtualKeyCode::T{
                                 Some(state.current_view.map_or(0, |v|v+1) % scene.num_cameras())
                             }
                             else if key == VirtualKeyCode::PageDown{
