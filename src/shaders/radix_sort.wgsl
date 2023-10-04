@@ -117,6 +117,33 @@ fn calculate_histogram(@builtin(workgroup_id) gid : vec3<u32>, @builtin(local_in
 // --------------------------------------------------------------------------------------------------------------
 // Prefix sum over histogram
 // --------------------------------------------------------------------------------------------------------------
+fn prefix_reduce_smem(lid: u32) {
+    var offset = 1u;
+    for (var d = rs_radix_size >> 1u; d > 0u; d = d >> 1u) { // sum in place tree
+        workgroupBarrier();
+        if lid < d {
+            let ai = offset * (2u * lid + 1u) - 1u;
+            let bi = offset * (2u * lid + 2u) - 1u;
+            smem[bi] += smem[ai];
+        }
+        offset = offset << 1u;
+    }
+    
+    if lid == 0u { smem[rs_radix_size - 1u] = 0u; } // clear the last element
+        
+    for (var d = 1u; d < rs_radix_size; d = d << 1u) {
+        offset = offset >> 1u;
+        workgroupBarrier();
+        if lid < d {
+            let ai = offset * (2u * lid + 1u) - 1u;
+            let bi = offset * (2u * lid + 2u) - 1u;
+            
+            let t     = smem[ai];
+            smem[ai]  = smem[bi];
+            smem[bi] += t;
+        }
+    }
+}
 @compute @workgroup_size({prefix_wg_size})
 fn prefix_histogram(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid : vec3<u32>) {
     // the work group  id is the pass, and is inverted in the next line, such that pass 3 is at the first position in the histogram buffer
@@ -127,36 +154,12 @@ fn prefix_histogram(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invoca
     // however the implementation is taken from https://www.eecs.umich.edu/courses/eecs570/hw/parprefix.pdf listing 2 (better overview, nw subgroup arithmetic)
     // this also means that only half the amount of workgroups is spawned (one workgroup calculates for 2 positioons)
     // the smemory is used from the previous section
-    var offset = 1u;
     smem[lid.x] = histograms[histogram_offset];
     smem[lid.x + {prefix_wg_size}u] = histograms[histogram_offset + {prefix_wg_size}u];
-    
-    for (var d = rs_radix_size >> 1u; d > 0u; d = d >> 1u) { // sum in place tree
-        workgroupBarrier();
-        if lid.x < d {
-            let ai = offset * (2u * lid.x + 1u) - 1u;
-            let bi = offset * (2u * lid.x + 2u) - 1u;
-            smem[bi] += smem[ai];
-        }
-        offset = offset << 1u;
-    }
-    
-    if lid.x == 0u { smem[rs_radix_size - 1u] = 0u; } // clear the last element
-        
-    for (var d = 1u; d < rs_radix_size; d = d << 1u) {
-        offset = offset >> 1u;
-        workgroupBarrier();
-        if lid.x < d {
-            let ai = offset * (2u * lid.x + 1u) - 1u;
-            let bi = offset * (2u * lid.x + 2u) - 1u;
-            
-            let t     = smem[ai];
-            smem[ai]  = smem[bi];
-            smem[bi] += t;
-        }
-    }
-    
+
+    prefix_reduce_smem(lid.x);
     workgroupBarrier();
+    
     histograms[histogram_offset] = smem[lid.x];
     histograms[histogram_offset + {prefix_wg_size}u] = smem[lid.x + {prefix_wg_size}u];
 }
@@ -164,7 +167,23 @@ fn prefix_histogram(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invoca
 // --------------------------------------------------------------------------------------------------------------
 // Scattering the keys
 // --------------------------------------------------------------------------------------------------------------
+// General note: Only 2 sweeps needed here
+var<workgroup> scatter_smem: array<u32, rs_mem_dwords>; // note: rs_mem_dwords is caclulated in the beginngin of gpu_rs.rs
+//            | Dwords                                    | Bytes
+//  ----------+-------------------------------------------+--------
+//  Lookback  | 256                                       | 1 KB
+//  Histogram | 256                                       | 1 KB
+//  Prefix    | 4-84                                      | 16-336
+//  Reorder   | RS_WORKGROUP_SIZE * RS_SCATTER_BLOCK_ROWS | 2-8 KB
 fn partitions_offset() -> u32 { return rs_keyval_size * rs_radix_size;}
+fn smem_prefix_offset() -> u32 { return rs_radix_size + rs_radix_size;}
+fn rs_prefix_sweep_0(idx: u32) -> u32 { return scatter_smem[smem_prefix_offset() + rs_mem_sweep_0_offset + idx];}
+fn rs_prefix_sweep_1(idx: u32) -> u32 { return scatter_smem[smem_prefix_offset() + rs_mem_sweep_1_offset + idx];}
+fn rs_prefix_sweep_2(idx: u32) -> u32 { return scatter_smem[smem_prefix_offset() + rs_mem_sweep_2_offset + idx];}
+fn rs_prefix_load(lid: u32, idx: u32) -> u32 { return scatter_smem[rs_radix_size + lid + idx];}
+fn rs_prefix_store(lid: u32, idx: u32, val: u32) { scatter_smem[rs_radix_size + lid + idx] = val;}
+fn is_first_local_invocation(lid: u32) -> bool { return lid == 0u;}
+
 @compute @workgroup_size({scatter_wg_size})
 fn scatter_even() {
     infos.odd_pass = (infos.odd_pass + 1u) % 2u; // for this to work correctly the odd_pass has to start 1

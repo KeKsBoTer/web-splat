@@ -26,6 +26,19 @@ const rs_scatter_block_rows : usize = 15;
 const prefix_wg_size: usize = 1 << 7;           // one thread operates on 2 prefixes at the same time
 const scatter_wg_size: usize = 1 << 8;
 
+// special variables for scatter shade
+const rs_sweep_0_size : usize = rs_radix_size / histogram_sg_size;
+const rs_sweep_1_size : usize = rs_sweep_0_size / histogram_sg_size;
+const rs_sweep_2_size : usize = rs_sweep_1_size / histogram_sg_size;
+const rs_sweep_size : usize = rs_sweep_0_size + rs_sweep_1_size + rs_sweep_2_size;
+const rs_smem_phase_1 : usize = rs_radix_size + rs_radix_size + rs_sweep_size;
+const rs_smem_phase_2 : usize = rs_radix_size + rs_scatter_block_rows * {scatter_wg_size};
+// rs_smem_phase_2 will always be larger, so always use phase2
+const rs_mem_dwords : usize = rs_smem_phase_2;
+const rs_mem_sweep_0_offset : usize = 0;
+const rs_mem_sweep_1_offset : usize = rs_mem_sweep_0_offset + rs_sweep_0_size;
+const rs_mem_sweep_2_offset : usize = rs_mem_sweep_1_offset + rs_sweep_1_size;
+
 pub struct GPURSSorter {
     pub bind_group_layout: wgpu::BindGroupLayout,
     zero_p:         wgpu::ComputePipeline,
@@ -109,7 +122,12 @@ impl GPURSSorter{
                                             const rs_radix_size: u32 = {:}u;\n\
                                             const rs_keyval_size: u32 = {:}u;\n\
                                             const rs_histogram_block_rows: u32 = {:}u;\n\
-                                            const rs_scatter_block_rows: u32 = {:}u;\n{:}", histogram_sg_size, histogram_wg_size, rs_radix_log2, rs_radix_size, rs_keyval_size, rs_histogram_block_rows, rs_scatter_block_rows, raw_shader);
+                                            const rs_scatter_block_rows: u32 = {:}u;\n\
+                                            const rs_mem_dwords: u32 = {:}u;\n\
+                                            const rs_mem_sweep_0_offset: u32 = {:}u;\n\
+                                            const rs_mem_sweep_1_offset: u32 = {:}u;\n\
+                                            const rs_mem_sweep_2_offset: u32 = {:}u;\n{:}", histogram_sg_size, histogram_wg_size, rs_radix_log2, rs_radix_size, rs_keyval_size, rs_histogram_block_rows, rs_scatter_block_rows, 
+                                            rs_mem_dwords, rs_mem_sweep_0_offset, rs_mem_sweep_1_offset, rs_mem_sweep_2_offset, raw_shader);
         let shader_code = shader_w_const.replace("{histogram_wg_size}", histogram_wg_size.to_string().as_str())
             .replace("{prefix_wg_size}", prefix_wg_size.to_string().as_str())
             .replace("{scatter_wg_size}", scatter_wg_size.to_string().as_str());
