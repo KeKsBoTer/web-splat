@@ -11,7 +11,7 @@ winit = "0.28.1"
 cgmath = { version = "0.18.0", features = [
     "bytemuck",
 ], git = 'https://github.com/rustgd/cgmath' }
-pollster = "0.3.0"
+pollster = { version = "0.3.0", features = ["macro"] }
 env_logger = "0.10"
 structopt = "0.3.26"
 bytemuck = { version = "1.13.0", features = ["derive"] }
@@ -33,3 +33,7 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "viewer"
+
+[profile.release]
+strip = true # Automatically strip symbols from the binary.
+lto = true

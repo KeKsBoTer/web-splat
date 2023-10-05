@@ -20,7 +20,8 @@ struct Opt {
     img_out: PathBuf,
 }
 
-fn main() {
+#[pollster::main]
+async fn main() {
     let opt = Opt::from_args();
 
     let scene = Scene::from_json(opt.scene).unwrap();
@@ -28,38 +29,37 @@ fn main() {
     let wgpu_context = pollster::block_on(WGPUContext::new_instance());
     let device = &wgpu_context.device;
     let queue = &wgpu_context.queue;
-
     let mut pc = PointCloud::load_ply(&wgpu_context.device, opt.input, SHDtype::Float).unwrap();
 
     let mut renderer = GaussianRenderer::new(
-        &wgpu_context.device,
+        device,
         wgpu::TextureFormat::Rgba8Unorm,
         pc.sh_deg(),
         pc.sh_dtype(),
     );
 
-    let resolution: Vector2<u32> = Vector2::new(scene.camera(0).width, scene.camera(0).height);
-
-    let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("render texture"),
-        size: wgpu::Extent3d {
-            width: resolution.x,
-            height: resolution.y,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: renderer.color_format(),
-        usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT,
-        view_formats: &[wgpu::TextureFormat::Rgba8Unorm],
-    });
-
-    let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
-
     std::fs::create_dir_all(opt.img_out.clone()).unwrap();
 
     for (i, s) in scene.cameras().iter().enumerate() {
+        let resolution: Vector2<u32> = Vector2::new(s.width, s.height);
+
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("render texture"),
+            size: wgpu::Extent3d {
+                width: resolution.x,
+                height: resolution.y,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: renderer.color_format(),
+            usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+
+        let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+
         let c: PerspectiveCamera = s.clone().into();
         pc.sort(queue, c);
         renderer.render(
@@ -70,7 +70,7 @@ fn main() {
             s.clone().into(),
             resolution,
         );
-        let img = pollster::block_on(download_texture(&target, device, queue));
+        let img = download_texture(&target, device, queue).await;
         img.save(opt.img_out.join(format!("{i:0>5}.png"))).unwrap();
     }
 }
@@ -84,7 +84,7 @@ pub async fn download_texture(
 
     let texel_size: u32 = texture_format.block_size(None).unwrap();
     let fb_size = texture.size();
-    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT - 1;
+    let align: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT - 1;
     let bytes_per_row = (texel_size * fb_size.width) + align & !align;
 
     let output_buffer_size = (bytes_per_row * fb_size.height) as wgpu::BufferAddress;
@@ -92,7 +92,7 @@ pub async fn download_texture(
     let output_buffer_desc = wgpu::BufferDescriptor {
         size: output_buffer_size,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        label: None,
+        label: Some("texture download buffer"),
         mapped_at_creation: false,
     };
     let download_buffer = device.create_buffer(&output_buffer_desc);
@@ -101,9 +101,6 @@ pub async fn download_texture(
         device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("download frame buffer encoder"),
         });
-
-    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT - 1;
-    let bytes_per_row = (texel_size * fb_size.width) + align & !align;
 
     encoder.copy_texture_to_buffer(
         texture.as_image_copy(),
