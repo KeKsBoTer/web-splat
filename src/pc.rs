@@ -29,15 +29,6 @@ impl Default for GaussianSplat {
     }
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Splat2D {
-    v: Vector4<f16>,
-    pos: Vector4<f16>,
-    color: Vector4<u8>,
-    _pad: u32,
-}
-
 pub struct PointCloud {
     vertex_buffer: wgpu::Buffer,
     #[allow(dead_code)]
@@ -192,7 +183,8 @@ impl PointCloud {
     pub(crate) fn bind_group(&self) -> &wgpu::BindGroup {
         &self.bind_group
     }
-    pub(crate) fn sh_dtype(&self) -> SHDtype {
+
+    pub fn sh_dtype(&self) -> SHDtype {
         self.sh_dtype
     }
 
@@ -366,6 +358,15 @@ fn read_line<B: ByteOrder, R: io::Read + io::Seek, W: io::Write>(
         sh_idx: idx,
         ..Default::default()
     };
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Splat2D {
+    v: Vector4<f16>,
+    pos: Vector4<f16>,
+    color: Vector4<u8>,
+    _pad: u32,
 }
 
 impl Splat2D {

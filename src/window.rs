@@ -1,19 +1,3 @@
-use std::path::PathBuf;
-use structopt::StructOpt;
-use web_splats::{ WGPUContext, PointCloud, GaussianRenderer, PerspectiveCamera, Animation, CameraController, Scene, PerspectiveProjection, TrackingShot, Transition, SHDtype, Camera};
-
-#[derive(Debug, StructOpt)]
-#[structopt(name = "viewer", about = "3D gaussian splats viewer")]
-struct Opt {
-    /// Input file
-    #[structopt(parse(from_os_str))]
-    input: PathBuf,
-
-    /// Scene json file
-    #[structopt(parse(from_os_str))]
-    scene: Option<PathBuf>,
-}
-
 use std::{path::Path, sync::{RwLock, Arc}, time::{Duration, Instant}, thread};
 
 use cgmath::{Point3, Quaternion, EuclideanSpace, Vector2, Deg, Transform};
@@ -21,6 +5,8 @@ use log::{debug, info};
 use num_traits::One;
 use rayon::slice::ParallelSliceMut;
 use winit::{window::{Window, WindowBuilder}, event_loop::{EventLoop, ControlFlow}, dpi::PhysicalSize, event::{WindowEvent, Event, ElementState, VirtualKeyCode, DeviceEvent}};
+
+use crate::{PointCloud, renderer::GaussianRenderer, camera::{PerspectiveCamera, PerspectiveProjection, Camera}, animation::{Animation, TrackingShot, Transition, smoothstep}, controller::CameraController, Scene, WGPUContext, utils, pc};
 
 
 struct WindowContext {
@@ -75,7 +61,7 @@ impl WindowContext {
             view_formats: vec![],
         };
         surface.configure(&device, &config);
-        let pc = PointCloud::load_ply(&device, pc_file, SHDtype::Byte).unwrap();
+        let pc = PointCloud::load_ply(&device, pc_file, pc::SHDtype::Byte).unwrap();
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
         let renderer = GaussianRenderer::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype());
@@ -183,9 +169,6 @@ impl WindowContext {
     }
 }
 
-pub fn smoothstep(x: f32) -> f32 {
-    return x * x * (3.0 - 2.0 * x);
-}
 pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
     file: P,
     scene_file: Option<P>,
@@ -286,7 +269,7 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
                         if let Some(scene) = &state.scene{
 
                             let new_camera = 
-                            if let Some(num) = key_to_num(key){
+                            if let Some(num) = utils::key_to_num(key){
                                 Some(num as usize)
                             }
                             else if key == VirtualKeyCode::R{
@@ -360,27 +343,4 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
         }
         _ => {}
     });
-}
-
-
-fn main() {
-    let opt = Opt::from_args();
-
-    pollster::block_on(open_window(opt.input, opt.scene));
-}
-
-pub fn key_to_num(key: VirtualKeyCode) -> Option<u32> {
-    match key {
-        VirtualKeyCode::Key0 => Some(0),
-        VirtualKeyCode::Key1 => Some(1),
-        VirtualKeyCode::Key2 => Some(2),
-        VirtualKeyCode::Key3 => Some(3),
-        VirtualKeyCode::Key4 => Some(4),
-        VirtualKeyCode::Key5 => Some(5),
-        VirtualKeyCode::Key6 => Some(6),
-        VirtualKeyCode::Key7 => Some(7),
-        VirtualKeyCode::Key8 => Some(8),
-        VirtualKeyCode::Key9 => Some(9),
-        _ => None,
-    }
 }

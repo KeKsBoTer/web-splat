@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use cgmath::{EuclideanSpace, InnerSpace, Matrix4, MetricSpace, Point3, Vector4};
+use cgmath::{InnerSpace, MetricSpace};
 
 use crate::{camera::PerspectiveCamera, scene::Scene};
 
@@ -126,40 +126,6 @@ impl Animation for TrackingShot {
     }
 }
 
-pub fn smoothstep(x: f32) -> f32 {
-    return x * x * (3.0 - 2.0 * x);
-}
-
 pub fn linear(x: f32) -> f32 {
     x
-}
-
-fn spline_coefs(pos: Vec<Point3<f32>>) -> Vec<Matrix4<f32>> {
-    let mut spline = Vec::new();
-    let n = spline.len();
-
-    let mut d = Vec::new();
-    for i in 0..n {
-        let prev = pos[((i as i32 - 1) % n as i32) as usize];
-        let curr = pos[i];
-        let next = pos[(i + 1) % n];
-        d.push(((next - curr) + (curr - prev)).normalize());
-    }
-    for i in 0..n {
-        let curr = i;
-        let next = (i + 1) % n;
-
-        let x0 = pos[curr].to_vec();
-        let x1 = d[i];
-        let x2 = 3. * (pos[next] - pos[curr]) - (d[next] + 2. * d[curr]);
-        let x3 = 2. * (pos[curr] - pos[next]) + d[next] + d[curr];
-
-        spline.push(Matrix4::from_cols(
-            Vector4::new(x0.x, x0.y, x0.z, 0.),
-            Vector4::new(x1.x, x1.y, x1.z, 0.),
-            Vector4::new(x2.x, x2.y, x2.z, 0.),
-            Vector4::new(x3.x, x3.y, x3.z, 0.),
-        ))
-    }
-    return spline;
 }

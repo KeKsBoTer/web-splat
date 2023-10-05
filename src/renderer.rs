@@ -1,12 +1,11 @@
 use std::num::NonZeroU64;
 
-use cgmath::{Matrix4, SquareMatrix, Vector2};
-
 use crate::{
     camera::{Camera, PerspectiveCamera, OPENGL_TO_WGPU_MATRIX},
     pc::{PointCloud, SHDtype, Splat2D},
     uniform::UniformBuffer,
 };
+use cgmath::{Matrix4, SquareMatrix, Vector2};
 
 pub struct GaussianRenderer {
     pipeline: wgpu::RenderPipeline,
@@ -14,6 +13,7 @@ pub struct GaussianRenderer {
     preprocess: PreprocessPointCloud,
     draw_indirect_buffer: wgpu::Buffer,
     draw_indirect: wgpu::BindGroup,
+    color_format: wgpu::TextureFormat,
 }
 
 impl GaussianRenderer {
@@ -89,6 +89,7 @@ impl GaussianRenderer {
             preprocess,
             draw_indirect_buffer,
             draw_indirect,
+            color_format,
         }
     }
 
@@ -100,6 +101,8 @@ impl GaussianRenderer {
         camera: PerspectiveCamera,
         viewport: Vector2<u32>,
     ) {
+        let mut camera = camera;
+        camera.projection.resize(viewport.x, viewport.y);
         let uniform = self.camera.as_mut();
         uniform.set_camera(camera);
         uniform.set_focal(camera.projection.focal(viewport));
@@ -120,12 +123,42 @@ impl GaussianRenderer {
             .run(encoder, pc, &self.camera, &self.draw_indirect);
     }
 
-    pub fn render<'a>(&'a mut self, render_pass: &mut wgpu::RenderPass<'a>, pc: &'a PointCloud) {
-        render_pass.set_pipeline(&self.pipeline);
+    pub fn render<'a>(
+        &'a mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target: &wgpu::TextureView,
+        pc: &'a PointCloud,
+        camera: PerspectiveCamera,
+        viewport: Vector2<u32>,
+    ) {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Render Encoder Compare"),
+        });
+        {
+            self.preprocess(&mut encoder, &queue, &pc, camera, viewport);
 
-        render_pass.set_vertex_buffer(0, pc.splats_2d_buffer().slice(..));
-        // render_pass.draw(0..4, 0..pc.num_points()); //pc.num_points())
-        render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("render pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: true,
+                    },
+                })],
+                depth_stencil_attachment: None,
+            });
+
+            render_pass.set_pipeline(&self.pipeline);
+
+            render_pass.set_vertex_buffer(0, pc.splats_2d_buffer().slice(..));
+            // render_pass.draw(0..4, 0..pc.num_points()); //pc.num_points())
+            render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
+        }
+
+        queue.submit([encoder.finish()]);
     }
 
     pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -145,6 +178,10 @@ impl GaussianRenderer {
                 count: None,
             }],
         })
+    }
+
+    pub fn color_format(&self) -> wgpu::TextureFormat {
+        self.color_format
     }
 }
 
