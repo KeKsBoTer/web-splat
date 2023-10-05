@@ -190,22 +190,19 @@ fn rs_prefix_sweep_2(idx: u32) -> u32 { return scatter_smem[smem_prefix_offset()
 fn rs_prefix_load(lid: u32, idx: u32) -> u32 { return scatter_smem[rs_radix_size + lid + idx];}
 fn rs_prefix_store(lid: u32, idx: u32, val: u32) { scatter_smem[rs_radix_size + lid + idx] = val;}
 fn is_first_local_invocation(lid: u32) -> bool { return lid == 0u;}
-fn histogram_load(digit: u32) -> u32 { return scatter_smem[rs_radix_size + digit];}
-fn histogram_store(digit: u32, count: u32) { scatter_smem[rs_radix_size + digit] = count; }
+fn histogram_load(digit: u32) -> u32 { return smem[digit];}// scatter_smem[rs_radix_size + digit];}
+fn histogram_store(digit: u32, count: u32) { smem[digit] = count;} // scatter_smem[rs_radix_size + digit] = count; }
 
-@compute @workgroup_size({scatter_wg_size})
-fn scatter_even(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-    infos.odd_pass = (infos.odd_pass + 1u) % 2u; // for this to work correctly the odd_pass has to start 1
+fn scatter(lid: vec3<u32>, wid: vec3<u32>, nwg: vec3<u32>, partition_status_invalid: u32, partition_status_reduction: u32, partition_status_prefix: u32) {
     let pass_ = infos.even_pass * 2u;
     fill_kv(wid.x, lid.x);  // TODO: check if this has to be changed to a per subgroup basis
-    zero_smem(lid.x);
-    workgroupBarrier();
+    // in the reference there is a nulling of the smmem here, was moved to line 251 as smem is used in the code until then
 
     var kr = array<u32, rs_scatter_block_rows>();
     // The following implements conceptually the same as the
     // Emulate a "match" operation with broadcasts for small subgroup sizes (line 665 ff in scatter.glsl)
     // The difference however is, that instead of using subrgoupBroadcast each thread stores
-    // its current number in the smem at lid.x, and the looks up their neighbouring values of the subgroup
+    // its current number in the smem at lid.x, and then looks up their neighbouring values of the subgroup
     let subgroup_id = lid.x / histogram_sg_size;
     let subgroup_offset = subgroup_id * histogram_sg_size;
     let subgroup_tid = lid.x - subgroup_offset;
@@ -229,10 +226,9 @@ fn scatter_even(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation
         kr[i] = (count << 16u) | rank;
     }
     
-    if lid.x < rs_radix_size {
-        histogram_store(lid.x, 0u);
-    }
+    zero_smem(lid.x);   // now zeroing the smmem as we are now accumulating the histogram there
     workgroupBarrier();
+
     for (var i = 0u; i < subgroup_count; i++) {
         if subgroup_tid == i {
             for (var j = 0u; j < rs_scatter_block_rows; j++) {
@@ -248,7 +244,7 @@ fn scatter_even(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation
                 }
                 
                 // TODO: check if the barrier here is needed
-            }
+            }            
         }
         workgroupBarrier();
     }
@@ -408,10 +404,22 @@ fn scatter_even(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation
     for (var i = 0u; i < rs_scatter_block_rows; i++) {
         buffer_a[kr[ii]] = kv[ii];
     }
+   
+}
+@compute @workgroup_size({scatter_wg_size})
+fn scatter_even(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    infos.odd_pass = (infos.odd_pass + 1u) % 2u; // for this to work correctly the odd_pass has to start 1
+    let partition_status_invalid = 0u;
+    let partition_status_reduction = 1u;
+    let partition_status_prefix = 2u;
+    scatter(lid, gid, nwg, 0u, partition_status_invalid, partition_status_reduction, partition_status_prefix);
 }
 @compute @workgroup_size({scatter_wg_size})
 fn scatter_odd(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) { 
     infos.even_pass = (infos.even_pass + 1u) % 2u; // for this to work correctly the even_pass has to start at 0
     fill_kv(wid.x, lid.x);
-
+    let partition_status_invalid = 2u;
+    let partition_status_reduction = 3u;
+    let partition_status_prefix = 0u;
+    scatter(lid, gid, nwg, 0u, partition_status_invalid, partition_status_reduction, partition_status_prefix);
 }
