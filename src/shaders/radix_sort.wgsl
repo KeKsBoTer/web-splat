@@ -386,7 +386,9 @@ fn scatter(pass_: u32, lid: vec3<u32>, wid: vec3<u32>, nwg: vec3<u32>, partition
 }
 @compute @workgroup_size({scatter_wg_size})
 fn scatter_even(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-    infos.odd_pass = (infos.odd_pass + 1u) % 2u; // for this to work correctly the odd_pass has to start 1
+    if gid.x == 0u {
+        infos.odd_pass = (infos.odd_pass + 1u) % 2u; // for this to work correctly the odd_pass has to start 1
+    }
     let partition_status_invalid = 0u;
     let partition_status_reduction = 1u;
     let partition_status_prefix = 2u;
@@ -394,7 +396,9 @@ fn scatter_even(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation
 }
 @compute @workgroup_size({scatter_wg_size})
 fn scatter_odd(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-    infos.even_pass = (infos.even_pass + 1u) % 2u; // for this to work correctly the even_pass has to start at 0
+    if gid.x == 0u {
+        infos.even_pass = (infos.even_pass + 1u) % 2u; // for this to work correctly the even_pass has to start at 0
+    }
     fill_kv(wid.x, lid.x);
     let partition_status_invalid = 2u;
     let partition_status_reduction = 3u;
