@@ -129,6 +129,14 @@ fn main() {
     // println!("Reference histogram: \n{:?}", prefix_histogram);
     println!("Checking prefixed histograms...");
     compare_slice_beginning(gpu_prefix.as_slice(), prefix_histogram.as_slice());
+
+    // test key scattering ----------------------------------------------------------------------------------------------------------
+    encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {label: Some("tes sort")});
+    compute_pipeline.record_scatter_keys(&bind_group, 4, &mut encoder);
+    queue.submit([encoder.finish()]);
+    device.poll(wgpu::Maintain::Wait);
+    let gpu_sort = pollster::block_on(download_buffer::<u32>(&keyval_b, &device, &queue));
+    println!("keval_b: \n {:?}", gpu_sort);
     
     // tests done ----------------------------------------------------------------------------------------------------------
     println!("Kinda works...");
