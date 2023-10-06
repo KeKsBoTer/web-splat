@@ -380,12 +380,15 @@ fn scatter(pass_: u32, lid: vec3<u32>, wid: vec3<u32>, nwg: vec3<u32>, partition
     
     // store keyvals to their new locations, corresponds to rs_store
     for (var i = 0u; i < rs_scatter_block_rows; i++) {
-        keys[kr[i]] = kv[i];
+        //keys_b[kr[i]] = kv[i];
+        keys_b[lid.x] = 10.;
     }
    
 }
 @compute @workgroup_size({scatter_wg_size})
 fn scatter_even(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+    keys_b[gid.x] = 10.f;
+    keys[gid.x] = 10.f;
     if gid.x == 0u {
         infos.odd_pass = (infos.odd_pass + 1u) % 2u; // for this to work correctly the odd_pass has to start 1
     }

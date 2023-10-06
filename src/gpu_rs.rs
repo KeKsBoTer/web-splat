@@ -320,13 +320,14 @@ impl GPURSSorter{
         pass.dispatch_workgroups(passes as u32, 1, 1);
     }
     
-    pub fn record_scatter_keys(&self, bind_group: &wgpu::BindGroup, passes: usize, encoder: &mut wgpu::CommandEncoder) {
+    pub fn record_scatter_keys(&self, bind_group: &wgpu::BindGroup, passes: usize, keysize: usize, encoder: &mut wgpu::CommandEncoder) {
         assert!(passes == 4);   // currently the amount of passes is hardcoded in the shader
         let (_, scatter_blocks_ru, _, _, _, _) = Self::get_scatter_histogram_sizes(keysize);
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {label: Some("Scatter keyvals")});
         
         pass.set_pipeline(&self.scatter_even_p);
         pass.set_bind_group(0, bind_group, &[]);
+        println!("scatter_blocks {:}", scatter_blocks_ru);
         pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
         for pass_idx in 0..passes {
             

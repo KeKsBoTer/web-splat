@@ -132,10 +132,10 @@ fn main() {
 
     // test key scattering ----------------------------------------------------------------------------------------------------------
     encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {label: Some("tes sort")});
-    compute_pipeline.record_scatter_keys(&bind_group, 4, &mut encoder);
+    compute_pipeline.record_scatter_keys(&bind_group, 4, test_data.len(), &mut encoder);
     queue.submit([encoder.finish()]);
     device.poll(wgpu::Maintain::Wait);
-    let gpu_sort = pollster::block_on(download_buffer::<u32>(&keyval_b, &device, &queue));
+    let gpu_sort = pollster::block_on(download_buffer::<u32>(&keyval_a, &device, &queue));
     println!("keval_b: \n {:?}", gpu_sort);
     
     // tests done ----------------------------------------------------------------------------------------------------------
