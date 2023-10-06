@@ -1,8 +1,11 @@
 use cgmath::Vector2;
 use image::{ImageBuffer, Rgba};
+use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
 use std::path::PathBuf;
 use structopt::StructOpt;
-use web_splats::{GaussianRenderer, PerspectiveCamera, PointCloud, SHDtype, Scene, WGPUContext};
+use web_splats::{
+    GaussianRenderer, PerspectiveCamera, PointCloud, SHDtype, Scene, SceneCamera, WGPUContext,
+};
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "viewer", about = "3D gaussian splats renderer")]
@@ -20,28 +23,36 @@ struct Opt {
     img_out: PathBuf,
 }
 
-#[pollster::main]
-async fn main() {
-    let opt = Opt::from_args();
+async fn render_views(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    renderer: &mut GaussianRenderer,
+    pc: &mut PointCloud,
+    cameras: Vec<SceneCamera>,
+    img_out: &PathBuf,
+    split: &str,
+) {
+    let img_out = img_out.join(&split);
+    println!("saving images to '{}'", img_out.to_string_lossy());
+    std::fs::create_dir_all(img_out.clone()).unwrap();
 
-    let scene = Scene::from_json(opt.scene).unwrap();
+    let pb = ProgressBar::new(cameras.len() as u64);
+    let pb_style = ProgressStyle::with_template(
+        "{msg} {spinner:.green} [{bar:.cyan/blue}] {pos}/{len} [{elapsed}/{duration}]",
+    )
+    .unwrap()
+    .progress_chars("#>-");
+    pb.set_style(pb_style);
+    pb.set_message(format!("rendering {split}"));
 
-    let wgpu_context = pollster::block_on(WGPUContext::new_instance());
-    let device = &wgpu_context.device;
-    let queue = &wgpu_context.queue;
-    let mut pc = PointCloud::load_ply(&wgpu_context.device, opt.input, SHDtype::Float).unwrap();
+    for (i, s) in cameras.iter().enumerate().progress_with(pb) {
+        let mut resolution: Vector2<u32> = Vector2::new(s.width, s.height);
 
-    let mut renderer = GaussianRenderer::new(
-        device,
-        wgpu::TextureFormat::Rgba8Unorm,
-        pc.sh_deg(),
-        pc.sh_dtype(),
-    );
-
-    std::fs::create_dir_all(opt.img_out.clone()).unwrap();
-
-    for (i, s) in scene.cameras().iter().enumerate() {
-        let resolution: Vector2<u32> = Vector2::new(s.width, s.height);
+        if resolution.x > 1600 {
+            let s = (resolution.x as f32 / 1600.).ceil();
+            resolution.x = (resolution.x as f32 / s).ceil() as u32;
+            resolution.y = (resolution.y as f32 / s).ceil() as u32;
+        }
 
         let target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("render texture"),
@@ -71,8 +82,54 @@ async fn main() {
             resolution,
         );
         let img = download_texture(&target, device, queue).await;
-        img.save(opt.img_out.join(format!("{i:0>5}.png"))).unwrap();
+        img.save(img_out.join(format!("{i:0>5}.png"))).unwrap();
     }
+}
+
+#[pollster::main]
+async fn main() {
+    env_logger::init();
+    let opt = Opt::from_args();
+
+    println!("reading scene file '{}'", opt.scene.to_string_lossy());
+    let scene = Scene::from_json(opt.scene).unwrap();
+
+    let wgpu_context = WGPUContext::new_instance().await;
+    let device = &wgpu_context.device;
+    let queue = &wgpu_context.queue;
+
+    println!("reading point cloud file '{}'", opt.input.to_string_lossy());
+    let mut pc = PointCloud::load_ply(&wgpu_context.device, opt.input, SHDtype::Half).unwrap();
+
+    let mut renderer = GaussianRenderer::new(
+        device,
+        wgpu::TextureFormat::Rgba8Unorm,
+        pc.sh_deg(),
+        pc.sh_dtype(),
+    );
+
+    render_views(
+        device,
+        queue,
+        &mut renderer,
+        &mut pc,
+        scene.test_cameras(),
+        &opt.img_out,
+        "test",
+    )
+    .await;
+    render_views(
+        device,
+        queue,
+        &mut renderer,
+        &mut pc,
+        scene.train_cameras(),
+        &opt.img_out,
+        "train",
+    )
+    .await;
+
+    println!("done!");
 }
 
 pub async fn download_texture(

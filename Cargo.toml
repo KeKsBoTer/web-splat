@@ -27,13 +27,10 @@ log = "0.4.20"
 rayon = "1.8.0"
 futures-intrusive = "0.5.0"
 image = "0.24.6"
+indicatif = "0.17.7"
 
 [lib]
 path = "src/lib.rs"
 
 [[bin]]
 name = "viewer"
-
-[profile.release]
-strip = true # Automatically strip symbols from the binary.
-lto = true

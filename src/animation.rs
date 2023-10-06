@@ -91,7 +91,14 @@ impl TrackingShot {
         speed: f32,
     ) -> Transition<PerspectiveCamera> {
         let d = from.position.distance(to.position);
-        let mut arc = from.rotation.angle(to.rotation);
+
+        // find shortest possible angle
+        let mut arc = from.rotation.angle(if from.rotation.dot(to.rotation) < 0. {
+            -to.rotation
+        } else {
+            to.rotation
+        });
+
         if arc.0.is_nan() {
             arc.0 = 0.;
         }

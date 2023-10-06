@@ -6,6 +6,7 @@ use cgmath::{
 use half::f16;
 use log::{info, warn};
 use ply_rs;
+use rayon::slice::ParallelSliceMut;
 use std::fmt::{Debug, Display};
 use std::io::{self, BufReader, Read, Seek};
 use std::time::Instant;
@@ -163,8 +164,9 @@ impl PointCloud {
         let view = camera.view_matrix();
         let proj = camera.proj_matrix();
         let transform = proj * view;
-        self.points
-            .sort_by_cached_key(|p| (-transform.transform_point(p.xyz).z * (2f32).powi(24)) as i32);
+        self.points.par_sort_unstable_by_key(|p| {
+            (-transform.transform_point(p.xyz).z * (2f32).powi(24)) as i32
+        });
         queue.write_buffer(
             &self.vertex_buffer,
             0,

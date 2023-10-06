@@ -20,21 +20,21 @@ fn vs_main(
     var out: VertexOutput;
 
     // scaled eigenvectors in screen space 
-	let v1 = vertex.v.xy;
-	let v2 = vertex.v.zw;
+    let v1 = vertex.v.xy;
+    let v2 = vertex.v.zw;
 
     let v_center = vertex.pos.xy;
 
     // splat rectangle with left lower corner at (-2,-2)
     // and upper right corner at (2,2)
-    let x = f32(in_vertex_index%2u == 0u)*4.-(2.);
-    let y = f32(in_vertex_index<2u)*4.-(2.);
+    let x = f32(in_vertex_index % 2u == 0u) * 4. - (2.);
+    let y = f32(in_vertex_index < 2u) * 4. - (2.);
 
-    let position = vec2<f32>(x,y);
+    let position = vec2<f32>(x, y);
 
     // let offset = position * 0.01;
-    let offset = position.x * v1 * 2.0  + position.y * v2 * 2.0;
-    out.position = vec4<f32>(v_center + offset,0.,1.);
+    let offset = position.x * v1 * 2.0 + position.y * v2 * 2.0;
+    out.position = vec4<f32>(v_center + offset, 0., 1.);
     out.screen_pos = position;
     out.color = vertex.color;
 
@@ -46,5 +46,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let a = -dot(in.screen_pos, in.screen_pos);
     if a < -4.0 {discard;}
     let b = exp(a) * in.color.a;
-    return vec4<f32>(in.color.rgb*b,b);
+    return vec4<f32>(in.color.rgb * b, b);
 }

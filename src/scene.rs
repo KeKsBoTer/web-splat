@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::camera::{focal2fov, PerspectiveCamera, PerspectiveProjection};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SceneCamera {
+    pub img_name: String,
     pub id: u32,
     pub width: u32,
     pub height: u32,
@@ -38,12 +39,13 @@ impl Scene {
         let f = File::open(file)?;
         let mut reader = BufReader::new(f);
         let mut cameras: Vec<SceneCamera> = serde_json::from_reader(&mut reader)?;
-        cameras.sort_by_key(|c| c.id);
+        cameras.sort_by_key(|c| c.img_name.clone());
+        log::info!("loaded scene file with {} views", cameras.len());
         Ok(Scene { cameras })
     }
 
     pub fn camera(&self, i: usize) -> SceneCamera {
-        self.cameras[i]
+        self.cameras[i].clone()
     }
 
     pub fn num_cameras(&self) -> usize {
@@ -63,5 +65,25 @@ impl Scene {
             .unwrap()
             .clone()
             .0
+    }
+
+    /// according to Kerbl et al "3D Gaussian Splatting for Real-Time Radiance Field Rendering"
+    /// 7 out of 8 cameras are taken as training images
+    pub fn train_cameras(&self) -> Vec<SceneCamera> {
+        self.cameras
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| if i % 8 != 0 { Some(c.clone()) } else { None })
+            .collect()
+    }
+
+    /// according to Kerbl et al "3D Gaussian Splatting for Real-Time Radiance Field Rendering"
+    /// every 8th camera is used as test camera
+    pub fn test_cameras(&self) -> Vec<SceneCamera> {
+        self.cameras
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| if i % 8 == 0 { Some(c.clone()) } else { None })
+            .collect()
     }
 }
