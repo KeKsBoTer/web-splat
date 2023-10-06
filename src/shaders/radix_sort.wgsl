@@ -205,6 +205,9 @@ const rs_partition_mask_status : u32 = 0xC0000000u;
 const rs_partition_mask_count : u32 = 0x3FFFFFFFu;
 
 fn scatter(pass_: u32, lid: vec3<u32>, wid: vec3<u32>, nwg: vec3<u32>, partition_status_invalid: u32, partition_status_reduction: u32, partition_status_prefix: u32) {
+    let partition_mask_invalid = partition_status_invalid << 30u;
+    let partition_mask_reduction = partition_status_reduction << 30u;
+    let partition_mask_prefix = partition_status_prefix << 30u;
     fill_kv(wid.x, lid.x);  // TODO: check if this has to be changed to a per subgroup basis
     // in the reference there is a nulling of the smmem here, was moved to line 251 as smem is used in the code until then
 
@@ -277,7 +280,7 @@ fn scatter(pass_: u32, lid: vec3<u32>, wid: vec3<u32>, nwg: vec3<u32>, partition
             
             let inc = exc + red;
 
-            atomicStore(&histograms[partition_offset], inc | partition_status_prefix);
+            atomicStore(&histograms[partition_offset], inc | partition_mask_prefix);
         }
     }
     else {
@@ -286,7 +289,7 @@ fn scatter(pass_: u32, lid: vec3<u32>, wid: vec3<u32>, nwg: vec3<u32>, partition
         // rs_reduction_store, only for inbetween workgroups
         if lid.x < rs_radix_size && wid.x < nwg.x - 1u {
             let red = histogram_load(lid.x);
-            atomicStore(&histograms[partition_offset + partition_base], red | partition_status_reduction);
+            atomicStore(&histograms[partition_offset + partition_base], red | partition_mask_reduction);
         }
         
         // rs_loopback_store
@@ -297,12 +300,13 @@ fn scatter(pass_: u32, lid: vec3<u32>, wid: vec3<u32>, nwg: vec3<u32>, partition
             // Note: Each workgroup invocation can proceed independently.
             // Subgroups and workgroups do NOT have to coordinate.
             while true {
-                let prev = atomicLoad(&histograms[partition_base_prev]);// histograms[partition_offset + partition_base_prev];
-                if (prev & rs_partition_mask_status) == partition_status_invalid {
+                //let prev = atomicLoad(&histograms[partition_offset]);// histograms[partition_offset + partition_base_prev];
+                let prev = atomicLoad(&histograms[partition_base_prev + partition_offset]);// histograms[partition_offset + partition_base_prev];
+                if (prev & rs_partition_mask_status) == partition_mask_invalid {
                     continue;
                 }
                 exc += prev & rs_partition_mask_count;
-                if (prev & rs_partition_mask_status) != partition_status_invalid {
+                if (prev & rs_partition_mask_status) != partition_mask_prefix {
                     // continue accumulating reduction
                     partition_base_prev -= rs_radix_size;
                     continue;
@@ -310,7 +314,7 @@ fn scatter(pass_: u32, lid: vec3<u32>, wid: vec3<u32>, nwg: vec3<u32>, partition
 
                 // otherwise save the exclusive scan and atomically transform the
                 // reduction into an inclusive prefix status math: reduction + 1 = prefix
-                scatter_smem[rs_radix_size + lid.x] = exc;
+                scatter_smem[lid.x] = exc;
 
                 if wid.x < nwg.x - 1u { // only store when inbetween, skip for last workgrup
                     atomicAdd(&histograms[partition_offset + partition_base], exc | (1u << 30u));
@@ -380,15 +384,12 @@ fn scatter(pass_: u32, lid: vec3<u32>, wid: vec3<u32>, nwg: vec3<u32>, partition
     
     // store keyvals to their new locations, corresponds to rs_store
     for (var i = 0u; i < rs_scatter_block_rows; i++) {
-        //keys_b[kr[i]] = kv[i];
-        keys_b[lid.x] = 10.;
+        keys_b[kr[i]] = kv[i];
     }
    
 }
 @compute @workgroup_size({scatter_wg_size})
 fn scatter_even(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
-    keys_b[gid.x] = 10.f;
-    keys[gid.x] = 10.f;
     if gid.x == 0u {
         infos.odd_pass = (infos.odd_pass + 1u) % 2u; // for this to work correctly the odd_pass has to start 1
     }
