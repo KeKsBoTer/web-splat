@@ -89,7 +89,8 @@ impl PerspectiveProjection {
         }
     }
     pub fn resize(&mut self, width: u32, height: u32) {
-        self.fov.x = self.fov.y * width as f32 / height as f32;
+        todo!("implement me ")
+        //self.fov.x = self.fov.y * width as f32 / height as f32 this is not right!
     }
 
     pub fn projection_matrix(&self) -> Matrix4<f32> {

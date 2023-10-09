@@ -49,9 +49,9 @@ async fn render_views(
         let mut resolution: Vector2<u32> = Vector2::new(s.width, s.height);
 
         if resolution.x > 1600 {
-            let s = (resolution.x as f32 / 1600.).ceil();
-            resolution.x = (resolution.x as f32 / s).ceil() as u32;
-            resolution.y = (resolution.y as f32 / s).ceil() as u32;
+            let s = resolution.x as f32 / 1600.;
+            resolution.x = 1600;
+            resolution.y = (resolution.y as f32 / s) as u32;
         }
 
         let target = device.create_texture(&wgpu::TextureDescriptor {
