@@ -68,7 +68,7 @@ fn zero_histograms(@builtin(global_invocation_id) gid : vec3<u32>) {
         histograms[gid.x] = 0u;
     }
     else if gid.x < b {
-        histograms[gid.x] = 0xFFFFFFFFu;
+        histograms[gid.x] = 0u;//0xFFFFFFFFu;
     }
     else {
         keys[infos.keys_size + gid.x - b] = bitcast<f32>(0xFFFFFFFFu);
@@ -204,7 +204,7 @@ fn histogram_store(digit: u32, count: u32) { smem[digit] = count;} // scatter_sm
 const rs_partition_mask_status : u32 = 0xC0000000u;
 const rs_partition_mask_count : u32 = 0x3FFFFFFFu;
 
-fn scatter(pass_: u32, lid: vec3<u32>, wid: vec3<u32>, nwg: vec3<u32>, partition_status_invalid: u32, partition_status_reduction: u32, partition_status_prefix: u32) {
+fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3<u32>, partition_status_invalid: u32, partition_status_reduction: u32, partition_status_prefix: u32) {
     let partition_mask_invalid = partition_status_invalid << 30u;
     let partition_mask_reduction = partition_status_reduction << 30u;
     let partition_mask_prefix = partition_status_prefix << 30u;
@@ -396,7 +396,7 @@ fn scatter_even(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation
     let partition_status_invalid = 0u;
     let partition_status_reduction = 1u;
     let partition_status_prefix = 2u;
-    scatter(0u, lid, gid, nwg, partition_status_invalid, partition_status_reduction, partition_status_prefix);
+    scatter(0u, lid, gid, wid, nwg, partition_status_invalid, partition_status_reduction, partition_status_prefix);
 }
 @compute @workgroup_size({scatter_wg_size})
 fn scatter_odd(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
@@ -407,5 +407,5 @@ fn scatter_odd(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_
     let partition_status_invalid = 2u;
     let partition_status_reduction = 3u;
     let partition_status_prefix = 0u;
-    scatter(0u, lid, gid, nwg, partition_status_invalid, partition_status_reduction, partition_status_prefix);
+    scatter(0u, lid, gid, wid, nwg, partition_status_invalid, partition_status_reduction, partition_status_prefix);
 }
