@@ -244,9 +244,9 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
 
     // The final histogram is stored in the smem buffer
     for (var i = 0u; i < subgroup_count; i++) {
-        if subgroup_tid == i {
+        if subgroup_id == i {
             for (var j = 0u; j < rs_scatter_block_rows; j++) {
-                let v = bitcast<u32>(kv[i]);
+                let v = bitcast<u32>(kv[j]);
                 let digit = extractBits(v, pass_ * rs_radix_log2, rs_radix_log2);
                 let prev = histogram_load(digit);
                 let rank = kr[j] & 0xFFFFu;
@@ -330,6 +330,19 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
     // TODO make shure that the data is put into smem
     prefix_reduce_smem(lid.x);
     workgroupBarrier();
+    if true {
+        for (var i = 0u; i < rs_scatter_block_rows; i++) {
+        let u_val = bitcast<u32>(kv[i]);
+        let digit = extractBits(u_val, pass_ * rs_radix_log2, rs_radix_log2);
+            //keys_b[wid.x * 256u * 15u + i * 256u + lid.x] = f32(digit);// f32(kr[i] & 0xffffu);
+            //keys_b[wid.x * 256u * 15u + i * 256u + lid.x] = f32(kr[i] & 0xffffu);
+        }
+        keys_b[gid.x] = f32(histogram_load(lid.x));
+        if lid.x == 0u{
+            keys_b[gid.x] = 7777.0;
+        }
+        return;
+    }
 
     // convert keyval rank to local index, corresponds to rs_rank_to_local
     for (var i = 0u; i < rs_scatter_block_rows; i++) {
@@ -385,8 +398,8 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
     // store keyvals to their new locations, corresponds to rs_store
     for (var i = 0u; i < rs_scatter_block_rows; i++) {
         keys_b[kr[i]] = kv[i];
+        //keys_b[gid.x] = kv[i];
     }
-   
 }
 @compute @workgroup_size({scatter_wg_size})
 fn scatter_even(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
