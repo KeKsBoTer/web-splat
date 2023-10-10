@@ -138,6 +138,26 @@ impl GPURSSorter{
                             },
                             count: None,
                         },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 4,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage {read_only: false },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 5,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage {read_only: false },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
                     ]
                 });
 
@@ -209,7 +229,7 @@ impl GPURSSorter{
         let sorted_data : Vec<f32> = (0..n).map(|x| x as f32).collect();
 
         let internal_mem_buffer = Self::create_internal_mem_buffer(self, device, n);
-        let (keyval_a, keyval_b) = Self::create_keyval_buffers(device, n);
+        let (keyval_a, keyval_b, payload_a, payload_b) = Self::create_keyval_buffers(device, n, 4);
         let (uniform_buffer, bind_group) = self.create_bind_group(device, n, &internal_mem_buffer, &keyval_a, &keyval_b);
 
         upload_to_buffer(&keyval_a, device, queue, scrambled_data.as_slice());
@@ -240,7 +260,7 @@ impl GPURSSorter{
         return (scatter_block_kvs, scatter_blocks_ru, count_ru_scatter, histo_block_kvs, histo_blocks_ru, count_ru_histo);
     }
     
-    pub fn create_keyval_buffers(device: &wgpu::Device, keysize: usize) -> (wgpu::Buffer, wgpu::Buffer) {
+    pub fn create_keyval_buffers(device: &wgpu::Device, keysize: usize, bytes_per_payload_elem: usize) -> (wgpu::Buffer, wgpu::Buffer, wgpu::Buffer, wgpu::Buffer) {
         let (scatter_block_kvs, scatter_blocks_ru, count_ru_scatter, histo_block_kvs, hist_blocks_ru, count_ru_histo) = Self::get_scatter_histogram_sizes(keysize);
 
         // creating the two needed buffers for sorting
@@ -256,7 +276,21 @@ impl GPURSSorter{
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        return (buffer_a, buffer_b);
+        assert!(bytes_per_payload_elem == 4);                           // currently only 4 byte values are allowed
+        let payload_size = (keysize * bytes_per_payload_elem).max(1);   // make sure that we have at least 1 byte of data;
+        let payload_a = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Radix data buffer a"),
+            size: payload_size as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let payload_b = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Radix data buffer a"),
+            size: payload_size as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        return (buffer_a, buffer_b, payload_a, payload_b);
     }
     
     // caclulates and allocates a buffer that is sufficient for holding all needed information for
@@ -304,7 +338,7 @@ impl GPURSSorter{
         return buffer;
     }
     
-    pub fn create_bind_group(&self, device: &wgpu::Device , keysize: usize, internal_mem_buffer: &wgpu::Buffer, keyval_a: &wgpu::Buffer, keyval_b: &wgpu::Buffer) -> (wgpu::Buffer, wgpu::BindGroup){
+    pub fn create_bind_group(&self, device: &wgpu::Device , keysize: usize, internal_mem_buffer: &wgpu::Buffer, keyval_a: &wgpu::Buffer, keyval_b: &wgpu::Buffer, payload_a: &wgpu::Buffer, payload_b: &wgpu::Buffer) -> (wgpu::Buffer, wgpu::BindGroup){
         let (scatter_block_kvs, scatter_blocks_ru, count_ru_scatter, histo_block_kvs, hist_blocks_ru, count_ru_histo) = Self::get_scatter_histogram_sizes(keysize);
         if keyval_a.size() as usize != count_ru_histo * std::mem::size_of::<f32>() || keyval_b.size() as usize != count_ru_histo * std::mem::size_of::<f32>() {
             panic!("Keyval buffers are not padded correctly. Were they created with GPURSSorter::create_keyval_buffers()");
@@ -333,7 +367,15 @@ impl GPURSSorter{
             wgpu::BindGroupEntry {
                 binding: 3,
                 resource: keyval_b.as_entire_binding(),
-            }
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: payload_a.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: payload_b.as_entire_binding(),
+            },
             ]
         });
         return (uniform_buffer, bind_group);

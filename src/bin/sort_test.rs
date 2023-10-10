@@ -64,13 +64,15 @@ fn test_sort_components(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipe
     // testing the histogram counting
     let n = 10000;
     let test_data: Vec<f32> = (0..n).rev().map(|n| n as f32).collect();
+    let test_payload: Vec<u32> = (0..n as u32).collect();
     let test_sol: Vec<f32> = (0..n).map(|n| n as f32).collect();
+    let test_payload_sol: Vec<u32> = test_payload.iter().rev().cloned().collect();
     // print_first_n(&test_data, 100);
     
     // creating the gpu buffers
     let histograms = compute_pipeline.create_internal_mem_buffer(&device, test_data.len());
-    let (keyval_a, keyval_b) = GPURSSorter::create_keyval_buffers(&device, test_data.len());
-    let (uniform_infos, bind_group) = compute_pipeline.create_bind_group(&device, test_data.len(), &histograms, &keyval_a, &keyval_b);
+    let (keyval_a, keyval_b, payload_a, payload_b) = GPURSSorter::create_keyval_buffers(&device, test_data.len(), 4);
+    let (uniform_infos, bind_group) = compute_pipeline.create_bind_group(&device, test_data.len(), &histograms, &keyval_a, &keyval_b, &payload_a, &payload_b);
     
     upload_to_buffer(&keyval_a, &device, &queue, test_data.as_slice());
 
@@ -123,11 +125,13 @@ fn test_throughput(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipeline:
     // creating the data array
     let n = 1e7 as usize;
     let scrambled_data : Vec<f32> = (0..n).rev().map(|x| x as f32).collect();
+    let scrambled_payload : Vec<u32> = (0..n as u32).collect();
     let ref_data : Vec<f32> = (0..n).map(|x| x as f32).collect();
+    let ref_payload : Vec<u32> = scrambled_payload.iter().rev().cloned().collect();
     
     let internal_mem_buffer = compute_pipeline.create_internal_mem_buffer(device, n);
-    let (keyval_a, keyval_b) = GPURSSorter::create_keyval_buffers(device, n);
-    let (uniform_infos, bind_group) = compute_pipeline.create_bind_group(device, n, &internal_mem_buffer, &keyval_a, &keyval_b);
+    let (keyval_a, keyval_b, payload_a, payload_b) = GPURSSorter::create_keyval_buffers(device, n, 4);
+    let (uniform_infos, bind_group) = compute_pipeline.create_bind_group(device, n, &internal_mem_buffer, &keyval_a, &keyval_b, &payload_a, &payload_b);
     
     upload_to_buffer(&keyval_a, &device, &queue, scrambled_data.as_slice());
     

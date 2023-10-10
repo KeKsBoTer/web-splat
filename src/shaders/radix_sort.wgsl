@@ -29,6 +29,10 @@ var<storage, read_write> histograms : array<atomic<u32>>;
 var<storage, read_write> keys : array<f32>;
 @group(0) @binding(3)
 var<storage, read_write> keys_b : array<f32>;
+@group(0) @binding(4)
+var<storage, read_write> payload_a : array<u32>;
+@group(0) @binding(5)
+var<storage, read_write> payload_b : array<u32>;
 
 // layout of the histograms buffer
 //   +---------------------------------+ <-- 0
@@ -209,6 +213,7 @@ fn histogram_store(digit: u32, count: u32) { smem[digit] = count;} // scatter_sm
 const rs_partition_mask_status : u32 = 0xC0000000u;
 const rs_partition_mask_count : u32 = 0x3FFFFFFFu;
 var<private> kr : array<u32, rs_scatter_block_rows>;
+var<private> pv : array<u32, rs_scatter_block_rows>;
 
 fn fill_kv_even(wid: u32, lid: u32) {
     let subgroup_id = lid / histogram_sg_size;
@@ -220,6 +225,10 @@ fn fill_kv_even(wid: u32, lid: u32) {
         let pos = kv_in_offset + i * histogram_sg_size;
         kv[i] = keys[pos];
     }
+    for (var i = 0u; i < rs_histogram_block_rows; i++) {
+        let pos = kv_in_offset + i * histogram_sg_size;
+        pv[i] = payload_a[pos];
+    }
 }
 fn fill_kv_odd(wid: u32, lid: u32) {
     let subgroup_id = lid / histogram_sg_size;
@@ -230,6 +239,10 @@ fn fill_kv_odd(wid: u32, lid: u32) {
     for (var i = 0u; i < rs_histogram_block_rows; i++) {
         let pos = kv_in_offset + i * histogram_sg_size;
         kv[i] = keys_b[pos];
+    }
+    for (var i = 0u; i < rs_histogram_block_rows; i++) {
+        let pos = kv_in_offset + i * histogram_sg_size;
+        pv[i] = payload_b[pos];
     }
 }
 fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3<u32>, partition_status_invalid: u32, partition_status_reduction: u32, partition_status_prefix: u32) {
@@ -373,6 +386,8 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
     let smem_reorder_offset = rs_radix_size;
     let smem_base = smem_reorder_offset + lid.x;  // as we are in smem, the radix_size offset is not needed
     //for (var i = 0u; i < passes; i++){
+        
+        // keyvalues ----------------------------------------------
         // store keyval to sorted location
         for (var j = 0u; j < rs_scatter_block_rows; j++) {
             let smem_idx = smem_reorder_offset + (kr[j] >> 16u) - 1u;
@@ -384,6 +399,20 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
         // Load keyval dword from sorted location
         for (var j = 0u; j < rs_scatter_block_rows; j++) {
             kv[j] = bitcast<f32>(scatter_smem[smem_base + j * {scatter_wg_size}u]);
+        }
+        workgroupBarrier();
+        // payload ----------------------------------------------
+        // store payload to sorted location
+        for (var j = 0u; j < rs_scatter_block_rows; j++) {
+            let smem_idx = smem_reorder_offset + (kr[j] >> 16u) - 1u;
+            
+            scatter_smem[smem_idx] = pv[j];
+        }
+        workgroupBarrier();
+
+        // Load payload dword from sorted location
+        for (var j = 0u; j < rs_scatter_block_rows; j++) {
+            pv[j] = scatter_smem[smem_base + j * {scatter_wg_size}u];
         }
         workgroupBarrier();
     //}
