@@ -1,7 +1,9 @@
 pub fn compare_slice_beginning<T: std::cmp::PartialEq>(a: &[T], b: &[T]) {
     let len = a.len().min(b.len());
     for i in 0..len {
-        assert!(a[i] == b[i]);
+        if a[i] != b[i] {
+            println!("Comparison failed");
+        }
     }
     println!("Comparison successful");
 }

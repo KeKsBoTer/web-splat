@@ -131,7 +131,7 @@ impl GPURSSorter{
         let shader_code = shader_w_const.replace("{histogram_wg_size}", histogram_wg_size.to_string().as_str())
             .replace("{prefix_wg_size}", prefix_wg_size.to_string().as_str())
             .replace("{scatter_wg_size}", scatter_wg_size.to_string().as_str());
-        println!("{}", shader_code);
+        // println!("{}", shader_code);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Radix sort shader"),
             source: wgpu::ShaderSource::Wgsl(shader_code.into()),
@@ -325,12 +325,23 @@ impl GPURSSorter{
         let (_, scatter_blocks_ru, _, _, _, _) = Self::get_scatter_histogram_sizes(keysize);
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {label: Some("Scatter keyvals")});
         
-        pass.set_pipeline(&self.scatter_even_p);
         pass.set_bind_group(0, bind_group, &[]);
-        println!("scatter_blocks {:}", scatter_blocks_ru);
+        pass.set_pipeline(&self.scatter_even_p);
         pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
-        for pass_idx in 0..passes {
-            
-        }
+        
+        pass.set_pipeline(&self.scatter_odd_p);
+        pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
+
+        pass.set_pipeline(&self.scatter_even_p);
+        pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
+
+        pass.set_pipeline(&self.scatter_odd_p);
+        pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
+    }
+    
+    pub fn record_sort(&self, bind_group: &wgpu::BindGroup, keysize: usize, encoder: &mut wgpu::CommandEncoder) {
+        self.record_calculate_histogram(&bind_group, keysize, encoder);
+        self.record_prefix_histogram(&bind_group, 4, encoder);
+        self.record_scatter_keys(&bind_group, 4, keysize, encoder);
     }
 }

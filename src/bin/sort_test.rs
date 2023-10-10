@@ -4,6 +4,7 @@ use web_splats::gpu_rs::{self, GPURSSorter};
 use wgpu::util::DeviceExt;
 
 use crate::rs_ref::{calculate_histogram, compare_slice_beginning, prefix_sum_histogram};
+use std::time::Instant;
 mod rs_ref;
 
 async fn download_buffer<T: Clone>(buffer: &wgpu::Buffer, device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<T>{
@@ -56,47 +57,20 @@ fn print_first_n<T : std::fmt::Debug + Clone>(v: &Vec<T>, n: usize) {
     println!("{:?}", v[0..n].to_vec());
 }
 
-fn main() {
-    // creating the context
-    
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::all(),
-        dx12_shader_compiler: Default::default(),
-    });
-
-    let adapter = pollster::block_on(instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        }))
-        .unwrap();
-
-    let (device, queue) = pollster::block_on(adapter
-        .request_device(
-            &wgpu::DeviceDescriptor {
-                features: wgpu::Features::empty(),
-                limits: wgpu::Limits {
-                    max_vertex_attributes: 20,
-                    max_buffer_size: 2 << 29,
-                    max_storage_buffer_binding_size: 2<<29,
-                    ..Default::default()
-                },
-                label: None,
-            },
-            None, // Trace path
-        ))
-        .unwrap();
+// small sorting tets which checks each stage of the sorting process
+fn test_sort_components(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipeline: &mut GPURSSorter) {
+    println!("----------------------------------------------------");
+    println!("Starting sort components check...");
 
     // testing the histogram counting
     let n = 10000;
     let test_data: Vec<f32> = (0..n).rev().map(|n| n as f32).collect();
+    let test_sol: Vec<f32> = (0..n).map(|n| n as f32).collect();
     // print_first_n(&test_data, 100);
     
     // creating the gpu buffers
     let histograms = gpu_rs::GPURSSorter::create_internal_mem_buffer(&device, test_data.len());
     let (keyval_a, keyval_b) = GPURSSorter::create_keyval_buffers(&device, test_data.len());
-    let mut compute_pipeline = gpu_rs::GPURSSorter::new(&device);
     let (uniform_infos, bind_group) = compute_pipeline.create_bind_group(&device, test_data.len(), &histograms, &keyval_a, &keyval_b);
     
     upload_to_buffer(&keyval_a, &device, &queue, test_data.as_slice());
@@ -135,9 +109,82 @@ fn main() {
     compute_pipeline.record_scatter_keys(&bind_group, 4, test_data.len(), &mut encoder);
     queue.submit([encoder.finish()]);
     device.poll(wgpu::Maintain::Wait);
-    let gpu_sort = pollster::block_on(download_buffer::<f32>(&keyval_b, &device, &queue));
-    println!("keval_b: \n {:?}", gpu_sort);
+    let gpu_sort = pollster::block_on(download_buffer::<f32>(&keyval_a, &device, &queue));
+    // println!("keval_b: \n {:?}", gpu_sort);
+    println!("Checking scattered keys");
+    compare_slice_beginning(test_sol.as_slice(), gpu_sort.as_slice());
     
+    println!("Components check done.");
+    println!("----------------------------------------------------\n");
+}
+
+fn test_throughput(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipeline: &mut GPURSSorter) {
+    println!("----------------------------------------------------\n");
+    println!("Starting performance test");
+    // creating the data array
+    let n = 1e8 as usize;
+    let scrambled_data : Vec<f32> = (0..n).rev().map(|x| x as f32).collect();
+    let ref_data : Vec<f32> = (0..n).map(|x| x as f32).collect();
+    
+    let internal_mem_buffer = gpu_rs::GPURSSorter::create_internal_mem_buffer(device, n);
+    let (keyval_a, keyval_b) = GPURSSorter::create_keyval_buffers(device, n);
+    let (uniform_infos, bind_group) = compute_pipeline.create_bind_group(device, n, &internal_mem_buffer, &keyval_a, &keyval_b);
+    
+    upload_to_buffer(&keyval_a, &device, &queue, scrambled_data.as_slice());
+    
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: Some("auf gehts")});
+    compute_pipeline.record_sort(&bind_group, n, &mut encoder);
+    let mut t = Instant::now();
+    queue.submit([encoder.finish()]);
+    device.poll(wgpu::Maintain::Wait);
+    println!("Gpu execution for {n} keys took: {:?}", t.elapsed());
+
+    let sorted = pollster::block_on(download_buffer::<f32>(&keyval_a, &device, &queue));
+    println!("Checking sorting correctness...");
+    compare_slice_beginning(sorted.as_slice(), ref_data.as_slice());
+    
+    println!("Performance test done");
+    println!("----------------------------------------------------\n");
+}
+
+fn main() {
+    // creating the context
+    
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::all(),
+        dx12_shader_compiler: Default::default(),
+    });
+
+    let adapter = pollster::block_on(instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .unwrap();
+
+    let (device, queue) = pollster::block_on(adapter
+        .request_device(
+            &wgpu::DeviceDescriptor {
+                features: wgpu::Features::empty(),
+                limits: wgpu::Limits {
+                    max_vertex_attributes: 20,
+                    max_buffer_size: 2 << 29,
+                    max_storage_buffer_binding_size: 2<<29,
+                    ..Default::default()
+                },
+                label: None,
+            },
+            None, // Trace path
+        ))
+        .unwrap();
+
+    let mut compute_pipeline = gpu_rs::GPURSSorter::new(&device);
+
+    test_sort_components(&device, &queue, &mut compute_pipeline);
+    
+    test_throughput(&device, &queue, &mut compute_pipeline);
+
     // tests done ----------------------------------------------------------------------------------------------------------
     println!("Kinda works...");
 }

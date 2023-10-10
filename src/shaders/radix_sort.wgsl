@@ -111,6 +111,14 @@ fn fill_kv(wid: u32, lid: u32) {
         kv[i] = keys[pos];
     }
 }
+fn fill_kv_keys_b(wid: u32, lid: u32) {
+    let rs_block_keyvals : u32 = rs_histogram_block_rows * histogram_wg_size;
+    let kv_in_offset = wid * rs_block_keyvals + lid;
+    for (var i = 0u; i < rs_histogram_block_rows; i++) {
+        let pos = kv_in_offset + i * histogram_wg_size;
+        kv[i] = keys_b[pos];
+    }
+}
 @compute @workgroup_size({histogram_wg_size})
 fn calculate_histogram(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_id) lid : vec3<u32>) {
     // efficient loading of multiple values
@@ -200,15 +208,37 @@ fn histogram_load(digit: u32) -> u32 { return smem[digit];}// scatter_smem[rs_ra
 fn histogram_store(digit: u32, count: u32) { smem[digit] = count;} // scatter_smem[rs_radix_size + digit] = count; }
 const rs_partition_mask_status : u32 = 0xC0000000u;
 const rs_partition_mask_count : u32 = 0x3FFFFFFFu;
+var<private> kr : array<u32, rs_scatter_block_rows>;
 
+fn fill_kv_even(wid: u32, lid: u32) {
+    let subgroup_id = lid / histogram_sg_size;
+    let subgroup_invoc_id = lid - subgroup_id * histogram_sg_size;
+    let subgroup_keyvals = rs_scatter_block_rows * histogram_sg_size;
+    let rs_block_keyvals : u32 = rs_histogram_block_rows * histogram_wg_size;
+    let kv_in_offset = wid * rs_block_keyvals + subgroup_id * subgroup_keyvals + subgroup_invoc_id;
+    for (var i = 0u; i < rs_histogram_block_rows; i++) {
+        let pos = kv_in_offset + i * histogram_sg_size;
+        kv[i] = keys[pos];
+    }
+}
+fn fill_kv_odd(wid: u32, lid: u32) {
+    let subgroup_id = lid / histogram_sg_size;
+    let subgroup_invoc_id = lid - subgroup_id * histogram_sg_size;
+    let subgroup_keyvals = rs_scatter_block_rows * histogram_sg_size;
+    let rs_block_keyvals : u32 = rs_histogram_block_rows * histogram_wg_size;
+    let kv_in_offset = wid * rs_block_keyvals + subgroup_id * subgroup_keyvals + subgroup_invoc_id;
+    for (var i = 0u; i < rs_histogram_block_rows; i++) {
+        let pos = kv_in_offset + i * histogram_sg_size;
+        kv[i] = keys_b[pos];
+    }
+}
 fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3<u32>, partition_status_invalid: u32, partition_status_reduction: u32, partition_status_prefix: u32) {
     let partition_mask_invalid = partition_status_invalid << 30u;
     let partition_mask_reduction = partition_status_reduction << 30u;
     let partition_mask_prefix = partition_status_prefix << 30u;
-    fill_kv(wid.x, lid.x);  // TODO: check if this has to be changed to a per subgroup basis
+    // kv_filling is done in the scatter_even and scatter_odd functions to account for front and backbuffer switch
     // in the reference there is a nulling of the smmem here, was moved to line 251 as smem is used in the code until then
 
-    var kr = array<u32, rs_scatter_block_rows>();
     // The following implements conceptually the same as the
     // Emulate a "match" operation with broadcasts for small subgroup sizes (line 665 ff in scatter.glsl)
     // The difference however is, that instead of using subrgoupBroadcast each thread stores
@@ -379,29 +409,45 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
         kr[i] += exc - 1u;
     }
     
-    // store keyvals to their new locations, corresponds to rs_store
-    for (var i = 0u; i < rs_scatter_block_rows; i++) {
-        keys_b[kr[i]] = kv[i];
-    }
+    // the storing is done in the scatter_even and scatter_odd functions as the front and back buffer changes
 }
 @compute @workgroup_size({scatter_wg_size})
 fn scatter_even(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
     if gid.x == 0u {
         infos.odd_pass = (infos.odd_pass + 1u) % 2u; // for this to work correctly the odd_pass has to start 1
     }
+    let cur_pass = infos.even_pass * 2u;
+    
+    // load from keys, store to keys_b
+    fill_kv_even(wid.x, lid.x);
+    
     let partition_status_invalid = 0u;
     let partition_status_reduction = 1u;
     let partition_status_prefix = 2u;
-    scatter(0u, lid, gid, wid, nwg, partition_status_invalid, partition_status_reduction, partition_status_prefix);
+    scatter(cur_pass, lid, gid, wid, nwg, partition_status_invalid, partition_status_reduction, partition_status_prefix);
+
+    // store keyvals to their new locations, corresponds to rs_store
+    for (var i = 0u; i < rs_scatter_block_rows; i++) {
+        keys_b[kr[i]] = kv[i];
+    }
 }
 @compute @workgroup_size({scatter_wg_size})
 fn scatter_odd(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
     if gid.x == 0u {
         infos.even_pass = (infos.even_pass + 1u) % 2u; // for this to work correctly the even_pass has to start at 0
     }
-    fill_kv(wid.x, lid.x);
+    let cur_pass = infos.odd_pass * 2u + 1u;
+
+    // load from keys_b, store to keys
+    fill_kv_odd(wid.x, lid.x);
+
     let partition_status_invalid = 2u;
     let partition_status_reduction = 3u;
     let partition_status_prefix = 0u;
-    scatter(0u, lid, gid, wid, nwg, partition_status_invalid, partition_status_reduction, partition_status_prefix);
+    scatter(cur_pass, lid, gid, wid, nwg, partition_status_invalid, partition_status_reduction, partition_status_prefix);
+
+    // store keyvals to their new locations, corresponds to rs_store
+    for (var i = 0u; i < rs_scatter_block_rows; i++) {
+        keys[kr[i]] = kv[i];
+    }
 }
