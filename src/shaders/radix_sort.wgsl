@@ -131,9 +131,6 @@ fn calculate_histogram(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_in
 // Prefix sum over histogram
 // --------------------------------------------------------------------------------------------------------------
 fn prefix_reduce_smem(lid: u32) {
-    if lid >= rs_radix_size / 2u {
-        return;
-    }
     var offset = 1u;
     for (var d = rs_radix_size >> 1u; d > 0u; d = d >> 1u) { // sum in place tree
         workgroupBarrier();
@@ -330,19 +327,6 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
     // TODO make shure that the data is put into smem
     prefix_reduce_smem(lid.x);
     workgroupBarrier();
-    if true {
-        for (var i = 0u; i < rs_scatter_block_rows; i++) {
-        let u_val = bitcast<u32>(kv[i]);
-        let digit = extractBits(u_val, pass_ * rs_radix_log2, rs_radix_log2);
-            //keys_b[wid.x * 256u * 15u + i * 256u + lid.x] = f32(digit);// f32(kr[i] & 0xffffu);
-            //keys_b[wid.x * 256u * 15u + i * 256u + lid.x] = f32(kr[i] & 0xffffu);
-        }
-        keys_b[gid.x] = f32(histogram_load(lid.x));
-        if lid.x == 0u{
-            keys_b[gid.x] = 7777.0;
-        }
-        return;
-    }
 
     // convert keyval rank to local index, corresponds to rs_rank_to_local
     for (var i = 0u; i < rs_scatter_block_rows; i++) {
@@ -390,7 +374,7 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
     for (var i = 0u; i < rs_scatter_block_rows; i++) {
         let v = bitcast<u32>(kv[i]);
         let digit = extractBits(v, pass_ * rs_radix_log2, rs_radix_log2);
-        let exc   = smem[digit];
+        let exc   = scatter_smem[digit];
 
         kr[i] += exc - 1u;
     }
@@ -398,7 +382,6 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
     // store keyvals to their new locations, corresponds to rs_store
     for (var i = 0u; i < rs_scatter_block_rows; i++) {
         keys_b[kr[i]] = kv[i];
-        //keys_b[gid.x] = kv[i];
     }
 }
 @compute @workgroup_size({scatter_wg_size})
