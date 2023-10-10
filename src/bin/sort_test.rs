@@ -25,7 +25,6 @@ async fn download_buffer<T: Clone>(buffer: &wgpu::Buffer, device: &wgpu::Device,
     buffer_slice.map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
     device.poll(wgpu::Maintain::Wait);
     rx.receive().await.unwrap().unwrap();
-    
     let data = buffer_slice.get_mapped_range();
     let mut r;
     
@@ -122,7 +121,7 @@ fn test_throughput(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipeline:
     println!("----------------------------------------------------\n");
     println!("Starting performance test");
     // creating the data array
-    let n = 1e8 as usize;
+    let n = 1e7 as usize;
     let scrambled_data : Vec<f32> = (0..n).rev().map(|x| x as f32).collect();
     let ref_data : Vec<f32> = (0..n).map(|x| x as f32).collect();
     
@@ -132,12 +131,20 @@ fn test_throughput(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipeline:
     
     upload_to_buffer(&keyval_a, &device, &queue, scrambled_data.as_slice());
     
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: Some("auf gehts")});
-    compute_pipeline.record_sort(&bind_group, n, &mut encoder);
-    let mut t = Instant::now();
-    queue.submit([encoder.finish()]);
+    let mut commands = Vec::<wgpu::CommandBuffer>::new();
+    let n_commands = 50;
+    for i in 0..n_commands {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: Some("auf gehts")});
+        compute_pipeline.record_sort(&bind_group, n, &mut encoder);
+        commands.push(encoder.finish());
+    }
     device.poll(wgpu::Maintain::Wait);
-    println!("Gpu execution for {n} keys took: {:?}", t.elapsed());
+    let mut t = Instant::now();
+    for c in commands {
+        queue.submit([c]);
+    }
+    device.poll(wgpu::Maintain::Wait);
+    println!("Gpu execution for {n} keys took: {} ms, results in {} Mkeys/sec", t.elapsed().as_micros() as f64 * 1e-3 / n_commands as f64, n_commands as f64 *  n as f64 / (1e6 * t.elapsed().as_secs_f64()));
 
     let sorted = pollster::block_on(download_buffer::<f32>(&keyval_a, &device, &queue));
     println!("Checking sorting correctness...");

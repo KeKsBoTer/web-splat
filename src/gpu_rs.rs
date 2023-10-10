@@ -62,6 +62,7 @@ unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
 }
 
 impl GPURSSorter{
+    // The new call also needs the queue to be able to determine the maximum subgroup size (Does so by running test runs)
     pub fn new(device: &wgpu::Device) -> Self {
         let bind_group_layout =device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
                     label: Some("Radix bind group layout"),
@@ -115,57 +116,68 @@ impl GPURSSorter{
             push_constant_ranges: &[],
         });
 
-        const raw_shader : &str = include_str!("shaders/radix_sort.wgsl");
-        let shader_w_const = format!("const histogram_sg_size: u32 = {:}u;\n\
-                                            const histogram_wg_size: u32 = {:}u;\n\
-                                            const rs_radix_log2: u32 = {:}u;\n\
-                                            const rs_radix_size: u32 = {:}u;\n\
-                                            const rs_keyval_size: u32 = {:}u;\n\
-                                            const rs_histogram_block_rows: u32 = {:}u;\n\
-                                            const rs_scatter_block_rows: u32 = {:}u;\n\
-                                            const rs_mem_dwords: u32 = {:}u;\n\
-                                            const rs_mem_sweep_0_offset: u32 = {:}u;\n\
-                                            const rs_mem_sweep_1_offset: u32 = {:}u;\n\
-                                            const rs_mem_sweep_2_offset: u32 = {:}u;\n{:}", histogram_sg_size, histogram_wg_size, rs_radix_log2, rs_radix_size, rs_keyval_size, rs_histogram_block_rows, rs_scatter_block_rows, 
-                                            rs_mem_dwords, rs_mem_sweep_0_offset, rs_mem_sweep_1_offset, rs_mem_sweep_2_offset, raw_shader);
-        let shader_code = shader_w_const.replace("{histogram_wg_size}", histogram_wg_size.to_string().as_str())
-            .replace("{prefix_wg_size}", prefix_wg_size.to_string().as_str())
-            .replace("{scatter_wg_size}", scatter_wg_size.to_string().as_str());
-        // println!("{}", shader_code);
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Radix sort shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_code.into()),
-        });
-        let zero_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Zero the histograms"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: "zero_histograms",
-        });
-        let histogram_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("calculate_histogram"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: "calculate_histogram",
-        });
-        let prefix_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("prefix_histogram"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: "prefix_histogram",
-        });
-        let scatter_even_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("scatter_even"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: "scatter_even",
-        });
-        let scatter_odd_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("scatter_odd"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: "scatter_odd",
-        });
+        let mut zero_p: wgpu::ComputePipeline; 
+        let mut histogram_p: wgpu::ComputePipeline;
+        let mut prefix_p: wgpu::ComputePipeline;
+        let mut scatter_even_p: wgpu::ComputePipeline;
+        let mut scatter_odd_p: wgpu::ComputePipeline;
+        
+        let sizes = (16, 32, 64, 128);
+        let mut cur_size = 1;
+        while true {
+            const raw_shader : &str = include_str!("shaders/radix_sort.wgsl");
+            let shader_w_const = format!("const histogram_sg_size: u32 = {:}u;\n\
+                                                const histogram_wg_size: u32 = {:}u;\n\
+                                                const rs_radix_log2: u32 = {:}u;\n\
+                                                const rs_radix_size: u32 = {:}u;\n\
+                                                const rs_keyval_size: u32 = {:}u;\n\
+                                                const rs_histogram_block_rows: u32 = {:}u;\n\
+                                                const rs_scatter_block_rows: u32 = {:}u;\n\
+                                                const rs_mem_dwords: u32 = {:}u;\n\
+                                                const rs_mem_sweep_0_offset: u32 = {:}u;\n\
+                                                const rs_mem_sweep_1_offset: u32 = {:}u;\n\
+                                                const rs_mem_sweep_2_offset: u32 = {:}u;\n{:}", histogram_sg_size, histogram_wg_size, rs_radix_log2, rs_radix_size, rs_keyval_size, rs_histogram_block_rows, rs_scatter_block_rows, 
+                                                rs_mem_dwords, rs_mem_sweep_0_offset, rs_mem_sweep_1_offset, rs_mem_sweep_2_offset, raw_shader);
+            let shader_code = shader_w_const.replace("{histogram_wg_size}", histogram_wg_size.to_string().as_str())
+                .replace("{prefix_wg_size}", prefix_wg_size.to_string().as_str())
+                .replace("{scatter_wg_size}", scatter_wg_size.to_string().as_str());
+            // println!("{}", shader_code);
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Radix sort shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_code.into()),
+            });
+            let zero_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Zero the histograms"),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: "zero_histograms",
+            });
+            let histogram_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("calculate_histogram"),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: "calculate_histogram",
+            });
+            let prefix_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("prefix_histogram"),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: "prefix_histogram",
+            });
+            let scatter_even_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("scatter_even"),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: "scatter_even",
+            });
+            let scatter_odd_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("scatter_odd"),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: "scatter_odd",
+            });
+
+        }
         return Self { bind_group_layout, zero_p, histogram_p, prefix_p, scatter_even_p, scatter_odd_p };
     }
     
