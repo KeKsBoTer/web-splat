@@ -1,20 +1,15 @@
 use bytemuck::Zeroable;
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
-use cgmath::{
-    InnerSpace, Matrix, Matrix3, Point3, Quaternion, SquareMatrix, Transform, Vector3, Vector4,
-};
+use cgmath::{InnerSpace, Matrix, Matrix3, Point3, Quaternion, SquareMatrix, Vector3, Vector4};
 use clap::ValueEnum;
 use half::f16;
 use log::{info, warn};
 use ply_rs;
-use rayon::slice::ParallelSliceMut;
 use std::fmt::{Debug, Display};
 use std::io::{self, BufReader, Read, Seek};
 use std::time::Instant;
 use std::{mem, path::Path};
 use wgpu::util::DeviceExt;
-
-use crate::camera::Camera;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -32,9 +27,6 @@ impl Default for GaussianSplat {
 }
 
 pub struct PointCloud {
-    vertex_buffer: wgpu::Buffer,
-    #[allow(dead_code)]
-    sh_coef_buffer: wgpu::Buffer,
     splat_2d_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     points: Vec<GaussianSplat>,
@@ -137,8 +129,6 @@ impl PointCloud {
         });
 
         Ok(Self {
-            vertex_buffer,
-            sh_coef_buffer,
             splat_2d_buffer,
             bind_group,
             num_points: num_points as u32,
@@ -160,28 +150,6 @@ impl PointCloud {
     }
     pub fn sh_deg(&self) -> u32 {
         self.sh_deg
-    }
-
-    pub fn sort(&mut self, queue: &wgpu::Queue, camera: impl Camera) {
-        let view = camera.view_matrix();
-        let proj = camera.proj_matrix();
-        let transform = proj * view;
-        self.points.par_sort_unstable_by_key(|p| {
-            (-transform.transform_point(p.xyz).z * (2f32).powi(24)) as i32
-        });
-        queue.write_buffer(
-            &self.vertex_buffer,
-            0,
-            bytemuck::cast_slice(self.points.as_slice()),
-        );
-    }
-
-    pub fn update_points(&mut self, queue: &wgpu::Queue, new_points: Vec<GaussianSplat>) {
-        queue.write_buffer(
-            &self.vertex_buffer,
-            0,
-            bytemuck::cast_slice(new_points.as_slice()),
-        );
     }
 
     pub(crate) fn bind_group(&self) -> &wgpu::BindGroup {

@@ -1,11 +1,20 @@
+use std::{
+    path::Path,
+    sync::{Arc, RwLock},
+    time::{Duration, Instant},
+};
 
-use std::{path::Path, sync::{RwLock, Arc}, time::{Duration, Instant}};
-
-use cgmath::{Point3, Quaternion, EuclideanSpace, Vector2, Deg};
+use cgmath::{Deg, EuclideanSpace, Point3, Quaternion, Vector2};
+use egui::TextStyle;
+use egui_plot::{PlotPoints, GridMark, Legend};
 use num_traits::One;
-use utils::key_to_num;
-use winit::{window::{Window, WindowBuilder}, event_loop::{EventLoop, ControlFlow}, dpi::PhysicalSize, event::{WindowEvent, Event, ElementState, VirtualKeyCode, DeviceEvent}};
-
+use utils::{key_to_num, RingBuffer};
+use winit::{
+    dpi::PhysicalSize,
+    event::{DeviceEvent, ElementState, Event, VirtualKeyCode, WindowEvent},
+    event_loop::{ControlFlow, EventLoop},
+    window::{Window, WindowBuilder},
+};
 
 mod animation;
 pub use animation::{Animation, TrackingShot, Transition};
@@ -22,9 +31,9 @@ pub use renderer::GaussianRenderer;
 mod scene;
 pub use self::scene::{Scene, SceneCamera};
 
+mod ui_renderer;
 mod uniform;
 mod utils;
-
 pub struct WGPUContext {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -54,7 +63,8 @@ impl WGPUContext {
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
-                    features: wgpu::Features::empty(),
+                    features: wgpu::Features::TIMESTAMP_QUERY
+                        | wgpu::Features::MAPPABLE_PRIMARY_BUFFERS,
                     limits: wgpu::Limits {
                         max_storage_buffer_binding_size: 1 << 30,
                         max_buffer_size: 1 << 30,
@@ -75,13 +85,14 @@ impl WGPUContext {
     }
 }
 
-pub struct RenderConfig{
-    pub max_sh_deg:u32,
-    pub sh_dtype:SHDType,
+pub struct RenderConfig {
+    pub max_sh_deg: u32,
+    pub sh_dtype: SHDType,
+    pub no_vsync: bool,
 }
 
 struct WindowContext {
-    wgpu_context:WGPUContext,
+    wgpu_context: WGPUContext,
     surface: wgpu::Surface,
     config: wgpu::SurfaceConfiguration,
     window: Window,
@@ -95,11 +106,19 @@ struct WindowContext {
     scene: Option<Scene>,
     pause_sort: Arc<RwLock<bool>>,
     current_view: Option<usize>,
+    ui_renderer: ui_renderer::EguiWGPU,
+    fps: f32,
+    history:RingBuffer<(Duration,Duration,Duration),512>,
 }
 
 impl WindowContext {
     // Creating some of the wgpu types requires async code
-    async fn new<P: AsRef<Path>>(window: Window, pc_file: P,render_config:RenderConfig) -> Self {
+    async fn new<P: AsRef<Path>>(
+        window: Window,
+        event_loop: &EventLoop<()>,
+        pc_file: P,
+        render_config: RenderConfig,
+    ) -> Self {
         let size = window.inner_size();
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -111,7 +130,7 @@ impl WindowContext {
 
         let wgpu_context = WGPUContext::new(&instance, Some(&surface)).await;
 
-        log::info!("device: {:?}",wgpu_context.adapter.get_info().name);
+        log::info!("device: {:?}", wgpu_context.adapter.get_info().name);
 
         let device = &wgpu_context.device;
 
@@ -130,14 +149,23 @@ impl WindowContext {
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode: wgpu::PresentMode::AutoVsync,
+            present_mode: if render_config.no_vsync {
+                wgpu::PresentMode::AutoNoVsync
+            } else {
+                wgpu::PresentMode::AutoVsync
+            },
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             view_formats: vec![],
         };
         surface.configure(&device, &config);
-        let pc = PointCloud::load_ply(&device, pc_file, render_config.sh_dtype,Some(render_config.max_sh_deg)).unwrap();
+        let pc = PointCloud::load_ply(
+            &device,
+            pc_file,
+            render_config.sh_dtype,
+            Some(render_config.max_sh_deg),
+        )
+        .unwrap();
         log::info!("loaded point cloud with {:} points", pc.num_points());
-
 
         let renderer = GaussianRenderer::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype());
 
@@ -145,10 +173,16 @@ impl WindowContext {
         let view_camera = PerspectiveCamera::new(
             Point3::origin(),
             Quaternion::one(),
-            PerspectiveProjection::new(Vector2::new(size.width,size.height),Vector2::new(Deg(45.), Deg(45. * aspect)), 0.1, 100.),
+            PerspectiveProjection::new(
+                Vector2::new(size.width, size.height),
+                Vector2::new(Deg(45.), Deg(45. * aspect)),
+                0.1,
+                100.,
+            ),
         );
 
         let controller = CameraController::new(3., 0.25);
+        let ui_renderer = ui_renderer::EguiWGPU::new(event_loop, device, surface_format);
         Self {
             wgpu_context,
             scale_factor: window.scale_factor() as f32,
@@ -163,6 +197,9 @@ impl WindowContext {
             scene: None,
             pause_sort: Arc::new(RwLock::new(false)),
             current_view: None,
+            ui_renderer,
+            fps: 0.,
+            history:RingBuffer::new()
         }
     }
 
@@ -171,7 +208,8 @@ impl WindowContext {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
 
-            self.surface.configure(&self.wgpu_context.device, &self.config);
+            self.surface
+                .configure(&self.wgpu_context.device, &self.config);
         }
         if let Some(scale_factor) = scale_factor {
             if scale_factor > 0. {
@@ -181,6 +219,7 @@ impl WindowContext {
     }
 
     fn update(&mut self, dt: Duration) {
+        self.fps = 1. / dt.as_secs_f32();
         if let Some(next_camera) = &mut self.animation {
             let mut curr_camera = self.camera.write().unwrap();
             *curr_camera = next_camera.update(dt);
@@ -194,6 +233,42 @@ impl WindowContext {
         }
     }
 
+    fn ui(&mut self) {
+        let stats = pollster::block_on(
+            self.renderer
+                .render_stats(&self.wgpu_context.device, &self.wgpu_context.queue),
+        );
+        self.history.push((stats.preprocess_time,stats.sort_time,stats.rasterization_time));
+
+        egui::Window::new("Render Stats").show(&self.ui_renderer.ctx, |ui| {
+            egui::Grid::new("timing").num_columns(2).show(ui, |ui| {
+                ui.label("fps");
+                ui.label(format!("{:.2}", self.fps));
+            });
+            let history = self.history.to_vec();
+            let pre:Vec<f32> = history.iter().map(|v|v.0.as_secs_f32()*1000.).collect();
+            let sort:Vec<f32> = history.iter().map(|v|v.1.as_secs_f32()*1000.).collect();
+            let rast:Vec<f32> = history.iter().map(|v|v.2.as_secs_f32()*1000.).collect();
+
+            egui_plot::Plot::new("frame times")
+                .allow_drag(false)
+                .allow_boxed_zoom(false)
+                .allow_zoom(false)
+                .show_x(false)
+                .y_axis_label("ms")
+                .show_axes([false,true])
+                .legend(Legend{ text_style: TextStyle::Small, background_alpha: 1., position: egui_plot::Corner::LeftTop })
+                .show(ui, |ui| {
+                    let line = egui_plot::Line::new(PlotPoints::from_ys_f32(&pre)).name("preprocess");
+                    ui.line(line);
+                    let line = egui_plot::Line::new(PlotPoints::from_ys_f32(&sort)).name("sorting");
+                    ui.line(line);
+                    let line = egui_plot::Line::new(PlotPoints::from_ys_f32(&rast)).name("rasterize");
+                    ui.line(line);
+                });
+        });
+    }
+
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
         let view = output
@@ -201,10 +276,35 @@ impl WindowContext {
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         let viewport = Vector2::new(self.config.width, self.config.height);
-        self.renderer.render(&self.wgpu_context.device, &self.wgpu_context.queue, &view, &self.pc.read().unwrap(), self.camera.read().unwrap().clone(), viewport);
+        self.renderer.render(
+            &self.wgpu_context.device,
+            &self.wgpu_context.queue,
+            &view,
+            &self.pc.read().unwrap(),
+            self.camera.read().unwrap().clone(),
+            viewport,
+        );
 
+        {
+            // ui rendering
+            self.ui_renderer.begin_frame(&self.window);
+            self.ui();
+
+            let shapes = self.ui_renderer.end_frame(&self.window);
+
+            self.ui_renderer.paint(
+                PhysicalSize {
+                    width: output.texture.size().width,
+                    height: output.texture.size().height,
+                },
+                self.scale_factor,
+                &self.wgpu_context.device,
+                &self.wgpu_context.queue,
+                &view,
+                shapes,
+            );
+        }
         output.present();
-
         Ok(())
     }
 
@@ -214,10 +314,13 @@ impl WindowContext {
 
     fn start_tracking_shot(&mut self) {
         if let Some(scene) = &self.scene {
-            self.animation = Some(Box::new(TrackingShot::from_scene(scene, 1.,Some(self.camera.read().unwrap().clone()))));
+            self.animation = Some(Box::new(TrackingShot::from_scene(
+                scene,
+                1.,
+                Some(self.camera.read().unwrap().clone()),
+            )));
         }
     }
-
 
     pub fn set_camera<C: Into<PerspectiveCamera>>(
         &mut self,
@@ -244,7 +347,6 @@ impl WindowContext {
     }
 }
 
-
 pub fn smoothstep(x: f32) -> f32 {
     return x * x * (3.0 - 2.0 * x);
 }
@@ -252,7 +354,7 @@ pub fn smoothstep(x: f32) -> f32 {
 pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
     file: P,
     scene_file: Option<P>,
-    config: RenderConfig
+    config: RenderConfig,
 ) {
     env_logger::init();
     let event_loop = EventLoop::new();
@@ -276,7 +378,7 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
         .build(&event_loop)
         .unwrap();
 
-    let mut state = WindowContext::new(window, file,config).await;
+    let mut state = WindowContext::new(window, &event_loop, file, config).await;
 
     if let Some(scene) = scene {
         let init_camera = scene.camera(0);
@@ -287,13 +389,12 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
 
     let mut last = Instant::now();
 
-
-
-    event_loop.run(move |event, _, control_flow| match event {
+    event_loop.run(move |event, _, control_flow| 
+        match event {
         Event::WindowEvent {
             ref event,
             window_id,
-        } if window_id == state.window.id() => match event {
+        } if window_id == state.window.id() && !state.ui_renderer.on_event(event) => match event {
             WindowEvent::Resized(physical_size) => {
                 state.resize(*physical_size, None);
             }

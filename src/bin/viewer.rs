@@ -18,6 +18,9 @@ struct Opt {
     /// datatype used for SH coefficients
     #[arg(long,value_enum, default_value_t = SHDType::Byte)]
     sh_dtype: SHDType,
+
+    #[arg(long)]
+    no_vsync: bool,
 }
 
 #[pollster::main]
@@ -30,6 +33,7 @@ async fn main() {
         RenderConfig {
             max_sh_deg: opt.max_sh_deg,
             sh_dtype: opt.sh_dtype,
+            no_vsync: opt.no_vsync,
         },
     )
     .await;

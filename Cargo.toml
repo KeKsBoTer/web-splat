@@ -31,6 +31,11 @@ futures-intrusive = "0.5.0"
 image = "0.24.6"
 indicatif = "0.17.7"
 
+egui = "0.23.0"
+egui-wgpu = "0.23.0"
+egui-winit = "0.23.0"
+egui_plot = "0.23.0"
+
 [lib]
 path = "src/lib.rs"
 

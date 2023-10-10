@@ -1,9 +1,10 @@
-use std::num::NonZeroU64;
+use std::{num::NonZeroU64, time::Duration};
 
 use crate::{
     camera::{Camera, PerspectiveCamera, OPENGL_TO_WGPU_MATRIX},
     pointcloud::{PointCloud, SHDType, Splat2D},
     uniform::UniformBuffer,
+    utils::GPUStopwatch,
 };
 use cgmath::{Matrix4, SquareMatrix, Vector2};
 
@@ -14,6 +15,7 @@ pub struct GaussianRenderer {
     draw_indirect_buffer: wgpu::Buffer,
     draw_indirect: wgpu::BindGroup,
     color_format: wgpu::TextureFormat,
+    stopwatch: GPUStopwatch,
 }
 
 impl GaussianRenderer {
@@ -80,6 +82,7 @@ impl GaussianRenderer {
                 resource: draw_indirect_buffer.as_entire_binding(),
             }],
         });
+        let stopwatch = GPUStopwatch::new(device, Some(3));
 
         let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
         let preprocess = PreprocessPipeline::new(device, sh_deg, sh_dtype);
@@ -90,6 +93,7 @@ impl GaussianRenderer {
             draw_indirect_buffer,
             draw_indirect,
             color_format,
+            stopwatch,
         }
     }
 
@@ -137,30 +141,53 @@ impl GaussianRenderer {
             label: Some("Render Encoder Compare"),
         });
         {
+            self.stopwatch.start(&mut encoder, "preprocess").unwrap();
             self.preprocess(&mut encoder, &queue, &pc, camera, viewport);
+            self.stopwatch.stop(&mut encoder, "preprocess").unwrap();
 
+            self.stopwatch.start(&mut encoder, "sorting").unwrap();
             // TODO @josef sort the pc.splat_2d_buffer buffer here
+            self.stopwatch.stop(&mut encoder, "sorting").unwrap();
 
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("render pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: true,
-                    },
-                })],
-                depth_stencil_attachment: None,
-            });
+            encoder.push_debug_group("render");
+            self.stopwatch.start(&mut encoder, "rasterization").unwrap();
+            {
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("render pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &target,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: true,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                });
 
-            render_pass.set_pipeline(&self.pipeline);
+                render_pass.set_pipeline(&self.pipeline);
 
-            render_pass.set_vertex_buffer(0, pc.splats_2d_buffer().slice(..));
-            render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
+                render_pass.set_vertex_buffer(0, pc.splats_2d_buffer().slice(..));
+                render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
+            }
+            self.stopwatch.stop(&mut encoder, "rasterization").unwrap();
+            encoder.pop_debug_group();
         }
-
+        self.stopwatch.end(&mut encoder);
         queue.submit([encoder.finish()]);
+    }
+
+    pub async fn render_stats(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> RenderStatistics {
+        let durations = self.stopwatch.take_measurements(device, queue).await;
+        RenderStatistics {
+            preprocess_time: durations["preprocess"],
+            sort_time: durations["sorting"],
+            rasterization_time: durations["rasterization"],
+        }
     }
 
     pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -288,17 +315,28 @@ impl PreprocessPipeline {
         camera: &UniformBuffer<CameraUniform>,
         draw_indirect: &wgpu::BindGroup,
     ) {
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("preprocess compute pass"),
-        });
-        pass.set_pipeline(&self.0);
-        pass.set_bind_group(0, camera.bind_group(), &[]);
-        pass.set_bind_group(1, pc.bind_group(), &[]);
+        encoder.push_debug_group("preprocess");
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("preprocess compute pass"),
+            });
 
-        pass.set_bind_group(2, draw_indirect, &[]);
-        let per_dim = (pc.num_points() as f32).sqrt().ceil() as u32;
-        let wgs_x = (per_dim + 15) / 16;
-        let wgs_y = (per_dim + 15) / 16;
-        pass.dispatch_workgroups(wgs_x, wgs_y, 1);
+            pass.set_pipeline(&self.0);
+            pass.set_bind_group(0, camera.bind_group(), &[]);
+            pass.set_bind_group(1, pc.bind_group(), &[]);
+
+            pass.set_bind_group(2, draw_indirect, &[]);
+            let per_dim = (pc.num_points() as f32).sqrt().ceil() as u32;
+            let wgs_x = (per_dim + 15) / 16;
+            let wgs_y = (per_dim + 15) / 16;
+            pass.dispatch_workgroups(wgs_x, wgs_y, 1);
+        }
+        encoder.pop_debug_group();
     }
+}
+
+pub struct RenderStatistics {
+    pub preprocess_time: Duration,
+    pub rasterization_time: Duration,
+    pub sort_time: Duration,
 }

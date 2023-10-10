@@ -1,16 +1,32 @@
-use std::{path::Path, sync::{RwLock, Arc}, time::{Duration, Instant}, thread};
+use std::{
+    path::Path,
+    sync::{Arc, RwLock},
+    thread,
+    time::{Duration, Instant},
+};
 
-use cgmath::{Point3, Quaternion, EuclideanSpace, Vector2, Deg, Transform};
+use cgmath::{Deg, EuclideanSpace, Point3, Quaternion, Transform, Vector2};
 use log::{debug, info};
 use num_traits::One;
 use rayon::slice::ParallelSliceMut;
-use winit::{window::{Window, WindowBuilder}, event_loop::{EventLoop, ControlFlow}, dpi::PhysicalSize, event::{WindowEvent, Event, ElementState, VirtualKeyCode, DeviceEvent}};
+use winit::{
+    dpi::PhysicalSize,
+    event::{DeviceEvent, ElementState, Event, VirtualKeyCode, WindowEvent},
+    event_loop::{ControlFlow, EventLoop},
+    window::{Window, WindowBuilder},
+};
 
-use crate::{PointCloud, renderer::GaussianRenderer, camera::{PerspectiveCamera, PerspectiveProjection, Camera}, animation::{Animation, TrackingShot, Transition, smoothstep}, controller::CameraController, Scene, WGPUContext, utils, pc};
-
+use crate::{
+    animation::{smoothstep, Animation, TrackingShot, Transition},
+    camera::{Camera, PerspectiveCamera, PerspectiveProjection},
+    controller::CameraController,
+    pc,
+    renderer::GaussianRenderer,
+    utils, PointCloud, Scene, WGPUContext,
+};
 
 struct WindowContext {
-    wgpu_context:WGPUContext,
+    wgpu_context: WGPUContext,
     surface: wgpu::Surface,
     config: wgpu::SurfaceConfiguration,
     window: Window,
@@ -96,7 +112,8 @@ impl WindowContext {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
 
-            self.surface.configure(&self.wgpu_context.device, &self.config);
+            self.surface
+                .configure(&self.wgpu_context.device, &self.config);
         }
         if let Some(scale_factor) = scale_factor {
             if scale_factor > 0. {
@@ -126,7 +143,14 @@ impl WindowContext {
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         let viewport = Vector2::new(self.config.width, self.config.height);
-        self.renderer.render(&self.wgpu_context.device, &self.wgpu_context.queue, &view, &self.pc.read().unwrap(), self.camera.read().unwrap().clone(), viewport);
+        self.renderer.render(
+            &self.wgpu_context.device,
+            &self.wgpu_context.queue,
+            &view,
+            &self.pc.read().unwrap(),
+            self.camera.read().unwrap().clone(),
+            viewport,
+        );
 
         output.present();
 
@@ -139,10 +163,13 @@ impl WindowContext {
 
     fn start_tracking_shot(&mut self) {
         if let Some(scene) = &self.scene {
-            self.animation = Some(Box::new(TrackingShot::from_scene(scene, 1.,Some(self.camera.read().unwrap().clone()))));
+            self.animation = Some(Box::new(TrackingShot::from_scene(
+                scene,
+                1.,
+                Some(self.camera.read().unwrap().clone()),
+            )));
         }
     }
-
 
     pub fn set_camera<C: Into<PerspectiveCamera>>(
         &mut self,

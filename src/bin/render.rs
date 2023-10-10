@@ -3,9 +3,7 @@ use clap::Parser;
 use image::{ImageBuffer, Rgba};
 use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
 use std::path::PathBuf;
-use web_splats::{
-    GaussianRenderer, PerspectiveCamera, PointCloud, SHDType, Scene, SceneCamera, WGPUContext,
-};
+use web_splats::{GaussianRenderer, PointCloud, SHDType, Scene, SceneCamera, WGPUContext};
 
 #[derive(Debug, Parser)]
 #[command(author, version)]
@@ -77,8 +75,6 @@ async fn render_views(
 
         let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let c: PerspectiveCamera = s.clone().into();
-        pc.sort(queue, c);
         renderer.render(
             device,
             queue,
