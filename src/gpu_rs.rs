@@ -16,7 +16,6 @@ use crate::{
 };
 
 // IMPORTANT: the following constants have to be synced with the numbers in radix_sort.wgsl
-const histogram_sg_size: usize = 32;            // depends on the platform, 32 for nvida, 64 for amd
 const histogram_wg_size: usize = 256;
 const rs_radix_log2: usize = 8;                 // 8 bit radices
 const rs_radix_size: usize = 1 << rs_radix_log2;// 256 entries into the radix table
@@ -26,18 +25,6 @@ const rs_scatter_block_rows : usize = rs_histogram_block_rows; // DO NOT CHANGE,
 const prefix_wg_size: usize = 1 << 7;           // one thread operates on 2 prefixes at the same time
 const scatter_wg_size: usize = 1 << 8;
 
-// special variables for scatter shade
-const rs_sweep_0_size : usize = rs_radix_size / histogram_sg_size;
-const rs_sweep_1_size : usize = rs_sweep_0_size / histogram_sg_size;
-const rs_sweep_2_size : usize = rs_sweep_1_size / histogram_sg_size;
-const rs_sweep_size : usize = rs_sweep_0_size + rs_sweep_1_size + rs_sweep_2_size;
-const rs_smem_phase_1 : usize = rs_radix_size + rs_radix_size + rs_sweep_size;
-const rs_smem_phase_2 : usize = rs_radix_size + rs_scatter_block_rows * {scatter_wg_size};
-// rs_smem_phase_2 will always be larger, so always use phase2
-const rs_mem_dwords : usize = rs_smem_phase_2;
-const rs_mem_sweep_0_offset : usize = 0;
-const rs_mem_sweep_1_offset : usize = rs_mem_sweep_0_offset + rs_sweep_0_size;
-const rs_mem_sweep_2_offset : usize = rs_mem_sweep_1_offset + rs_sweep_1_size;
 
 pub struct GPURSSorter {
     pub bind_group_layout: wgpu::BindGroupLayout,
@@ -46,6 +33,7 @@ pub struct GPURSSorter {
     prefix_p:       wgpu::ComputePipeline,
     scatter_even_p: wgpu::ComputePipeline,
     scatter_odd_p : wgpu::ComputePipeline,
+    subgroup_size:  usize,
 }
 
 pub struct GeneralInfo{
@@ -63,7 +51,50 @@ unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
 
 impl GPURSSorter{
     // The new call also needs the queue to be able to determine the maximum subgroup size (Does so by running test runs)
-    pub fn new(device: &wgpu::Device) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+        println!("Searching for the maximum subgroup size (wgpu currently does not allow to query subgroup sizes)");
+        let sizes = vec![1, 16, 32, 64, 128];
+        let mut cur_size = 2;
+        let mut cur_sorter = Self::new_with_sg_size(device, sizes[cur_size]);
+        enum state {init, increasing, decreasing};
+        let mut s = state::init;
+        while true {
+            if cur_size < 0 || cur_size >= sizes.len() {
+                panic!("GPURSSorter::new() No workgroup size that works was found. Unable to use sorter");
+            }
+            println!("Checking sorting with subgroupsize {}", sizes[cur_size]);
+            cur_sorter = Self::new_with_sg_size(device, sizes[cur_size]);
+            let sort_success = cur_sorter.test_sort(device, queue);
+            match s {
+                state::init =>
+                    if sort_success {s = state::increasing; cur_size += 1;}
+                    else {s = state::decreasing; cur_size -= 1;}
+                state::increasing =>
+                    if sort_success {cur_size += 1;}
+                    else {cur_sorter = Self::new_with_sg_size(device, sizes[cur_size - 1]); break;}
+                state::decreasing =>
+                    if sort_success {break;}
+                    else {cur_size -= 1;}
+            }
+        }
+        println!("Created a sorter with subgroup size {}", cur_sorter.subgroup_size);
+        return cur_sorter;
+    }
+    
+    fn new_with_sg_size(device: &wgpu::Device, sg_size: i32) -> Self{
+        // special variables for scatter shade
+        let histogram_sg_size : usize = sg_size as usize;
+        let rs_sweep_0_size : usize = rs_radix_size / histogram_sg_size;
+        let rs_sweep_1_size : usize = rs_sweep_0_size / histogram_sg_size;
+        let rs_sweep_2_size : usize = rs_sweep_1_size / histogram_sg_size;
+        let rs_sweep_size : usize = rs_sweep_0_size + rs_sweep_1_size + rs_sweep_2_size;
+        let rs_smem_phase_1 : usize = rs_radix_size + rs_radix_size + rs_sweep_size;
+        let rs_smem_phase_2 : usize = rs_radix_size + rs_scatter_block_rows * {scatter_wg_size};
+        // rs_smem_phase_2 will always be larger, so always use phase2
+        let rs_mem_dwords : usize = rs_smem_phase_2;
+        let rs_mem_sweep_0_offset : usize = 0;
+        let rs_mem_sweep_1_offset : usize = rs_mem_sweep_0_offset + rs_sweep_0_size;
+        let rs_mem_sweep_2_offset : usize = rs_mem_sweep_1_offset + rs_sweep_1_size;
         let bind_group_layout =device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
                     label: Some("Radix bind group layout"),
                     entries: &[
@@ -116,69 +147,85 @@ impl GPURSSorter{
             push_constant_ranges: &[],
         });
 
-        let mut zero_p: wgpu::ComputePipeline; 
-        let mut histogram_p: wgpu::ComputePipeline;
-        let mut prefix_p: wgpu::ComputePipeline;
-        let mut scatter_even_p: wgpu::ComputePipeline;
-        let mut scatter_odd_p: wgpu::ComputePipeline;
-        
-        let sizes = (16, 32, 64, 128);
-        let mut cur_size = 1;
-        while true {
-            const raw_shader : &str = include_str!("shaders/radix_sort.wgsl");
-            let shader_w_const = format!("const histogram_sg_size: u32 = {:}u;\n\
-                                                const histogram_wg_size: u32 = {:}u;\n\
-                                                const rs_radix_log2: u32 = {:}u;\n\
-                                                const rs_radix_size: u32 = {:}u;\n\
-                                                const rs_keyval_size: u32 = {:}u;\n\
-                                                const rs_histogram_block_rows: u32 = {:}u;\n\
-                                                const rs_scatter_block_rows: u32 = {:}u;\n\
-                                                const rs_mem_dwords: u32 = {:}u;\n\
-                                                const rs_mem_sweep_0_offset: u32 = {:}u;\n\
-                                                const rs_mem_sweep_1_offset: u32 = {:}u;\n\
-                                                const rs_mem_sweep_2_offset: u32 = {:}u;\n{:}", histogram_sg_size, histogram_wg_size, rs_radix_log2, rs_radix_size, rs_keyval_size, rs_histogram_block_rows, rs_scatter_block_rows, 
-                                                rs_mem_dwords, rs_mem_sweep_0_offset, rs_mem_sweep_1_offset, rs_mem_sweep_2_offset, raw_shader);
-            let shader_code = shader_w_const.replace("{histogram_wg_size}", histogram_wg_size.to_string().as_str())
-                .replace("{prefix_wg_size}", prefix_wg_size.to_string().as_str())
-                .replace("{scatter_wg_size}", scatter_wg_size.to_string().as_str());
-            // println!("{}", shader_code);
-            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("Radix sort shader"),
-                source: wgpu::ShaderSource::Wgsl(shader_code.into()),
-            });
-            let zero_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("Zero the histograms"),
-                layout: Some(&pipeline_layout),
-                module: &shader,
-                entry_point: "zero_histograms",
-            });
-            let histogram_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("calculate_histogram"),
-                layout: Some(&pipeline_layout),
-                module: &shader,
-                entry_point: "calculate_histogram",
-            });
-            let prefix_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("prefix_histogram"),
-                layout: Some(&pipeline_layout),
-                module: &shader,
-                entry_point: "prefix_histogram",
-            });
-            let scatter_even_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("scatter_even"),
-                layout: Some(&pipeline_layout),
-                module: &shader,
-                entry_point: "scatter_even",
-            });
-            let scatter_odd_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("scatter_odd"),
-                layout: Some(&pipeline_layout),
-                module: &shader,
-                entry_point: "scatter_odd",
-            });
+        const raw_shader : &str = include_str!("shaders/radix_sort.wgsl");
+        let shader_w_const = format!("const histogram_sg_size: u32 = {:}u;\n\
+                                            const histogram_wg_size: u32 = {:}u;\n\
+                                            const rs_radix_log2: u32 = {:}u;\n\
+                                            const rs_radix_size: u32 = {:}u;\n\
+                                            const rs_keyval_size: u32 = {:}u;\n\
+                                            const rs_histogram_block_rows: u32 = {:}u;\n\
+                                            const rs_scatter_block_rows: u32 = {:}u;\n\
+                                            const rs_mem_dwords: u32 = {:}u;\n\
+                                            const rs_mem_sweep_0_offset: u32 = {:}u;\n\
+                                            const rs_mem_sweep_1_offset: u32 = {:}u;\n\
+                                            const rs_mem_sweep_2_offset: u32 = {:}u;\n{:}", histogram_sg_size, histogram_wg_size, rs_radix_log2, rs_radix_size, rs_keyval_size, rs_histogram_block_rows, rs_scatter_block_rows, 
+                                            rs_mem_dwords, rs_mem_sweep_0_offset, rs_mem_sweep_1_offset, rs_mem_sweep_2_offset, raw_shader);
+        let shader_code = shader_w_const.replace("{histogram_wg_size}", histogram_wg_size.to_string().as_str())
+            .replace("{prefix_wg_size}", prefix_wg_size.to_string().as_str())
+            .replace("{scatter_wg_size}", scatter_wg_size.to_string().as_str());
+        // println!("{}", shader_code);
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Radix sort shader"),
+            source: wgpu::ShaderSource::Wgsl(shader_code.into()),
+        });
+        let zero_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Zero the histograms"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: "zero_histograms",
+        });
+        let histogram_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("calculate_histogram"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: "calculate_histogram",
+        });
+        let prefix_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("prefix_histogram"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: "prefix_histogram",
+        });
+        let scatter_even_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("scatter_even"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: "scatter_even",
+        });
+        let scatter_odd_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("scatter_odd"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: "scatter_odd",
+        });
 
+        return Self { bind_group_layout, zero_p, histogram_p, prefix_p, scatter_even_p, scatter_odd_p , subgroup_size: histogram_sg_size };
+    }
+    
+    fn test_sort(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> bool {
+        // smiply runs a small sort and check if the sorting result is correct
+        let n = 512;    // means that 2 workgroups are needed for sorting
+        let scrambled_data : Vec<f32> = (0..n).rev().map(|x| x as f32).collect();
+        let sorted_data : Vec<f32> = (0..n).map(|x| x as f32).collect();
+
+        let internal_mem_buffer = Self::create_internal_mem_buffer(self, device, n);
+        let (keyval_a, keyval_b) = Self::create_keyval_buffers(device, n);
+        let (uniform_buffer, bind_group) = self.create_bind_group(device, n, &internal_mem_buffer, &keyval_a, &keyval_b);
+
+        upload_to_buffer(&keyval_a, device, queue, scrambled_data.as_slice());
+        
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {label: Some("GPURSSorter test_sort")});
+        self.record_sort(&bind_group, n, &mut encoder);
+        queue.submit([encoder.finish()]);
+        device.poll(wgpu::Maintain::Wait);
+        
+        let sorted = pollster::block_on(download_buffer::<f32>(&keyval_a, device, queue));
+        for i in 0..n {
+            if sorted[i] != sorted_data[i] {
+                return false;
+            }
         }
-        return Self { bind_group_layout, zero_p, histogram_p, prefix_p, scatter_even_p, scatter_odd_p };
+        return true;
     }
     
     fn get_scatter_histogram_sizes(keysize: usize) -> (usize, usize, usize, usize, usize, usize) {
@@ -215,16 +262,15 @@ impl GPURSSorter{
     // caclulates and allocates a buffer that is sufficient for holding all needed information for
     // sorting. This includes the histograms and the temporary scatter buffer
     // @return: tuple containing [internal memory buffer (should be bound at shader binding 1, count_ru_histo (padded size needed for the keyval buffer)]
-    pub fn create_internal_mem_buffer(device: &wgpu::Device, keysize: usize) -> wgpu::Buffer {
+    pub fn create_internal_mem_buffer(&self, device: &wgpu::Device, keysize: usize) -> wgpu::Buffer {
         // currently only a few different key bits are supported, maybe has to be extended
         // assert!(key_bits == 32 || key_bits == 64 || key_bits == 16);
         
         // subgroup and workgroup sizes
-        const histo_sg_size : usize = histogram_sg_size;
-        const histo_wg_size : usize = histogram_wg_size;
-        const prefix_sg_size : usize = histo_sg_size;
-        const scatter_wg_size : usize = histo_wg_size;
-        const internal_sg_size : usize = histo_sg_size;
+        let histo_sg_size : usize = self.subgroup_size;
+        let histo_wg_size : usize = histogram_wg_size;
+        let prefix_sg_size : usize = histo_sg_size;
+        let internal_sg_size : usize = histo_sg_size;
 
         // The "internal" memory map looks like this:
         //
@@ -356,4 +402,49 @@ impl GPURSSorter{
         self.record_prefix_histogram(&bind_group, 4, encoder);
         self.record_scatter_keys(&bind_group, 4, keysize, encoder);
     }
+}
+
+fn upload_to_buffer<T: bytemuck::Pod>(buffer: &wgpu::Buffer, device : &wgpu::Device, queue: &wgpu::Queue, values: &[T]){
+    let staging_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Staging buffer"),
+        contents: bytemuck::cast_slice(values),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {label: Some("Copye endoder")});
+    encoder.copy_buffer_to_buffer(&staging_buffer, 0, buffer, 0, staging_buffer.size());
+    queue.submit([encoder.finish()]);
+    
+    device.poll(wgpu::Maintain::Wait);
+    staging_buffer.destroy();
+}
+
+async fn download_buffer<T: Clone>(buffer: &wgpu::Buffer, device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<T>{
+    // copy buffer data
+    let download_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Download buffer"),
+        size: buffer.size(),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut encoder= device.create_command_encoder(&wgpu::CommandEncoderDescriptor {label: Some("Copy encoder")});
+    encoder.copy_buffer_to_buffer(buffer, 0, &download_buffer, 0, buffer.size());
+    queue.submit([encoder.finish()]);
+    
+    // download buffer
+    let buffer_slice = download_buffer.slice(..);
+    let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
+    buffer_slice.map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
+    device.poll(wgpu::Maintain::Wait);
+    rx.receive().await.unwrap().unwrap();
+    let data = buffer_slice.get_mapped_range();
+    let mut r;
+    
+    unsafe {
+        let (prefix, d, suffix) = data.align_to::<T>();
+        r = d.to_vec();
+    }
+    
+    download_buffer.destroy();
+    
+    return r;
 }

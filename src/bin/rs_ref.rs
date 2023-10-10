@@ -3,6 +3,7 @@ pub fn compare_slice_beginning<T: std::cmp::PartialEq>(a: &[T], b: &[T]) {
     for i in 0..len {
         if a[i] != b[i] {
             println!("Comparison failed");
+            return;
         }
     }
     println!("Comparison successful");

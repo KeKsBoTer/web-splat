@@ -68,7 +68,7 @@ fn test_sort_components(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipe
     // print_first_n(&test_data, 100);
     
     // creating the gpu buffers
-    let histograms = gpu_rs::GPURSSorter::create_internal_mem_buffer(&device, test_data.len());
+    let histograms = compute_pipeline.create_internal_mem_buffer(&device, test_data.len());
     let (keyval_a, keyval_b) = GPURSSorter::create_keyval_buffers(&device, test_data.len());
     let (uniform_infos, bind_group) = compute_pipeline.create_bind_group(&device, test_data.len(), &histograms, &keyval_a, &keyval_b);
     
@@ -125,7 +125,7 @@ fn test_throughput(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipeline:
     let scrambled_data : Vec<f32> = (0..n).rev().map(|x| x as f32).collect();
     let ref_data : Vec<f32> = (0..n).map(|x| x as f32).collect();
     
-    let internal_mem_buffer = gpu_rs::GPURSSorter::create_internal_mem_buffer(device, n);
+    let internal_mem_buffer = compute_pipeline.create_internal_mem_buffer(device, n);
     let (keyval_a, keyval_b) = GPURSSorter::create_keyval_buffers(device, n);
     let (uniform_infos, bind_group) = compute_pipeline.create_bind_group(device, n, &internal_mem_buffer, &keyval_a, &keyval_b);
     
@@ -186,7 +186,7 @@ fn main() {
         ))
         .unwrap();
 
-    let mut compute_pipeline = gpu_rs::GPURSSorter::new(&device);
+    let mut compute_pipeline = gpu_rs::GPURSSorter::new(&device, &queue);
 
     test_sort_components(&device, &queue, &mut compute_pipeline);
     
