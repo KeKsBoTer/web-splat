@@ -1,6 +1,3 @@
-// based on https://sotrh.github.io/learn-wgpu/intermediate/tutorial12-camera/#cleaning-up-lib-rs
-// (camera controller code mostly)
-
 use cgmath::*;
 
 use crate::animation::Lerp;
@@ -49,6 +46,7 @@ impl Default for PerspectiveCamera {
                 fov: Vector2::new(Deg(45.).into(), Deg(45.).into()),
                 znear: 0.1,
                 zfar: 100.,
+                fov2view_ratio: 1.,
             },
         }
     }
@@ -69,6 +67,9 @@ pub struct PerspectiveProjection {
     pub fov: Vector2<Rad<f32>>,
     pub znear: f32,
     pub zfar: f32,
+    /// fov ratio to viewport ratio
+    /// needed for camera viewport resize
+    fov2view_ratio: f32,
 }
 
 /// see https://sotrh.github.io/learn-wgpu/intermediate/tutorial12-camera/#the-camera
@@ -81,20 +82,30 @@ pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
 );
 
 impl PerspectiveProjection {
-    pub fn new<F: Into<Rad<f32>>>(fov: Vector2<F>, znear: f32, zfar: f32) -> Self {
+    pub fn new<F: Into<Rad<f32>>>(
+        viewport: Vector2<u32>,
+        fov: Vector2<F>,
+        znear: f32,
+        zfar: f32,
+    ) -> Self {
+        let fov = fov.map(|v| v.into());
+        let vr = viewport.x as f32 / viewport.y as f32;
+        let fr = fov.x.0 / fov.y.0;
         Self {
-            fov: fov.map(|v| v.into()),
+            fov,
             znear,
             zfar,
+            fov2view_ratio: vr / fr,
         }
-    }
-    pub fn resize(&mut self, width: u32, height: u32) {
-        todo!("implement me ")
-        //self.fov.x = self.fov.y * width as f32 / height as f32 this is not right!
     }
 
     pub fn projection_matrix(&self) -> Matrix4<f32> {
         build_proj(self.znear, self.zfar, self.fov.x, self.fov.y)
+    }
+
+    pub fn resize(&mut self, width: u32, height: u32) {
+        let ratio = width as f32 / height as f32;
+        self.fov.x = self.fov.y * ratio / self.fov2view_ratio;
     }
 
     pub(crate) fn focal(&self, viewport: Vector2<u32>) -> Vector2<f32> {
@@ -114,6 +125,7 @@ impl PerspectiveProjection {
                 .map(|v| Rad(v)),
             znear: self.znear * (1. - amount) + other.znear * amount,
             zfar: self.zfar * (1. - amount) + other.zfar * amount,
+            fov2view_ratio: self.fov2view_ratio * (1. - amount) + other.fov2view_ratio * amount,
         }
     }
 }
@@ -142,15 +154,12 @@ pub fn build_proj(znear: f32, zfar: f32, fov_x: Rad<f32>, fov_y: Rad<f32>) -> Ma
     let left = -right;
 
     let mut p = Matrix4::zero();
-
-    let z_sign = 1.0;
-
     p[0][0] = 2.0 * znear / (right - left);
     p[1][1] = 2.0 * znear / (top - bottom);
     p[0][2] = (right + left) / (right - left);
     p[1][2] = (top + bottom) / (top - bottom);
-    p[3][2] = z_sign;
-    p[2][2] = z_sign * zfar / (zfar - znear);
+    p[3][2] = 1.;
+    p[2][2] = zfar / (zfar - znear);
     p[2][3] = -(zfar * znear) / (zfar - znear);
     return p.transpose();
 }

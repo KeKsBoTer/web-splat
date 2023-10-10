@@ -24,7 +24,12 @@ impl Into<PerspectiveCamera> for SceneCamera {
         PerspectiveCamera {
             position: self.position.into(),
             rotation: Matrix3::from(self.rotation).into(),
-            projection: PerspectiveProjection::new(Vector2::new(fovx, fovy), 0.01, 100.),
+            projection: PerspectiveProjection::new(
+                Vector2::new(self.width, self.height),
+                Vector2::new(fovx, fovy),
+                0.01,
+                100.,
+            ),
         }
     }
 }

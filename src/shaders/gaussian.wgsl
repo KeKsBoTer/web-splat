@@ -34,7 +34,7 @@ fn vs_main(
 
     // let offset = position * 0.01;
     let offset = position.x * v1 * 2.0 + position.y * v2 * 2.0;
-    out.position = vec4<f32>(v_center + offset, 0., 1.);
+    out.position = vec4<f32>(v_center + offset, vertex.pos.zw);
     out.screen_pos = position;
     out.color = vertex.color;
 

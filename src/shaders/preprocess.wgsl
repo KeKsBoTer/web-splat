@@ -49,9 +49,9 @@ struct GaussianSplat {
 };
 
 struct Splats2D {
-    // 4x f16 packed as u8
+    // 4x f16 packed as u32
     v: vec2<u32>,
-    // 4x f16 packed as u8
+    // 4x f16 packed as u32
     pos: vec2<u32>,
     // rgba packed as u8
     color: u32,
@@ -170,8 +170,6 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
         return;
     }
 
-    let store_idx = atomicAdd(&indirect_draw_call.instance_count, 1u);
-
     let focal = camera.focal;
     let viewport = camera.viewport;
     var vertex = vertices[idx];
@@ -182,7 +180,6 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
 
     // frustum culling hack
     if pos2d.z < -pos2d.w || pos2d.x < -bounds || pos2d.x > bounds || pos2d.y < -bounds || pos2d.y > bounds {
-        points_2d[idx].pos = vec2<u32>(pack2x16float(vec2<f32>(-10., -10.)), pack2x16float(vec2<f32>(-10., -10.)));
         return;
     }
 
@@ -240,8 +237,10 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
         saturate(evaluate_sh(dir, vertex.sh_idx, MAX_SH_DEG)),
         vertex.opacity
     );
+
+    let store_idx = atomicAdd(&indirect_draw_call.instance_count, 1u);
     let v = vec4<f32>(v1 / viewport, v2 / viewport);
-    points_2d[idx] = Splats2D(
+    points_2d[store_idx] = Splats2D(
         vec2<u32>(pack2x16float(v.xy), pack2x16float(v.zw)),
         vec2<u32>(pack2x16float(v_center.xy), pack2x16float(v_center.zw)),
         pack4x8unorm(color),

@@ -3,6 +3,7 @@ use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt}
 use cgmath::{
     InnerSpace, Matrix, Matrix3, Point3, Quaternion, SquareMatrix, Transform, Vector3, Vector4,
 };
+use clap::ValueEnum;
 use half::f16;
 use log::{info, warn};
 use ply_rs;
@@ -39,7 +40,7 @@ pub struct PointCloud {
     points: Vec<GaussianSplat>,
     num_points: u32,
     sh_deg: u32,
-    sh_dtype: SHDtype,
+    sh_dtype: SHDType,
 }
 
 impl Debug for PointCloud {
@@ -54,7 +55,8 @@ impl PointCloud {
     pub fn load_ply<P: AsRef<Path>>(
         device: &wgpu::Device,
         path: P,
-        sh_dtype: SHDtype,
+        sh_dtype: SHDType,
+        max_sh_deg: Option<u32>,
     ) -> Result<Self, anyhow::Error> {
         let f = std::fs::File::open(path.as_ref())?;
         let mut reader = BufReader::new(f);
@@ -82,15 +84,15 @@ impl PointCloud {
             .max_buffer_size
             .max(device.limits().max_storage_buffer_binding_size as u64);
 
+        let target_sh_deg = max_sh_deg.unwrap_or(file_sh_deg);
         let sh_deg =
-            max_supported_sh_deg(max_buffer_size, num_points as u64, sh_dtype, file_sh_deg).ok_or(
-                anyhow::anyhow!(
+            max_supported_sh_deg(max_buffer_size, num_points as u64, sh_dtype, target_sh_deg)
+                .ok_or(anyhow::anyhow!(
                     "cannot fit sh coefs into a buffer (exceeds WebGPU's max_buffer_size)"
-                ),
-            )?;
+                ))?;
         log::info!("num_points: {num_points}, sh_deg: {sh_deg}, sh_dtype: {sh_dtype}");
-        if sh_deg < file_sh_deg {
-            warn!("color sh degree ({file_sh_deg}) was decreased to degree {sh_deg} to fit the coefficients into memory")
+        if sh_deg < target_sh_deg {
+            warn!("color sh degree (file: {file_sh_deg}) was decreased to degree {sh_deg} to fit the coefficients into memory")
         }
 
         let (vertices, sh_coef_buffer) = read_ply::<_>(
@@ -186,7 +188,7 @@ impl PointCloud {
         &self.bind_group
     }
 
-    pub fn sh_dtype(&self) -> SHDtype {
+    pub fn sh_dtype(&self) -> SHDType {
         self.sh_dtype
     }
 
@@ -258,7 +260,7 @@ fn read_ply<R: Read + Seek>(
     num_points: usize,
     reader: &mut BufReader<R>,
     sh_deg: u32,
-    sh_dtype: SHDtype,
+    sh_dtype: SHDType,
 ) -> (Vec<GaussianSplat>, wgpu::Buffer) {
     let start = Instant::now();
     let mut sh_coef_buffer = Vec::new();
@@ -303,7 +305,7 @@ fn read_line<B: ByteOrder, R: io::Read + io::Seek, W: io::Write>(
     reader: &mut BufReader<R>,
     idx: u32,
     sh_deg: u32,
-    sh_dtype: SHDtype,
+    sh_dtype: SHDType,
     sh_coefs_buffer: &mut W,
 ) -> GaussianSplat {
     let mut pos = [0.; 3];
@@ -327,8 +329,8 @@ fn read_line<B: ByteOrder, R: io::Read + io::Seek, W: io::Write>(
         .write_to(sh_coefs_buffer, sh_coefs_raw[2], 0)
         .unwrap();
 
-    // higher order coeffcients are stored with channel first (shape:[N,3,C])
-    for i in 1..num_coefficients(sh_deg) {
+    // higher order coefficients are stored with channel first (shape:[N,3,C])
+    for i in 1..sh_num_coefficients(sh_deg) {
         for j in 0..3 {
             sh_dtype
                 .write_to(
@@ -402,43 +404,43 @@ impl Splat2D {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum SHDtype {
+#[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
+pub enum SHDType {
     Float = 0,
     Half = 1,
     Byte = 2,
 }
 
-impl Display for SHDtype {
+impl Display for SHDType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SHDtype::Float => f.write_str("f32"),
-            SHDtype::Half => f.write_str("f16"),
-            SHDtype::Byte => f.write_str("i8"),
+            SHDType::Float => f.write_str("f32"),
+            SHDType::Half => f.write_str("f16"),
+            SHDType::Byte => f.write_str("i8"),
         }
     }
 }
 
-impl SHDtype {
+impl SHDType {
     pub fn write_to<W: io::Write>(&self, writer: &mut W, v: f32, idx: u32) -> io::Result<()> {
         let scale = if idx == 0 { 4. } else { 0.5 };
         match self {
-            SHDtype::Float => writer.write_f32::<LittleEndian>(v),
-            SHDtype::Half => writer.write_u16::<LittleEndian>(f16::from_f32(v).to_bits()),
-            SHDtype::Byte => writer.write_i8((v * 127. / scale) as i8),
+            SHDType::Float => writer.write_f32::<LittleEndian>(v),
+            SHDType::Half => writer.write_u16::<LittleEndian>(f16::from_f32(v).to_bits()),
+            SHDType::Byte => writer.write_i8((v * 127. / scale) as i8),
         }
     }
 
     pub fn packed_size(&self) -> usize {
         match self {
-            SHDtype::Float => mem::size_of::<f32>(),
-            SHDtype::Half => mem::size_of::<f16>(),
-            SHDtype::Byte => mem::size_of::<i8>(),
+            SHDType::Float => mem::size_of::<f32>(),
+            SHDType::Half => mem::size_of::<f16>(),
+            SHDType::Byte => mem::size_of::<i8>(),
         }
     }
 }
 
-fn num_coefficients(sh_deg: u32) -> u32 {
+fn sh_num_coefficients(sh_deg: u32) -> u32 {
     (sh_deg + 1) * (sh_deg + 1)
 }
 
@@ -450,14 +452,16 @@ fn sh_deg_from_num_coeffs(n: u32) -> Option<u32> {
     return Some((sqrt as u32) - 1);
 }
 
+/// calculates the maximum sh degree that will fit into
+/// the max_buffer_size
 fn max_supported_sh_deg(
     max_buffer_size: u64,
     num_points: u64,
-    sh_dtype: SHDtype,
+    sh_dtype: SHDType,
     max_deg: u32,
 ) -> Option<u32> {
     for i in (0..=max_deg).rev() {
-        let n_coefs = num_coefficients(i) * 3;
+        let n_coefs = sh_num_coefficients(i) * 3;
         let buf_size = num_points as u64 * sh_dtype.packed_size() as u64 * n_coefs as u64;
         if buf_size < max_buffer_size {
             return Some(i);

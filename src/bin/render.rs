@@ -1,26 +1,32 @@
 use cgmath::Vector2;
+use clap::Parser;
 use image::{ImageBuffer, Rgba};
 use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
 use std::path::PathBuf;
-use structopt::StructOpt;
 use web_splats::{
-    GaussianRenderer, PerspectiveCamera, PointCloud, SHDtype, Scene, SceneCamera, WGPUContext,
+    GaussianRenderer, PerspectiveCamera, PointCloud, SHDType, Scene, SceneCamera, WGPUContext,
 };
 
-#[derive(Debug, StructOpt)]
-#[structopt(name = "viewer", about = "3D gaussian splats renderer")]
+#[derive(Debug, Parser)]
+#[command(author, version)]
+#[command(about = "Dataset offline renderer. Renders to PNG files", long_about = None)]
 struct Opt {
-    /// Input file
-    #[structopt(parse(from_os_str))]
+    /// input file
     input: PathBuf,
 
-    /// Scene json file
-    #[structopt(parse(from_os_str))]
+    /// scene json file
     scene: PathBuf,
 
-    /// Scene json file
-    #[structopt(parse(from_os_str))]
+    /// image output directory
     img_out: PathBuf,
+
+    /// maximum allowed Spherical Harmonics (SH) degree
+    #[arg(long, default_value_t = 3)]
+    max_sh_deg: u32,
+
+    /// datatype used for SH coefficients
+    #[arg(long,value_enum, default_value_t = SHDType::Byte)]
+    sh_dtype: SHDType,
 }
 
 async fn render_views(
@@ -89,7 +95,7 @@ async fn render_views(
 #[pollster::main]
 async fn main() {
     env_logger::init();
-    let opt = Opt::from_args();
+    let opt = Opt::parse();
 
     println!("reading scene file '{}'", opt.scene.to_string_lossy());
     let scene = Scene::from_json(opt.scene).unwrap();
@@ -99,7 +105,13 @@ async fn main() {
     let queue = &wgpu_context.queue;
 
     println!("reading point cloud file '{}'", opt.input.to_string_lossy());
-    let mut pc = PointCloud::load_ply(&wgpu_context.device, opt.input, SHDtype::Half).unwrap();
+    let mut pc = PointCloud::load_ply(
+        &wgpu_context.device,
+        opt.input,
+        opt.sh_dtype,
+        Some(opt.max_sh_deg),
+    )
+    .unwrap();
 
     let mut renderer = GaussianRenderer::new(
         device,

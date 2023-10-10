@@ -2,7 +2,7 @@ use std::num::NonZeroU64;
 
 use crate::{
     camera::{Camera, PerspectiveCamera, OPENGL_TO_WGPU_MATRIX},
-    pc::{PointCloud, SHDtype, Splat2D},
+    pointcloud::{PointCloud, SHDType, Splat2D},
     uniform::UniformBuffer,
 };
 use cgmath::{Matrix4, SquareMatrix, Vector2};
@@ -10,7 +10,7 @@ use cgmath::{Matrix4, SquareMatrix, Vector2};
 pub struct GaussianRenderer {
     pipeline: wgpu::RenderPipeline,
     camera: UniformBuffer<CameraUniform>,
-    preprocess: PreprocessPointCloud,
+    preprocess: PreprocessPipeline,
     draw_indirect_buffer: wgpu::Buffer,
     draw_indirect: wgpu::BindGroup,
     color_format: wgpu::TextureFormat,
@@ -21,7 +21,7 @@ impl GaussianRenderer {
         device: &wgpu::Device,
         color_format: wgpu::TextureFormat,
         sh_deg: u32,
-        sh_dtype: SHDtype,
+        sh_dtype: SHDType,
     ) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render pipeline layout"),
@@ -82,7 +82,7 @@ impl GaussianRenderer {
         });
 
         let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
-        let preprocess = PreprocessPointCloud::new(device, sh_deg, sh_dtype);
+        let preprocess = PreprocessPipeline::new(device, sh_deg, sh_dtype);
         GaussianRenderer {
             pipeline,
             camera,
@@ -108,6 +108,7 @@ impl GaussianRenderer {
         uniform.set_focal(camera.projection.focal(viewport));
         uniform.set_viewport(viewport.cast().unwrap());
         self.camera.sync(queue);
+        // TODO perform this in vertex buffer after draw call
         queue.write_buffer(
             &self.draw_indirect_buffer,
             0,
@@ -138,6 +139,8 @@ impl GaussianRenderer {
         {
             self.preprocess(&mut encoder, &queue, &pc, camera, viewport);
 
+            // TODO @josef sort the pc.splat_2d_buffer buffer here
+
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("render pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -154,7 +157,6 @@ impl GaussianRenderer {
             render_pass.set_pipeline(&self.pipeline);
 
             render_pass.set_vertex_buffer(0, pc.splats_2d_buffer().slice(..));
-            // render_pass.draw(0..4, 0..pc.num_points()); //pc.num_points())
             render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
         }
 
@@ -240,12 +242,10 @@ impl CameraUniform {
     }
 }
 
-struct PreprocessPointCloud {
-    pipeline: wgpu::ComputePipeline,
-}
+struct PreprocessPipeline(wgpu::ComputePipeline);
 
-impl PreprocessPointCloud {
-    fn new(device: &wgpu::Device, sh_deg: u32, sh_dtype: SHDtype) -> Self {
+impl PreprocessPipeline {
+    fn new(device: &wgpu::Device, sh_deg: u32, sh_dtype: SHDType) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("preprocess pipeline layout"),
             bind_group_layouts: &[
@@ -266,10 +266,10 @@ impl PreprocessPointCloud {
             module: &shader,
             entry_point: "preprocess",
         });
-        Self { pipeline }
+        Self(pipeline)
     }
 
-    fn build_shader(sh_deg: u32, sh_dtype: SHDtype) -> String {
+    fn build_shader(sh_deg: u32, sh_dtype: SHDType) -> String {
         const SHADER_SRC: &str = include_str!("shaders/preprocess.wgsl");
         let shader_src = format!(
             "
@@ -291,9 +291,10 @@ impl PreprocessPointCloud {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("preprocess compute pass"),
         });
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(&self.0);
         pass.set_bind_group(0, camera.bind_group(), &[]);
         pass.set_bind_group(1, pc.bind_group(), &[]);
+
         pass.set_bind_group(2, draw_indirect, &[]);
         let per_dim = (pc.num_points() as f32).sqrt().ceil() as u32;
         let wgs_x = (per_dim + 15) / 16;
