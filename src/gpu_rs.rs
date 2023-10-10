@@ -230,7 +230,7 @@ impl GPURSSorter{
 
         let internal_mem_buffer = Self::create_internal_mem_buffer(self, device, n);
         let (keyval_a, keyval_b, payload_a, payload_b) = Self::create_keyval_buffers(device, n, 4);
-        let (uniform_buffer, bind_group) = self.create_bind_group(device, n, &internal_mem_buffer, &keyval_a, &keyval_b);
+        let (uniform_buffer, bind_group) = self.create_bind_group(device, n, &internal_mem_buffer, &keyval_a, &keyval_b, &payload_a, &payload_b);
 
         upload_to_buffer(&keyval_a, device, queue, scrambled_data.as_slice());
         
