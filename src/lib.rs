@@ -7,7 +7,7 @@ use cgmath::{Deg, EuclideanSpace, Point3, Quaternion, Vector2};
 use egui::{epaint::Shadow, Rounding, TextStyle, Visuals};
 use egui_plot::{Legend, PlotPoints};
 use num_traits::One;
-use scene::Split;
+
 use utils::{key_to_num, RingBuffer};
 use winit::{
     dpi::PhysicalSize,
@@ -29,7 +29,7 @@ mod renderer;
 pub use renderer::GaussianRenderer;
 
 mod scene;
-pub use self::scene::{Scene, SceneCamera};
+pub use self::scene::{Scene, SceneCamera, Split};
 
 mod ui_renderer;
 mod uniform;
@@ -349,6 +349,7 @@ impl WindowContext {
             });
 
         if let Some(scene) = &self.scene {
+
             let mut new_camera = None;
             let mut start_tracking_shot = false;
             egui::Window::new("Scene")
@@ -356,22 +357,23 @@ impl WindowContext {
                 .resizable(false)
                 .default_height(100.)
                 .show(ctx, |ui| {
-                    ui.label("Selected Camera");
+                    ui.horizontal(|ui|{
+                    let nearest = scene.nearest_camera(self.camera.position, None);
+                    if ui.button("Snap to closest").clicked() {
+                        new_camera = Some(nearest);
+                    }
                     if let Some(c) = &mut self.current_view {
                         let drag = ui.add(
                             egui::DragValue::new(c)
                                 .clamp_range(0..=(scene.num_cameras().saturating_sub(1))),
                         );
-                        if drag.changed()  {
+                        if drag.changed() {
                             new_camera = Some(*c);
                         }
-                        ui.label( scene.camera(*c).split.to_string());
+                        ui.label(scene.camera(*c).split.to_string());
                     }
-                    let nearest = scene.nearest_camera(self.camera.position,None);
-                    if ui.button("Snap to nearest").clicked() {
-                        new_camera = Some(nearest);
-                    }
-                    if ui.button("Start tracking shot").clicked(){
+                    });
+                    if ui.button("Start tracking shot").clicked() {
                         start_tracking_shot = true;
                     }
                 });
@@ -380,7 +382,7 @@ impl WindowContext {
                 self.current_view = new_camera;
                 self.set_camera(scene.camera(c), Duration::from_millis(200));
             }
-            if start_tracking_shot{
+            if start_tracking_shot {
                 self.start_tracking_shot(Some(Split::Test))
             }
         }
@@ -429,7 +431,7 @@ impl WindowContext {
         self.scene.replace(scene);
     }
 
-    fn start_tracking_shot(&mut self,split:Option<Split>) {
+    fn start_tracking_shot(&mut self, split: Option<Split>) {
         if let Some(scene) = &self.scene {
             self.animation = Some(Box::new(TrackingShot::from_scene(
                 scene.cameras(split),

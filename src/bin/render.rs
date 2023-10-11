@@ -3,7 +3,7 @@ use clap::Parser;
 use image::{ImageBuffer, Rgba};
 use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
 use std::path::PathBuf;
-use web_splats::{GaussianRenderer, PointCloud, SHDType, Scene, SceneCamera, WGPUContext};
+use web_splats::{GaussianRenderer, PointCloud, SHDType, Scene, SceneCamera, Split, WGPUContext};
 
 #[derive(Debug, Parser)]
 #[command(author, version)]
@@ -121,7 +121,7 @@ async fn main() {
         queue,
         &mut renderer,
         &mut pc,
-        scene.test_cameras(),
+        scene.cameras(Some(Split::Test)),
         &opt.img_out,
         "test",
     )
@@ -131,7 +131,7 @@ async fn main() {
         queue,
         &mut renderer,
         &mut pc,
-        scene.train_cameras(),
+        scene.cameras(Some(Split::Train)),
         &opt.img_out,
         "train",
     )

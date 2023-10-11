@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use cgmath::{InnerSpace, MetricSpace};
+use cgmath::{InnerSpace, MetricSpace, Point3};
 
 use crate::camera::PerspectiveCamera;
 
@@ -73,15 +73,22 @@ impl TrackingShot {
     {
         let cameras: Vec<PerspectiveCamera> = cameras.into_iter().map(|c| c.into()).collect();
         let n = cameras.len();
-        let first = start.unwrap_or(cameras[0]);
-        let second = if start.is_none() {
-            cameras[1]
+        let (first, second, idx) = if let Some(start) = start {
+            let idx = cameras
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, c)| {
+                    (Point3::from(c.position).distance2(start.position) * 1e6) as u32
+                })
+                .unwrap()
+                .0;
+            (start, cameras[idx], ((idx as i32 - 1) % n as i32) as usize)
         } else {
-            cameras[0]
+            (cameras[0], cameras[1], 0)
         };
         Self {
             cameras,
-            current_idx: if start.is_none() { 0 } else { n - 1 },
+            current_idx: idx,
             transiton: Self::create_transition(first, second, speed),
             speed,
         }
@@ -116,7 +123,7 @@ impl TrackingShot {
 impl Animation for TrackingShot {
     type Animatable = PerspectiveCamera;
     fn update(&mut self, dt: Duration) -> PerspectiveCamera {
-        let curr_camera = self.transiton.update(dt);
+        let curr_camera: PerspectiveCamera = self.transiton.update(dt);
         if self.transiton.done() {
             self.current_idx = (self.current_idx + 1) % self.cameras.len();
             let next: usize = (self.current_idx + 1) % self.cameras.len();
