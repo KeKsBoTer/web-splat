@@ -2,6 +2,8 @@
 name = "web_splats"
 version = "0.1.0"
 edition = "2021"
+authors = ["Simon Niedermayr", "Josef Stumpfegger"]
+description = "3D Gaussian Splatting Viewer"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -11,9 +13,9 @@ winit = "0.28.1"
 cgmath = { version = "0.18.0", features = [
     "bytemuck",
 ], git = 'https://github.com/rustgd/cgmath' }
-pollster = "0.3.0"
+pollster = { version = "0.3.0", features = ["macro"] }
 env_logger = "0.10"
-structopt = "0.3.26"
+clap = { version = "4.4.6", features = ["derive"] }
 bytemuck = { version = "1.13.0", features = ["derive"] }
 anyhow = "1.0.70"
 ply-rs = "0.1.3"
@@ -21,13 +23,22 @@ byteorder = "1.4.3"
 serde_json = "1.0.107"
 serde = { version = "1.0.188", features = ["derive"] }
 rand = "0.8.5"
-futures-intrusive = "0.5"
+num-traits = "0.2.16"
+half = { version = "2.3.1", features = ["bytemuck", "num-traits"] }
+log = "0.4.20"
+rayon = "1.8.0"
+futures-intrusive = "0.5.0"
+image = "0.24.6"
+indicatif = "0.17.7"
 
 [lib]
 path = "src/lib.rs"
 
 [[bin]]
 name = "viewer"
+
+[[bin]]
+name = "render"
 
 [[bin]]
 name = "sort_test"

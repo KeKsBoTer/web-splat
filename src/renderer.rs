@@ -1,23 +1,31 @@
-use cgmath::{Matrix4, SquareMatrix, Vector2};
+use std::num::NonZeroU64;
 
 use crate::{
     camera::{Camera, PerspectiveCamera, OPENGL_TO_WGPU_MATRIX},
-    pc::{GaussianSplat, PointCloud},
+    pointcloud::{PointCloud, SHDType, Splat2D},
     uniform::UniformBuffer,
 };
+use cgmath::{Matrix4, SquareMatrix, Vector2};
 
 pub struct GaussianRenderer {
     pipeline: wgpu::RenderPipeline,
     camera: UniformBuffer<CameraUniform>,
+    preprocess: PreprocessPipeline,
+    draw_indirect_buffer: wgpu::Buffer,
+    draw_indirect: wgpu::BindGroup,
+    color_format: wgpu::TextureFormat,
 }
 
 impl GaussianRenderer {
-    pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
-        let bind_group_layout = UniformBuffer::<CameraUniform>::bind_group_layout(device);
-
+    pub fn new(
+        device: &wgpu::Device,
+        color_format: wgpu::TextureFormat,
+        sh_deg: u32,
+        sh_dtype: SHDType,
+    ) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout],
+            bind_group_layouts: &[],
             push_constant_ranges: &[],
         });
 
@@ -29,7 +37,7 @@ impl GaussianRenderer {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[GaussianSplat::desc()],
+                buffers: &[Splat2D::desc()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -54,28 +62,128 @@ impl GaussianRenderer {
             multiview: None,
         });
 
-        let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
+        let draw_indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("indirect draw buffer"),
+            size: std::mem::size_of::<wgpu::util::DrawIndirect>() as u64,
+            usage: wgpu::BufferUsages::INDIRECT
+                | wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
-        GaussianRenderer { pipeline, camera }
+        let indirect_layout = Self::bind_group_layout(device);
+        let draw_indirect = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("draw indirect buffer"),
+            layout: &indirect_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: draw_indirect_buffer.as_entire_binding(),
+            }],
+        });
+
+        let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
+        let preprocess = PreprocessPipeline::new(device, sh_deg, sh_dtype);
+        GaussianRenderer {
+            pipeline,
+            camera,
+            preprocess,
+            draw_indirect_buffer,
+            draw_indirect,
+            color_format,
+        }
     }
 
-    pub fn render<'a>(
+    pub fn preprocess<'a>(
         &'a mut self,
-        render_pass: &mut wgpu::RenderPass<'a>,
+        encoder: &'a mut wgpu::CommandEncoder,
         queue: &wgpu::Queue,
         pc: &'a PointCloud,
         camera: PerspectiveCamera,
         viewport: Vector2<u32>,
     ) {
+        let mut camera = camera;
+        camera.projection.resize(viewport.x, viewport.y);
         let uniform = self.camera.as_mut();
         uniform.set_camera(camera);
         uniform.set_focal(camera.projection.focal(viewport));
         uniform.set_viewport(viewport.cast().unwrap());
         self.camera.sync(queue);
-        render_pass.set_pipeline(&self.pipeline);
-        render_pass.set_bind_group(0, self.camera.bind_group(), &[]);
-        render_pass.set_vertex_buffer(0, pc.vertex_buffer().slice(..));
-        render_pass.draw(0..4, 0..pc.num_points()); //pc.num_points())
+        // TODO perform this in vertex buffer after draw call
+        queue.write_buffer(
+            &self.draw_indirect_buffer,
+            0,
+            wgpu::util::DrawIndirect {
+                vertex_count: 4,
+                instance_count: 0,
+                base_vertex: 0,
+                base_instance: 0,
+            }
+            .as_bytes(),
+        );
+        self.preprocess
+            .run(encoder, pc, &self.camera, &self.draw_indirect);
+    }
+
+    pub fn render<'a>(
+        &'a mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target: &wgpu::TextureView,
+        pc: &'a PointCloud,
+        camera: PerspectiveCamera,
+        viewport: Vector2<u32>,
+    ) {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Render Encoder Compare"),
+        });
+        {
+            self.preprocess(&mut encoder, &queue, &pc, camera, viewport);
+
+            // TODO @josef sort the pc.splat_2d_buffer buffer here
+
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("render pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: true,
+                    },
+                })],
+                depth_stencil_attachment: None,
+            });
+
+            render_pass.set_pipeline(&self.pipeline);
+
+            render_pass.set_vertex_buffer(0, pc.splats_2d_buffer().slice(..));
+            render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
+        }
+
+        queue.submit([encoder.finish()]);
+    }
+
+    pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("draw indirect"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: Some(
+                        NonZeroU64::new(std::mem::size_of::<wgpu::util::DrawIndirect>() as u64)
+                            .unwrap(),
+                    ),
+                },
+                count: None,
+            }],
+        })
+    }
+
+    pub fn color_format(&self) -> wgpu::TextureFormat {
+        self.color_format
     }
 }
 
@@ -131,5 +239,66 @@ impl CameraUniform {
     }
     pub fn set_focal(&mut self, focal: Vector2<f32>) {
         self.focal = focal
+    }
+}
+
+struct PreprocessPipeline(wgpu::ComputePipeline);
+
+impl PreprocessPipeline {
+    fn new(device: &wgpu::Device, sh_deg: u32, sh_dtype: SHDType) -> Self {
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("preprocess pipeline layout"),
+            bind_group_layouts: &[
+                &UniformBuffer::<CameraUniform>::bind_group_layout(device),
+                &PointCloud::bind_group_layout(device),
+                &GaussianRenderer::bind_group_layout(device),
+            ],
+            push_constant_ranges: &[],
+        });
+
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("preprocess shader"),
+            source: wgpu::ShaderSource::Wgsl(Self::build_shader(sh_deg, sh_dtype).into()),
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("preprocess pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: "preprocess",
+        });
+        Self(pipeline)
+    }
+
+    fn build_shader(sh_deg: u32, sh_dtype: SHDType) -> String {
+        const SHADER_SRC: &str = include_str!("shaders/preprocess.wgsl");
+        let shader_src = format!(
+            "
+        const MAX_SH_DEG:u32 = {:}u;
+        const SH_DTYPE:u32 = {:}u;
+        {:}",
+            sh_deg, sh_dtype as u32, SHADER_SRC
+        );
+        return shader_src;
+    }
+
+    fn run<'a>(
+        &mut self,
+        encoder: &'a mut wgpu::CommandEncoder,
+        pc: &PointCloud,
+        camera: &UniformBuffer<CameraUniform>,
+        draw_indirect: &wgpu::BindGroup,
+    ) {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("preprocess compute pass"),
+        });
+        pass.set_pipeline(&self.0);
+        pass.set_bind_group(0, camera.bind_group(), &[]);
+        pass.set_bind_group(1, pc.bind_group(), &[]);
+
+        pass.set_bind_group(2, draw_indirect, &[]);
+        let per_dim = (pc.num_points() as f32).sqrt().ceil() as u32;
+        let wgs_x = (per_dim + 15) / 16;
+        let wgs_y = (per_dim + 15) / 16;
+        pass.dispatch_workgroups(wgs_x, wgs_y, 1);
     }
 }

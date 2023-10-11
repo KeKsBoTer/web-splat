@@ -1,85 +1,13 @@
+use std::{path::Path, sync::{RwLock, Arc}, time::{Duration, Instant}, thread};
 
-use std::{path::Path, sync::{RwLock, Arc}, time::{Duration, Instant}};
-
-use cgmath::{Point3, Quaternion, EuclideanSpace, Vector2, Deg};
+use cgmath::{Point3, Quaternion, EuclideanSpace, Vector2, Deg, Transform};
+use log::{debug, info};
 use num_traits::One;
-use utils::key_to_num;
+use rayon::slice::ParallelSliceMut;
 use winit::{window::{Window, WindowBuilder}, event_loop::{EventLoop, ControlFlow}, dpi::PhysicalSize, event::{WindowEvent, Event, ElementState, VirtualKeyCode, DeviceEvent}};
 
+use crate::{PointCloud, renderer::GaussianRenderer, camera::{PerspectiveCamera, PerspectiveProjection, Camera}, animation::{Animation, TrackingShot, Transition, smoothstep}, controller::CameraController, Scene, WGPUContext, utils, pc};
 
-mod animation;
-pub use animation::{Animation, TrackingShot, Transition};
-mod camera;
-pub use camera::{Camera, PerspectiveCamera, PerspectiveProjection};
-mod controller;
-pub use controller::CameraController;
-mod pointcloud;
-pub use pointcloud::{PointCloud, SHDType};
-
-mod renderer;
-pub use renderer::GaussianRenderer;
-
-mod scene;
-pub use self::scene::{Scene, SceneCamera};
-
-mod uniform;
-mod utils;
-pub mod gpu_rs;
-
-pub struct WGPUContext {
-    pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
-    pub adapter: wgpu::Adapter,
-}
-
-impl WGPUContext {
-    pub async fn new_instance() -> Self {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            dx12_shader_compiler: Default::default(),
-        });
-
-        return WGPUContext::new(&instance, None).await;
-    }
-
-    pub async fn new(instance: &wgpu::Instance, surface: Option<&wgpu::Surface>) -> Self {
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: surface,
-                force_fallback_adapter: false,
-            })
-            .await
-            .unwrap();
-
-        let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    features: wgpu::Features::empty(),
-                    limits: wgpu::Limits {
-                        max_storage_buffer_binding_size: 1 << 30,
-                        max_buffer_size: 1 << 30,
-                        ..Default::default()
-                    },
-                    label: None,
-                },
-                None, // Trace path
-            )
-            .await
-            .unwrap();
-
-        Self {
-            device,
-            queue,
-            adapter,
-        }
-    }
-}
-
-pub struct RenderConfig{
-    pub max_sh_deg:u32,
-    pub sh_dtype:SHDType,
-}
 
 struct WindowContext {
     wgpu_context:WGPUContext,
@@ -100,7 +28,7 @@ struct WindowContext {
 
 impl WindowContext {
     // Creating some of the wgpu types requires async code
-    async fn new<P: AsRef<Path>>(window: Window, pc_file: P,render_config:RenderConfig) -> Self {
+    async fn new<P: AsRef<Path>>(window: Window, pc_file: P) -> Self {
         let size = window.inner_size();
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -111,9 +39,6 @@ impl WindowContext {
         let surface: wgpu::Surface = unsafe { instance.create_surface(&window) }.unwrap();
 
         let wgpu_context = WGPUContext::new(&instance, Some(&surface)).await;
-
-        log::info!("device: {:?}",wgpu_context.adapter.get_info().name);
-
         let device = &wgpu_context.device;
 
         let surface_caps = surface.get_capabilities(&wgpu_context.adapter);
@@ -136,9 +61,8 @@ impl WindowContext {
             view_formats: vec![],
         };
         surface.configure(&device, &config);
-        let pc = PointCloud::load_ply(&device, pc_file, render_config.sh_dtype,Some(render_config.max_sh_deg)).unwrap();
+        let pc = PointCloud::load_ply(&device, pc_file, pc::SHDtype::Byte).unwrap();
         log::info!("loaded point cloud with {:} points", pc.num_points());
-
 
         let renderer = GaussianRenderer::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype());
 
@@ -146,7 +70,7 @@ impl WindowContext {
         let view_camera = PerspectiveCamera::new(
             Point3::origin(),
             Quaternion::one(),
-            PerspectiveProjection::new(Vector2::new(size.width,size.height),Vector2::new(Deg(45.), Deg(45. * aspect)), 0.1, 100.),
+            PerspectiveProjection::new(Vector2::new(Deg(45.), Deg(45. * aspect)), 0.1, 100.),
         );
 
         let controller = CameraController::new(3., 0.25);
@@ -245,15 +169,9 @@ impl WindowContext {
     }
 }
 
-
-pub fn smoothstep(x: f32) -> f32 {
-    return x * x * (3.0 - 2.0 * x);
-}
-
 pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
     file: P,
     scene_file: Option<P>,
-    config: RenderConfig
 ) {
     env_logger::init();
     let event_loop = EventLoop::new();
@@ -277,7 +195,7 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
         .build(&event_loop)
         .unwrap();
 
-    let mut state = WindowContext::new(window, file,config).await;
+    let mut state = WindowContext::new(window, file).await;
 
     if let Some(scene) = scene {
         let init_camera = scene.camera(0);
@@ -288,7 +206,42 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
 
     let mut last = Instant::now();
 
+    let queue = state.wgpu_context.queue.clone();
+    let camera = state.camera.clone();
+    let pause_sort = state.pause_sort.clone();
 
+    let pc = state.pc.clone();
+    // sorting thread
+    // this thread copies the point cloud, sorts it and copies the result
+    // back to the point cloud that is rendered
+    // TODO do this on the GPU!
+    thread::spawn(move || {
+        let mut last_camera = <_>::default();
+        loop {
+            let perform_sort = !{ *pause_sort.read().unwrap() };
+            if perform_sort {
+                let curr_camera = { *camera.read().unwrap() };
+                if last_camera != curr_camera {
+                    let mut curr_pc = { pc.read().unwrap().points().clone() };
+                    let view = curr_camera.view_matrix();
+                    let proj = curr_camera.proj_matrix();
+                    let transform = proj * view;
+
+                    let start = Instant::now();
+                    // par_sort_unstable_by_key is faster than stable cached sort
+                    // source: trust me bro
+                    curr_pc.par_sort_unstable_by_key(|p| {
+                        (-transform.transform_point(p.xyz).z * (2f32).powi(24)) as i32
+                    });
+                    debug!("sorting took: {:}ms", (Instant::now() - start).as_millis());
+
+                    pc.write().unwrap().update_points(&queue, curr_pc);
+                    last_camera = curr_camera;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+    });
 
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent {
@@ -316,7 +269,7 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
                         if let Some(scene) = &state.scene{
 
                             let new_camera = 
-                            if let Some(num) = key_to_num(key){
+                            if let Some(num) = utils::key_to_num(key){
                                 Some(num as usize)
                             }
                             else if key == VirtualKeyCode::R{
@@ -334,7 +287,7 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
 
                             if let Some(new_camera) = new_camera{
                                 state.current_view.replace(new_camera as usize);
-                                log::info!("view moved to camera {new_camera}");
+                                info!("view moved to camera {new_camera}");
                                 state.set_camera(scene.camera(new_camera as usize),Duration::from_millis(500));
                             }
                         }

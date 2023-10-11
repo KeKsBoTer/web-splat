@@ -2,14 +2,13 @@ use cgmath::*;
 use std::time::Duration;
 use winit::event::VirtualKeyCode;
 
-use crate::camera::PerspectiveCamera;
+use crate::camera::{Camera, PerspectiveCamera};
 
 #[derive(Debug)]
 pub struct CameraController {
     amount: Vector3<f32>,
     shift: Vector2<f32>,
-    rotate_horizontal: f32,
-    rotate_vertical: f32,
+    rotation: Vector3<f32>,
     scroll: f32,
     pub speed: f32,
     pub sensitivity: f32,
@@ -23,8 +22,7 @@ impl CameraController {
         Self {
             amount: Vector3::zero(),
             shift: Vector2::zero(),
-            rotate_horizontal: 0.0,
-            rotate_vertical: 0.0,
+            rotation: Vector3::zero(),
             scroll: 0.0,
             speed,
             sensitivity,
@@ -52,6 +50,14 @@ impl CameraController {
                 self.amount.x = amount;
                 true
             }
+            VirtualKeyCode::Q => {
+                self.rotation.z = amount / self.sensitivity;
+                true
+            }
+            VirtualKeyCode::E => {
+                self.rotation.z = -amount / self.sensitivity;
+                true
+            }
             VirtualKeyCode::Space => {
                 self.amount.y = amount;
                 true
@@ -66,12 +72,12 @@ impl CameraController {
 
     pub fn process_mouse(&mut self, mouse_dx: f32, mouse_dy: f32) {
         if self.left_mouse_pressed {
-            self.rotate_horizontal = mouse_dx as f32;
-            self.rotate_vertical = mouse_dy as f32;
+            self.rotation.y = mouse_dx as f32;
+            self.rotation.x = mouse_dy as f32;
         }
         if self.right_mouse_pressed {
-            self.shift.x = -mouse_dx as f32;
-            self.shift.y = mouse_dy as f32;
+            self.shift.y = -mouse_dx as f32;
+            self.shift.x = mouse_dy as f32;
         } else {
             self.shift = Vector2::zero();
         }
@@ -83,36 +89,30 @@ impl CameraController {
 
     pub fn update_camera(&mut self, camera: &mut PerspectiveCamera, dt: Duration) {
         let dt: f32 = dt.as_secs_f32();
-        let mut rotation: Euler<Rad<f32>> = camera.rotation.into();
-        // Move forward/backward and left/right
-        let (yaw_sin, yaw_cos) = rotation.y.sin_cos();
-        let forward = Vector3::new(yaw_cos, 0.0, yaw_sin).normalize();
-        let right = Vector3::new(-yaw_sin, 0.0, yaw_cos).normalize();
-        camera.position += forward * (self.amount.z) * self.speed * dt;
-        camera.position += right * (self.amount.x) * self.speed * dt;
 
-        // Move in/out (aka. "zoom")
-        // Note: this isn't an actual zoom. The camera's position
-        // changes when zooming. I've added this to make it easier
-        // to get closer to an object you want to focus on.
-        let (pitch_sin, pitch_cos) = rotation.x.sin_cos();
-        let scrollward =
-            Vector3::new(pitch_cos * yaw_cos, pitch_sin, pitch_cos * yaw_sin).normalize();
-        camera.position -= scrollward * self.scroll * self.speed * self.sensitivity * dt;
+        let inv_view = camera.view_matrix().inverse_transform().unwrap();
 
-        // Move up/down. Since we don't use roll, we can just
-        // modify the y coordinate directly.
-        camera.position.y += (self.amount.y) * self.speed * dt;
-        // Rotate
-        rotation.y += Rad(self.rotate_horizontal) * self.sensitivity * dt;
-        rotation.x += Rad(-self.rotate_vertical) * self.sensitivity * dt;
-        rotation.y = rotation.y.normalize();
+        let x_axis = inv_view.transform_vector(Vector3::new(1., 0., 0.));
+        let y_axis = inv_view.transform_vector(Vector3::new(0., 1., 0.));
+        let z_axis = inv_view.transform_vector(Vector3::new(0., 0., 1.));
+        camera.position += z_axis * (self.amount.z) * self.speed * dt;
+        camera.position += x_axis * (self.amount.x) * self.speed * dt;
+        camera.position -= y_axis * (self.amount.y) * self.speed * dt;
+
+        // zoom / scroll
+        camera.position -= z_axis * self.scroll * self.speed * self.sensitivity * dt;
+
+        // Rotate camera according to camera main axes
+        let rot_y =
+            Quaternion::from_axis_angle(y_axis, Rad(self.rotation.y * self.sensitivity * dt));
+        let rot_x =
+            Quaternion::from_axis_angle(x_axis, -Rad(self.rotation.x * self.sensitivity * dt));
+        let rot_z =
+            Quaternion::from_axis_angle(z_axis, -Rad(self.rotation.z * self.sensitivity * dt));
+        camera.rotation = (camera.rotation * rot_x * rot_y * rot_z).normalize();
 
         // reset
-        self.rotate_horizontal = 0.0;
-        self.rotate_vertical = 0.0;
+        self.rotation = <_>::zero();
         self.scroll = 0.0;
-
-        camera.rotation = rotation.into();
     }
 }
