@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use cgmath::{InnerSpace, MetricSpace};
 
-use crate::{camera::PerspectiveCamera, scene::Scene};
+use crate::camera::PerspectiveCamera;
 
 pub trait Lerp {
     fn lerp(&self, other: &Self, amount: f32) -> Self;
@@ -67,9 +67,11 @@ pub struct TrackingShot {
 }
 
 impl TrackingShot {
-    pub fn from_scene(scene: &Scene, speed: f32, start: Option<PerspectiveCamera>) -> Self {
-        let cameras: Vec<PerspectiveCamera> =
-            scene.cameras().iter().map(|c| c.clone().into()).collect();
+    pub fn from_scene<C>(cameras: Vec<C>, speed: f32, start: Option<PerspectiveCamera>) -> Self
+    where
+        C: Into<PerspectiveCamera>,
+    {
+        let cameras: Vec<PerspectiveCamera> = cameras.into_iter().map(|c| c.into()).collect();
         let n = cameras.len();
         let first = start.unwrap_or(cameras[0]);
         let second = if start.is_none() {

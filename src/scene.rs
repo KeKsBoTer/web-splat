@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::camera::{focal2fov, PerspectiveCamera, PerspectiveProjection};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct SceneCamera {
     pub img_name: String,
     pub id: u32,
@@ -15,6 +15,30 @@ pub struct SceneCamera {
     pub rotation: [[f32; 3]; 3],
     pub fx: f32,
     pub fy: f32,
+    #[serde(skip_deserializing)]
+    pub split: Split,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub enum Split {
+    Train,
+    Test,
+}
+
+impl Default for Split {
+    fn default() -> Self {
+        Split::Train
+    }
+}
+
+impl ToString for Split {
+    fn to_string(&self) -> String {
+        match self {
+            Split::Train => "train",
+            Split::Test => "test",
+        }
+        .to_string()
+    }
 }
 
 impl Into<PerspectiveCamera> for SceneCamera {
@@ -45,6 +69,15 @@ impl Scene {
         let mut reader = BufReader::new(f);
         let mut cameras: Vec<SceneCamera> = serde_json::from_reader(&mut reader)?;
         cameras.sort_by_key(|c| c.img_name.clone());
+        for (i, c) in cameras.iter_mut().enumerate() {
+            // according to Kerbl et al "3D Gaussian Splatting for Real-Time Radiance Field Rendering"
+            // 7 out of 8 cameras are taken as training images
+            c.split = if i % 8 == 0 {
+                Split::Test
+            } else {
+                Split::Train
+            }
+        }
         log::info!("loaded scene file with {} views", cameras.len());
         Ok(Scene { cameras })
     }
@@ -57,38 +90,29 @@ impl Scene {
         self.cameras.len()
     }
 
-    pub fn cameras(&self) -> &Vec<SceneCamera> {
-        &self.cameras
+    pub fn cameras(&self, split: Option<Split>) -> Vec<SceneCamera> {
+        if let Some(split) = split {
+            self.cameras
+                .iter()
+                .filter_map(|c| (c.split == split).then_some(c.clone()))
+                .collect()
+        } else {
+            self.cameras.clone()
+        }
     }
 
     /// index of nearest camera
-    pub fn nearest_camera(&self, pos: Point3<f32>) -> usize {
+    pub fn nearest_camera(&self, pos: Point3<f32>, split: Option<Split>) -> usize {
         self.cameras
             .iter()
             .enumerate()
+            .filter(|(_, c)| match split {
+                Some(s) => s == c.split,
+                None => true,
+            })
             .min_by_key(|(_, c)| (Point3::from(c.position).distance2(pos) * 1e6) as u32)
             .unwrap()
             .clone()
             .0
-    }
-
-    /// according to Kerbl et al "3D Gaussian Splatting for Real-Time Radiance Field Rendering"
-    /// 7 out of 8 cameras are taken as training images
-    pub fn train_cameras(&self) -> Vec<SceneCamera> {
-        self.cameras
-            .iter()
-            .enumerate()
-            .filter_map(|(i, c)| if i % 8 != 0 { Some(c.clone()) } else { None })
-            .collect()
-    }
-
-    /// according to Kerbl et al "3D Gaussian Splatting for Real-Time Radiance Field Rendering"
-    /// every 8th camera is used as test camera
-    pub fn test_cameras(&self) -> Vec<SceneCamera> {
-        self.cameras
-            .iter()
-            .enumerate()
-            .filter_map(|(i, c)| if i % 8 == 0 { Some(c.clone()) } else { None })
-            .collect()
     }
 }
