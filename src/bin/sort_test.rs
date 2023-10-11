@@ -127,8 +127,8 @@ fn test_sort_indirect(device : &wgpu::Device, queue: &wgpu::Queue, compute_pipel
     println!("----------------------------------------------------\n");
     println!("Starting indirect dispatch test");
     // creating the data array
-    let n = 100000u32;
-    let keys_per_wg = GPURSSorter::histogram_wg_size * GPURSSorter::rs_histogram_block_rows;
+    let n = 100000usize;
+    let keys_per_wg = gpu_rs::histogram_wg_size * gpu_rs::rs_histogram_block_rows;
     let dispatch_x = (n + keys_per_wg - 1) / keys_per_wg;
     let scrambled_data : Vec<f32> = (0..n).rev().map(|x| x as f32).collect();
     let scrambled_payload : Vec<u32> = (0..n as u32).collect();

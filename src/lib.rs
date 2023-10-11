@@ -136,7 +136,7 @@ impl WindowContext {
             view_formats: vec![],
         };
         surface.configure(&device, &config);
-        let pc = PointCloud::load_ply(&device, pc_file, render_config.sh_dtype,Some(render_config.max_sh_deg)).unwrap();
+        let pc = PointCloud::load_ply(&device, &wgpu_context.queue, pc_file, render_config.sh_dtype,Some(render_config.max_sh_deg)).unwrap();
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
 

@@ -356,7 +356,7 @@ impl GPURSSorter{
         let uniform_buffer= device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Radix uniform buffer"),
             contents: unsafe{any_as_u8_slice(&uniform_infos)},
-            usage: wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDIRECT,
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Radix bind group"),
