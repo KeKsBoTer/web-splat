@@ -123,7 +123,42 @@ fn test_sort_components(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipe
     println!("----------------------------------------------------\n");
 }
 
-fn test_throughput(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipeline: &mut GPURSSorter) {
+fn test_sort_indirect(device : &wgpu::Device, queue: &wgpu::Queue, compute_pipeline: &mut GPURSSorter) {
+    println!("----------------------------------------------------\n");
+    println!("Starting indirect dispatch test");
+    // creating the data array
+    let n = 100000u32;
+    let keys_per_wg = GPURSSorter::histogram_wg_size * GPURSSorter::rs_histogram_block_rows;
+    let dispatch_x = (n + keys_per_wg - 1) / keys_per_wg;
+    let scrambled_data : Vec<f32> = (0..n).rev().map(|x| x as f32).collect();
+    let scrambled_payload : Vec<u32> = (0..n as u32).collect();
+    let ref_data : Vec<f32> = (0..n).map(|x| x as f32).collect();
+    let ref_payload : Vec<u32> = scrambled_payload.iter().rev().cloned().collect();
+    
+    let internal_mem_buffer = compute_pipeline.create_internal_mem_buffer(device, n);
+    let (keyval_a, keyval_b, payload_a, payload_b) = GPURSSorter::create_keyval_buffers(device, n, 4);
+    let (uniform_infos, bind_group) = compute_pipeline.create_bind_group(device, n, &internal_mem_buffer, &keyval_a, &keyval_b, &payload_a, &payload_b);
+    
+    upload_to_buffer(&keyval_a, &device, &queue, scrambled_data.as_slice());
+    upload_to_buffer(&payload_b, &device, &queue, scrambled_payload.as_slice());
+    upload_to_buffer(&uniform_infos, device, queue, &[dispatch_x]);
+    
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: Some("auf gehts")});
+    compute_pipeline.record_sort_indirect(&bind_group, &uniform_infos, &mut encoder);
+    queue.submit([encoder.finish()]);
+    device.poll(wgpu::Maintain::Wait);
+
+    let sorted = pollster::block_on(download_buffer::<f32>(&keyval_a, &device, &queue));
+    let sorted_p = pollster::block_on(download_buffer::<u32>(&payload_a, &device, &queue));
+    println!("Checking sorting correctness...");
+    compare_slice_beginning(sorted.as_slice(), ref_data.as_slice());
+    compare_slice_beginning(sorted_p.as_slice(), &ref_payload.as_slice());
+    
+    println!("Indirect dispatch test done");
+    println!("----------------------------------------------------\n");
+}
+
+fn test_sort_throughput(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipeline: &mut GPURSSorter) {
     println!("----------------------------------------------------\n");
     println!("Starting performance test");
     // creating the data array
@@ -138,6 +173,7 @@ fn test_throughput(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipeline:
     let (uniform_infos, bind_group) = compute_pipeline.create_bind_group(device, n, &internal_mem_buffer, &keyval_a, &keyval_b, &payload_a, &payload_b);
     
     upload_to_buffer(&keyval_a, &device, &queue, scrambled_data.as_slice());
+    upload_to_buffer(&payload_b, &device, &queue, scrambled_payload.as_slice());
     
     let mut commands = Vec::<wgpu::CommandBuffer>::new();
     let n_commands = 50;
@@ -198,7 +234,9 @@ fn main() {
 
     test_sort_components(&device, &queue, &mut compute_pipeline);
     
-    test_throughput(&device, &queue, &mut compute_pipeline);
+    test_sort_indirect(&device, &queue, &mut compute_pipeline);
+    
+    test_sort_throughput(&device, &queue, &mut compute_pipeline);
 
     // tests done ----------------------------------------------------------------------------------------------------------
     println!("Kinda works...");

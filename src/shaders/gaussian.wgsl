@@ -5,19 +5,34 @@ struct VertexOutput {
     @location(1) color: vec4<f32>,
 };
 
-
 struct VertexInput {
     @location(0) v: vec4<f32>,
     @location(1) pos: vec4<f32>,
     @location(2) color: vec4<f32>,
 };
 
+struct Splats2D {
+    // 4x f16 packed as u32
+    v: vec2<u32>,
+    // 4x f16 packed as u32
+    pos: vec2<u32>,
+    // rgba packed as u8
+    color: u32,
+};
+
+@group(0) @binding(2)
+var<storage, read> points_2d : array<Splats2D>;
+@group(1) @binding(4)
+var<storage, read> indices : array<u32>;
+
 @vertex
 fn vs_main(
-    @builtin(vertex_index) in_vertex_index: u32,
-    vertex: VertexInput,
+    @builtin(vertex_index) in_vertex_index: u32//,
+    //vertex: VertexInput,
 ) -> VertexOutput {
     var out: VertexOutput;
+    
+    let vertex = points_2d[indices[in_vertex_index]];
 
     // scaled eigenvectors in screen space 
     let v1 = vertex.v.xy;

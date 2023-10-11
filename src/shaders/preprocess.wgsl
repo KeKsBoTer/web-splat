@@ -69,6 +69,17 @@ struct DrawIndirect {
     base_instance: u32,
 }
 
+struct SortInfos {
+    dispatch_x: atomic<u32>,    // is increased by one, when the key_size is dividable by worgroup_size * keys_per_thread = 256 * 15, for safety dispatch_x is added one by the first worker(otherwise the last block might get lost)
+    dispatch_y: u32,
+    dispatch_z: u32,
+    keys_size: atomic<u32>,     // essentially contains the same info as instance_count in DrawIndirect
+    padded_size: u32,
+    passes: u32,
+    even_pass: u32,
+    odd_pass: u32,
+}
+
 @group(0) @binding(0)
 var<uniform> camera: CameraUniforms;
 
@@ -83,6 +94,12 @@ var<storage,read> sh_coefs : array<u32>;
 var<storage,read_write> points_2d : array<Splats2D>;
 @group(2) @binding(0) 
 var<storage,read_write> indirect_draw_call : DrawIndirect;
+@group(3) @binding(0)
+var<storage, read_write> sort_infos: SortInfos;
+@group(3) @binding(2)
+var<storage, write> sort_depths : array<f32>;
+@group(3) @binding(4)
+var<storage, write> sort_indices : array<u32>;
 
 
 /// reads the ith sh coef from the vertex buffer
@@ -245,4 +262,16 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
         vec2<u32>(pack2x16float(v_center.xy), pack2x16float(v_center.zw)),
         pack4x8unorm(color),
     );
+    
+    // filling the sorting buffers and the indirect sort dispatch buffer
+    sort_depths[store_idx] = v_center.z;    // z is already larger than 1, as OpenGL projection is used
+    sort_indices[store_idx] = store_idx;
+    if gid.x == 0u {
+        atomicAdd(&sort_infos.dispatch_x, 1u);   // safety addition to always have an unfull block at the end of the buffer
+    }
+    let cur_key_size = atomicAdd(&sort_infos.keys_size, 1u);
+    let keys_per_wg = 256 * 15;         // Caution: if workgroup size (256) or keys per thread (15) changes the dispatch is wrong!!
+    if cur_key_size > 0 && cur_key_size % keys_per_wg == 0 {
+        atomicAdd(&infos.dispatch_x, 1u);
+    }
 }

@@ -13,7 +13,9 @@
 // const rs_scatter_block_rows
 
 struct GeneralInfo{
-    histogram_size: u32,
+    dispatch_x: u32,
+    dispatch_y: u32,
+    dispatch_z: u32,
     keys_size: u32,
     padded_size: u32,
     passes: u32,
@@ -484,5 +486,11 @@ fn scatter_odd(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_
     }
     for (var i = 0u; i < rs_scatter_block_rows; i++) {
         payload_a[kr[i]] = pv[i];
+    }
+
+    // resetting the dispatch on last pass
+    if gid.x == 0u && cur_pass == infos.passes - 1u {
+        infos.dispatch_x = 0u;
+        infos.keys_size = 0u;
     }
 }

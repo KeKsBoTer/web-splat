@@ -12,17 +12,9 @@ pub struct GaussianRenderer {
     pipeline: wgpu::RenderPipeline,
     camera: UniformBuffer<CameraUniform>,
     preprocess: PreprocessPipeline,
-    sorting: Option<GPURSSorter>,       // is initialized lazy in the first rendering loop (needs queue)
     draw_indirect_buffer: wgpu::Buffer,
     draw_indirect: wgpu::BindGroup,
     color_format: wgpu::TextureFormat,
-    sorting_b_a: Option<wgpu::Buffer>,
-    sorting_b_b: Option<wgpu::Buffer>,
-    sorting_p_a: Option<wgpu::Buffer>,
-    sorting_p_b: Option<wgpu::Buffer>,
-    sorting_internal: Option<wgpu::Buffer>,
-    sorting_un:  Option<wgpu::Buffer>,
-    sorting_bg:  Option<wgpu::BindGroup>,    
 }
 
 impl GaussianRenderer {
@@ -34,7 +26,10 @@ impl GaussianRenderer {
     ) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render pipeline layout"),
-            bind_group_layouts: &[],
+            bind_group_layouts: &[
+                &PointCloud::bind_group_layout(device),     // Needed for points_2d (on binding 2)
+                &GPURSSorter::bind_group_layout(device),    // Needed for indices   (on binding 4)
+            ],
             push_constant_ranges: &[],
         });
 
@@ -46,7 +41,7 @@ impl GaussianRenderer {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[Splat2D::desc()],
+                buffers: &[], //&[Splat2D::desc()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -96,17 +91,9 @@ impl GaussianRenderer {
             pipeline,
             camera,
             preprocess,
-            sorting: None,
             draw_indirect_buffer,
             draw_indirect,
             color_format,
-            sorting_b_a: None,
-            sorting_b_b: None,
-            sorting_p_a: None,
-            sorting_p_b: None,
-            sorting_internal: None,
-            sorting_un: None,
-            sorting_bg: None,
         }
     }
 
@@ -140,20 +127,6 @@ impl GaussianRenderer {
         );
         self.preprocess
             .run(encoder, pc, &self.camera, &self.draw_indirect);
-        if self.sorting.is_none() {
-            // lazy instantiation
-            self.sorting = Some(GPURSSorter::new(device, queue));
-            (self.sorting_b_a, self.sorting_b_b, self.sorting_p_a, self.sorting_p_b) = GPURSSorter::create_keyval_buffers(device, pc.len(), 4);
-            self.sorting_internal = Some(self.sorting.unwrap().create_internal_mem_buffer(device, pc.len()));
-            (self.sorting_un, self.sorting_bg) = self.sorting.unwrap().create_bind_group(device, 
-                pc.len(), 
-                &self.sorting_internal.unwrap(), 
-                &self.sorting_b_a.unwrap(), 
-                &self.sorting_b_b.unwrap(), 
-                &self.sorting_p_a.unwrap(), 
-                &self.sorting_p_b.unwrap());
-        }
-        self.sorting.unwrap().record_sort(self.sorting_bg, pc.len(), encoder);
     }
 
     pub fn render<'a>(
@@ -172,6 +145,7 @@ impl GaussianRenderer {
             self.preprocess(&mut encoder, device, &queue, &pc, camera, viewport);
 
             // TODO @josef sort the pc.splat_2d_buffer buffer here
+            pc.sorter.record_sort(&pc.sorter_bg, pc.points().len(), &mut encoder);
 
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("render pass"),
@@ -186,9 +160,11 @@ impl GaussianRenderer {
                 depth_stencil_attachment: None,
             });
 
+            render_pass.set_bind_group(0, pc.bind_group(), &[]);
+            render_pass.set_bind_group(1, &pc.sorter_bg, &[]);
             render_pass.set_pipeline(&self.pipeline);
 
-            render_pass.set_vertex_buffer(0, pc.splats_2d_buffer().slice(..));
+            // render_pass.set_vertex_buffer(0, pc.splats_2d_buffer().slice(..));
             render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
         }
 
@@ -284,6 +260,7 @@ impl PreprocessPipeline {
                 &UniformBuffer::<CameraUniform>::bind_group_layout(device),
                 &PointCloud::bind_group_layout(device),
                 &GaussianRenderer::bind_group_layout(device),
+                &GPURSSorter::bind_group_layout(device),
             ],
             push_constant_ranges: &[],
         });
@@ -326,6 +303,7 @@ impl PreprocessPipeline {
         pass.set_pipeline(&self.0);
         pass.set_bind_group(0, camera.bind_group(), &[]);
         pass.set_bind_group(1, pc.bind_group(), &[]);
+        pass.set_bind_group(3, &pc.sorter_bg, &[]);
 
         pass.set_bind_group(2, draw_indirect, &[]);
         let per_dim = (pc.num_points() as f32).sqrt().ceil() as u32;

@@ -16,11 +16,11 @@ use crate::{
 };
 
 // IMPORTANT: the following constants have to be synced with the numbers in radix_sort.wgsl
-const histogram_wg_size: usize = 256;
+pub const histogram_wg_size: usize = 256;
 const rs_radix_log2: usize = 8;                 // 8 bit radices
 const rs_radix_size: usize = 1 << rs_radix_log2;// 256 entries into the radix table
 const rs_keyval_size: usize = 32 / rs_radix_log2;
-const rs_histogram_block_rows : usize = 15;
+pub const rs_histogram_block_rows : usize = 15;
 const rs_scatter_block_rows : usize = rs_histogram_block_rows; // DO NOT CHANGE, shader assume this automatically
 const prefix_wg_size: usize = 1 << 7;           // one thread operates on 2 prefixes at the same time
 const scatter_wg_size: usize = 1 << 8;
@@ -37,7 +37,9 @@ pub struct GPURSSorter {
 }
 
 pub struct GeneralInfo{
-    pub histogram_size: u32,
+    pub dispatch_x:     u32,
+    pub dispatch_y:     u32,
+    pub dispatch_z:     u32,
     pub keys_size:      u32,
     pub padded_size:    u32,
     pub passes:         u32,
@@ -95,71 +97,8 @@ impl GPURSSorter{
         let rs_mem_sweep_0_offset : usize = 0;
         let rs_mem_sweep_1_offset : usize = rs_mem_sweep_0_offset + rs_sweep_0_size;
         let rs_mem_sweep_2_offset : usize = rs_mem_sweep_1_offset + rs_sweep_1_size;
-        let bind_group_layout =device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
-                    label: Some("Radix bind group layout"),
-                    entries: &[
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer { 
-                                ty: wgpu::BufferBindingType::Storage { read_only: false } , 
-                                has_dynamic_offset: false,
-                                min_binding_size: None 
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer { 
-                                ty: wgpu::BufferBindingType::Storage { read_only: false },
-                                has_dynamic_offset: false, 
-                                min_binding_size: None 
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 2,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage {read_only: false },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 3,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage {read_only: false },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 4,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage {read_only: false },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 5,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage {read_only: false },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                    ]
-                });
+        
+        let bind_group_layout = Self::bind_group_layout(device);
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("preprocess pipeline layout"),
@@ -248,7 +187,77 @@ impl GPURSSorter{
         return true;
     }
     
+    pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        return device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+            label: Some("Radix bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer { 
+                        ty: wgpu::BufferBindingType::Storage { read_only: false } , 
+                        has_dynamic_offset: false,
+                        min_binding_size: None 
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer { 
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false, 
+                        min_binding_size: None 
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage {read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage {read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage {read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage {read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ]
+        })
+    }
+    
     fn get_scatter_histogram_sizes(keysize: usize) -> (usize, usize, usize, usize, usize, usize) {
+        // as a general rule of thumb, scater_blocks_ru is equal to histo_blocks_ru, except the amount of elements in these two stages is different
+
         let scatter_block_kvs = histogram_wg_size * rs_scatter_block_rows;
         let scatter_blocks_ru = (keysize + scatter_block_kvs - 1) / scatter_block_kvs;
         let count_ru_scatter = scatter_blocks_ru * scatter_block_kvs;
@@ -343,7 +352,7 @@ impl GPURSSorter{
         if keyval_a.size() as usize != count_ru_histo * std::mem::size_of::<f32>() || keyval_b.size() as usize != count_ru_histo * std::mem::size_of::<f32>() {
             panic!("Keyval buffers are not padded correctly. Were they created with GPURSSorter::create_keyval_buffers()");
         }
-        let uniform_infos = GeneralInfo{histogram_size: 0, keys_size: keysize as u32, padded_size: count_ru_histo as u32, passes: 4, even_pass: 0, odd_pass: 0};
+        let uniform_infos = GeneralInfo{dispatch_x: 0, dispatch_y: 1, dispatch_z: 1 , keys_size: keysize as u32, padded_size: count_ru_histo as u32, passes: 4, even_pass: 0, odd_pass: 0};
         let uniform_buffer= device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Radix uniform buffer"),
             contents: unsafe{any_as_u8_slice(&uniform_infos)},
@@ -411,7 +420,25 @@ impl GPURSSorter{
             pass.dispatch_workgroups(hist_blocks_ru as u32, 1, 1);
         }
     }
+    pub fn record_calculate_histogram_indirect(&self, bind_group: &wgpu::BindGroup, dispatch_buffer: &wgpu::Buffer, encoder: &mut wgpu::CommandEncoder) {
+        {
+            let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor { label:Some("zeroing the histogram") });
+            
+            pass.set_pipeline(&self.zero_p);
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+        }
+        
+        {
+            let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor { label: Some("calculate histogram") });
+            
+            pass.set_pipeline(&self.histogram_p);
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+        }
+    }
     
+    // There does not exist an indirect histogram dispatch as the number of prefixes is determined by the amount of passes
     pub fn record_prefix_histogram(&self, bind_group: &wgpu::BindGroup, passes: usize, encoder: &mut wgpu::CommandEncoder) {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {label: Some("prefix histogram")});
 
@@ -438,11 +465,34 @@ impl GPURSSorter{
         pass.set_pipeline(&self.scatter_odd_p);
         pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
     }
+    pub fn record_scatter_keys_indirect(&self, bind_group: &wgpu::BindGroup, passes: usize, dispatch_buffer: &wgpu::Buffer, encoder: &mut wgpu::CommandEncoder) {
+        assert!(passes == 4);
+        
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {label: Some("Scatter keyvals")});
+        
+        pass.set_bind_group(0, bind_group, &[]);
+        pass.set_pipeline(&self.scatter_even_p);
+        pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+        
+        pass.set_pipeline(&self.scatter_odd_p);
+        pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+
+        pass.set_pipeline(&self.scatter_even_p);
+        pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+        
+        pass.set_pipeline(&self.scatter_odd_p);
+        pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+    }
     
     pub fn record_sort(&self, bind_group: &wgpu::BindGroup, keysize: usize, encoder: &mut wgpu::CommandEncoder) {
         self.record_calculate_histogram(&bind_group, keysize, encoder);
         self.record_prefix_histogram(&bind_group, 4, encoder);
         self.record_scatter_keys(&bind_group, 4, keysize, encoder);
+    }
+    pub fn record_sort_indirect(&self, bind_group: &wgpu::BindGroup, dispatch_buffer: &wgpu::Buffer, encoder: &mut wgpu::CommandEncoder) { 
+        self.record_calculate_histogram_indirect(bind_group, dispatch_buffer, encoder);
+        self.record_prefix_histogram(bind_group, 4, encoder);
+        self.record_scatter_keys_indirect(bind_group, 4, dispatch_buffer, encoder);
     }
 }
 
