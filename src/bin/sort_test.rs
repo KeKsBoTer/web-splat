@@ -90,7 +90,7 @@ fn test_sort_components(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipe
     // println!("size of keyvals: {}", keyval_a.size() / 4);
     let ref_hist = calculate_histogram(test_data.as_slice(), keyval_a.size() as usize);
     // println!("Ref Histogram: {:?}", ref_hist);
-    println!("Checking histograms...");
+    // println!("Checking histograms...");
     compare_slice_beginning(gpu_hist.as_slice(), ref_hist.as_slice());
     
     // test prefix calculation ----------------------------------------------------------------------------------------------------------
@@ -114,7 +114,7 @@ fn test_sort_components(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipe
     let gpu_sort = pollster::block_on(download_buffer::<f32>(&keyval_a, &device, &queue));
     let gpu_payload = pollster::block_on(download_buffer::<u32>(&payload_a, &device, &queue));
     // println!("keval_b: \n {:?}", gpu_sort);
-    println!("payload_a: \n {:?}", gpu_payload);
+    // println!("payload_a: \n {:?}", gpu_payload);
     println!("Checking scattered keys and payload");
     compare_slice_beginning(test_sol.as_slice(), gpu_sort.as_slice());
     compare_slice_beginning(test_payload_sol.as_slice(), gpu_payload.as_slice());
