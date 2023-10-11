@@ -459,6 +459,9 @@ fn scatter_even(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation
     for (var i = 0u; i < rs_scatter_block_rows; i++) {
         keys_b[kr[i]] = kv[i];
     }
+    for (var i = 0u; i < rs_scatter_block_rows; i++) {
+        payload_b[kr[i]] = pv[i];
+    }
 }
 @compute @workgroup_size({scatter_wg_size})
 fn scatter_odd(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
@@ -478,5 +481,8 @@ fn scatter_odd(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_
     // store keyvals to their new locations, corresponds to rs_store
     for (var i = 0u; i < rs_scatter_block_rows; i++) {
         keys[kr[i]] = kv[i];
+    }
+    for (var i = 0u; i < rs_scatter_block_rows; i++) {
+        payload_a[kr[i]] = pv[i];
     }
 }

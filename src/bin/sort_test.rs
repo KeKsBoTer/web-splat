@@ -75,6 +75,7 @@ fn test_sort_components(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipe
     let (uniform_infos, bind_group) = compute_pipeline.create_bind_group(&device, test_data.len(), &histograms, &keyval_a, &keyval_b, &payload_a, &payload_b);
     
     upload_to_buffer(&keyval_a, &device, &queue, test_data.as_slice());
+    upload_to_buffer(&payload_a, &device, &queue, test_payload.as_slice());
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: Some("auf gehts")});
     
@@ -111,9 +112,12 @@ fn test_sort_components(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipe
     queue.submit([encoder.finish()]);
     device.poll(wgpu::Maintain::Wait);
     let gpu_sort = pollster::block_on(download_buffer::<f32>(&keyval_a, &device, &queue));
+    let gpu_payload = pollster::block_on(download_buffer::<u32>(&payload_a, &device, &queue));
     // println!("keval_b: \n {:?}", gpu_sort);
-    println!("Checking scattered keys");
+    println!("payload_a: \n {:?}", gpu_payload);
+    println!("Checking scattered keys and payload");
     compare_slice_beginning(test_sol.as_slice(), gpu_sort.as_slice());
+    compare_slice_beginning(test_payload_sol.as_slice(), gpu_payload.as_slice());
     
     println!("Components check done.");
     println!("----------------------------------------------------\n");
