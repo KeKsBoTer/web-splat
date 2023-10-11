@@ -1,4 +1,5 @@
 use std::num::NonZeroU64;
+use crate::gpu_rs::{self, GPURSSorter};
 
 use crate::{
     camera::{Camera, PerspectiveCamera, OPENGL_TO_WGPU_MATRIX},
@@ -11,9 +12,17 @@ pub struct GaussianRenderer {
     pipeline: wgpu::RenderPipeline,
     camera: UniformBuffer<CameraUniform>,
     preprocess: PreprocessPipeline,
+    sorting: Option<GPURSSorter>,       // is initialized lazy in the first rendering loop (needs queue)
     draw_indirect_buffer: wgpu::Buffer,
     draw_indirect: wgpu::BindGroup,
     color_format: wgpu::TextureFormat,
+    sorting_b_a: Option<wgpu::Buffer>,
+    sorting_b_b: Option<wgpu::Buffer>,
+    sorting_p_a: Option<wgpu::Buffer>,
+    sorting_p_b: Option<wgpu::Buffer>,
+    sorting_internal: Option<wgpu::Buffer>,
+    sorting_un:  Option<wgpu::Buffer>,
+    sorting_bg:  Option<wgpu::BindGroup>,    
 }
 
 impl GaussianRenderer {
@@ -87,15 +96,24 @@ impl GaussianRenderer {
             pipeline,
             camera,
             preprocess,
+            sorting: None,
             draw_indirect_buffer,
             draw_indirect,
             color_format,
+            sorting_b_a: None,
+            sorting_b_b: None,
+            sorting_p_a: None,
+            sorting_p_b: None,
+            sorting_internal: None,
+            sorting_un: None,
+            sorting_bg: None,
         }
     }
 
     pub fn preprocess<'a>(
         &'a mut self,
         encoder: &'a mut wgpu::CommandEncoder,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         pc: &'a PointCloud,
         camera: PerspectiveCamera,
@@ -122,6 +140,20 @@ impl GaussianRenderer {
         );
         self.preprocess
             .run(encoder, pc, &self.camera, &self.draw_indirect);
+        if self.sorting.is_none() {
+            // lazy instantiation
+            self.sorting = Some(GPURSSorter::new(device, queue));
+            (self.sorting_b_a, self.sorting_b_b, self.sorting_p_a, self.sorting_p_b) = GPURSSorter::create_keyval_buffers(device, pc.len(), 4);
+            self.sorting_internal = Some(self.sorting.unwrap().create_internal_mem_buffer(device, pc.len()));
+            (self.sorting_un, self.sorting_bg) = self.sorting.unwrap().create_bind_group(device, 
+                pc.len(), 
+                &self.sorting_internal.unwrap(), 
+                &self.sorting_b_a.unwrap(), 
+                &self.sorting_b_b.unwrap(), 
+                &self.sorting_p_a.unwrap(), 
+                &self.sorting_p_b.unwrap());
+        }
+        self.sorting.unwrap().record_sort(self.sorting_bg, pc.len(), encoder);
     }
 
     pub fn render<'a>(
@@ -137,7 +169,7 @@ impl GaussianRenderer {
             label: Some("Render Encoder Compare"),
         });
         {
-            self.preprocess(&mut encoder, &queue, &pc, camera, viewport);
+            self.preprocess(&mut encoder, device, &queue, &pc, camera, viewport);
 
             // TODO @josef sort the pc.splat_2d_buffer buffer here
 
