@@ -180,18 +180,9 @@ pub async fn download_texture(
         fb_size,
     );
     let sub_idx = queue.submit(std::iter::once(encoder.finish()));
-    let buffer_slice = download_buffer.slice(..);
-
-    let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
-    buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-        tx.send(result).unwrap();
-    });
-    device.poll(wgpu::Maintain::WaitForSubmissionIndex(sub_idx));
-    rx.receive().await.unwrap().unwrap();
 
     let mut image = {
-        // unmap can only happen im BufferView is droped before
-        let data = buffer_slice.get_mapped_range();
+        let data = web_splats::download_buffer(device, &download_buffer, Some(sub_idx)).await;
 
         ImageBuffer::<Rgba<u8>, _>::from_raw(
             bytes_per_row / texel_size,

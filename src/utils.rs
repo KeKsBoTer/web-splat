@@ -1,4 +1,4 @@
-use std::mem::MaybeUninit;
+use std::{fmt::Debug, mem::MaybeUninit};
 use winit::event::VirtualKeyCode;
 
 use std::{collections::HashMap, mem::size_of, ops::Deref};
@@ -100,16 +100,9 @@ impl GPUStopwatch {
 
         let labels: Vec<(String, u32)> = self.labels.drain().collect();
 
-        let slice = self.query_buffer.slice(..);
-
-        let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
-        device.poll(wgpu::Maintain::Wait);
-        rx.receive().await.unwrap().unwrap();
-
         let mut durations = HashMap::new();
         {
-            let view = slice.get_mapped_range();
+            let view = download_buffer(device, &self.query_buffer, None).await;
             let data_raw: &[u8] = view.deref();
             let timestamps: &[u64] = bytemuck::cast_slice(data_raw);
             for (label, index) in labels {
@@ -125,37 +118,61 @@ impl GPUStopwatch {
     }
 }
 
-pub struct RingBuffer<T: Copy, const N: usize> {
+#[derive(Debug)]
+pub struct RingBuffer<T: Copy> {
     index: usize,
     size: usize,
-    container: [MaybeUninit<T>; N],
+    container: Box<[MaybeUninit<T>]>,
 }
 
-impl<T, const N: usize> RingBuffer<T, N>
+impl<T> RingBuffer<T>
 where
-    T: Copy,
+    T: Copy + Debug,
 {
-    pub fn new() -> Self {
+    pub fn new(size: usize) -> Self {
         Self {
             index: 0,
             size: 0,
-            container: [MaybeUninit::uninit(); N],
+            container: vec![MaybeUninit::uninit(); size].into_boxed_slice(),
         }
     }
 
     pub fn push(&mut self, item: T) {
         self.container[self.index] = MaybeUninit::new(item);
         self.index = (self.index + 1) % self.container.len();
-        self.size = (self.size + 1).clamp(0, N)
+        self.size = (self.size + 1).clamp(0, self.container.len());
     }
 
     pub fn to_vec(&self) -> Vec<T> {
+        let start = self
+            .index
+            .checked_sub(self.size)
+            .unwrap_or(self.container.len() - (self.size - self.index));
         self.container
             .iter()
             .cycle()
-            .skip(self.index)
+            .skip(start)
             .take(self.size)
             .map(|c| unsafe { c.assume_init() })
             .collect()
     }
+}
+
+pub async fn download_buffer<'a>(
+    device: &wgpu::Device,
+    buffer: &'a wgpu::Buffer,
+    wait_idx: Option<wgpu::SubmissionIndex>,
+) -> wgpu::BufferView<'a> {
+    let slice = buffer.slice(..);
+
+    let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
+    device.poll(match wait_idx {
+        Some(idx) => wgpu::Maintain::WaitForSubmissionIndex(idx),
+        None => wgpu::Maintain::Wait,
+    });
+    rx.receive().await.unwrap().unwrap();
+
+    let view = slice.get_mapped_range();
+    return view;
 }

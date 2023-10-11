@@ -5,8 +5,8 @@ use std::{
 };
 
 use cgmath::{Deg, EuclideanSpace, Point3, Quaternion, Vector2};
-use egui::TextStyle;
-use egui_plot::{PlotPoints, GridMark, Legend};
+use egui::{TextStyle, Vec2, Visuals, Style, Rounding, epaint::Shadow};
+use egui_plot::{Legend, PlotPoints};
 use num_traits::One;
 use utils::{key_to_num, RingBuffer};
 use winit::{
@@ -34,6 +34,7 @@ pub use self::scene::{Scene, SceneCamera};
 mod ui_renderer;
 mod uniform;
 mod utils;
+pub use utils::download_buffer;
 pub struct WGPUContext {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -108,7 +109,7 @@ struct WindowContext {
     current_view: Option<usize>,
     ui_renderer: ui_renderer::EguiWGPU,
     fps: f32,
-    history:RingBuffer<(Duration,Duration,Duration),512>,
+    history: RingBuffer<(Duration, Duration, Duration)>,
 }
 
 impl WindowContext {
@@ -199,7 +200,7 @@ impl WindowContext {
             current_view: None,
             ui_renderer,
             fps: 0.,
-            history:RingBuffer::new()
+            history: RingBuffer::new(512),
         }
     }
 
@@ -238,35 +239,56 @@ impl WindowContext {
             self.renderer
                 .render_stats(&self.wgpu_context.device, &self.wgpu_context.queue),
         );
-        self.history.push((stats.preprocess_time,stats.sort_time,stats.rasterization_time));
+        let num_drawn = pollster::block_on(self.renderer.num_visible_points(&self.wgpu_context.device));
+        self.history.push((
+            stats.preprocess_time,
+            stats.sort_time,
+            stats.rasterization_time,
+        ));
+        self.ui_renderer.ctx.set_visuals(Visuals{window_rounding:Rounding::ZERO,window_shadow:Shadow::NONE,..Default::default()});
 
-        egui::Window::new("Render Stats").show(&self.ui_renderer.ctx, |ui| {
-            egui::Grid::new("timing").num_columns(2).show(ui, |ui| {
-                ui.label("fps");
-                ui.label(format!("{:.2}", self.fps));
-            });
-            let history = self.history.to_vec();
-            let pre:Vec<f32> = history.iter().map(|v|v.0.as_secs_f32()*1000.).collect();
-            let sort:Vec<f32> = history.iter().map(|v|v.1.as_secs_f32()*1000.).collect();
-            let rast:Vec<f32> = history.iter().map(|v|v.2.as_secs_f32()*1000.).collect();
-
-            egui_plot::Plot::new("frame times")
-                .allow_drag(false)
-                .allow_boxed_zoom(false)
-                .allow_zoom(false)
-                .show_x(false)
-                .y_axis_label("ms")
-                .show_axes([false,true])
-                .legend(Legend{ text_style: TextStyle::Small, background_alpha: 1., position: egui_plot::Corner::LeftTop })
-                .show(ui, |ui| {
-                    let line = egui_plot::Line::new(PlotPoints::from_ys_f32(&pre)).name("preprocess");
-                    ui.line(line);
-                    let line = egui_plot::Line::new(PlotPoints::from_ys_f32(&sort)).name("sorting");
-                    ui.line(line);
-                    let line = egui_plot::Line::new(PlotPoints::from_ys_f32(&rast)).name("rasterize");
-                    ui.line(line);
+        egui::Window::new("Render Stats")
+            .default_width(200.)
+            .default_height(100.)
+            .show(&self.ui_renderer.ctx, |ui| {
+                egui::Grid::new("timing").num_columns(2).show(ui, |ui| {
+                    ui.label("FPS");
+                    ui.label(format!("{:.2}", self.fps));
+                    ui.end_row();
+                    ui.label("isible points");
+                    ui.label(format!("{:} ({:.2}%)", num_drawn,(num_drawn as f32/self.pc.read().unwrap().num_points() as f32)*100.));
                 });
-        });
+                let history = self.history.to_vec();
+                let pre: Vec<f32> = history.iter().map(|v| v.0.as_secs_f32() * 1000.).collect();
+                let sort: Vec<f32> = history.iter().map(|v| v.1.as_secs_f32() * 1000.).collect();
+                let rast: Vec<f32> = history.iter().map(|v| v.2.as_secs_f32() * 1000.).collect();
+
+                ui.label("Frame times (ms):");
+                egui_plot::Plot::new("frame times")
+                    .allow_drag(false)
+                    .allow_boxed_zoom(false)
+                    .allow_zoom(false)
+                    .allow_scroll(false)
+                    .show_x(false)
+                    .y_axis_label("ms")
+                    .show_axes([false, false])
+                    .legend(Legend {
+                        text_style: TextStyle::Small,
+                        background_alpha: 1.,
+                        position: egui_plot::Corner::LeftBottom,
+                    })
+                    .show(ui, |ui| {
+                        let line =
+                            egui_plot::Line::new(PlotPoints::from_ys_f32(&pre)).name("preprocess");
+                        ui.line(line);
+                        let line =
+                            egui_plot::Line::new(PlotPoints::from_ys_f32(&sort)).name("sorting");
+                        ui.line(line);
+                        let line =
+                            egui_plot::Line::new(PlotPoints::from_ys_f32(&rast)).name("rasterize");
+                        ui.line(line);
+                    });
+            });
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {

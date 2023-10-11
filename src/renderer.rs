@@ -1,7 +1,8 @@
 use std::{num::NonZeroU64, time::Duration};
 
 use crate::{
-    camera::{Camera, PerspectiveCamera, OPENGL_TO_WGPU_MATRIX},
+    camera::{Camera, PerspectiveCamera, VIEWPORT_Y_FLIP},
+    download_buffer,
     pointcloud::{PointCloud, SHDType, Splat2D},
     uniform::UniformBuffer,
     utils::GPUStopwatch,
@@ -69,7 +70,8 @@ impl GaussianRenderer {
             size: std::mem::size_of::<wgpu::util::DrawIndirect>() as u64,
             usage: wgpu::BufferUsages::INDIRECT
                 | wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST,
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
 
@@ -126,6 +128,16 @@ impl GaussianRenderer {
         );
         self.preprocess
             .run(encoder, pc, &self.camera, &self.draw_indirect);
+    }
+
+    pub async fn num_visible_points(&self, device: &wgpu::Device) -> u32 {
+        let n = {
+            let a: wgpu::BufferView<'_> =
+                download_buffer(device, &self.draw_indirect_buffer, None).await;
+            u32::from_le_bytes([a[4], a[5], a[6], a[7]])
+        };
+        self.draw_indirect_buffer.unmap();
+        return n;
     }
 
     pub fn render<'a>(
@@ -252,7 +264,7 @@ impl CameraUniform {
     }
 
     pub(crate) fn set_proj_mat(&mut self, proj_matrix: Matrix4<f32>) {
-        self.proj_matrix = OPENGL_TO_WGPU_MATRIX * proj_matrix;
+        self.proj_matrix = VIEWPORT_Y_FLIP * proj_matrix;
         self.proj_inv_matrix = proj_matrix.invert().unwrap();
     }
 

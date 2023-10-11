@@ -72,13 +72,12 @@ pub struct PerspectiveProjection {
     fov2view_ratio: f32,
 }
 
-/// see https://sotrh.github.io/learn-wgpu/intermediate/tutorial12-camera/#the-camera
 #[rustfmt::skip]
-pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
+pub const VIEWPORT_Y_FLIP: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
     1.0, 0.0, 0.0, 0.0,
     0.0, -1.0, 0.0, 0.0,
-    0.0, 0.0, 0.5, 0.0,
-    0.0, 0.0, 0.5, 1.0,
+    0.0, 0.0, 1.0, 0.,
+    0.0, 0.0, 0., 1.0,
 );
 
 impl PerspectiveProjection {
