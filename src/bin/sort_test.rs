@@ -26,10 +26,10 @@ async fn download_buffer<T: Clone>(buffer: &wgpu::Buffer, device: &wgpu::Device,
     device.poll(wgpu::Maintain::Wait);
     rx.receive().await.unwrap().unwrap();
     let data = buffer_slice.get_mapped_range();
-    let mut r;
+    let r;
     
     unsafe {
-        let (prefix, d, suffix) = data.align_to::<T>();
+        let (_prefix, d, _suffix) = data.align_to::<T>();
         r = d.to_vec();
     }
     
@@ -52,6 +52,7 @@ fn upload_to_buffer<T: bytemuck::Pod>(buffer: &wgpu::Buffer, device : &wgpu::Dev
     staging_buffer.destroy();
 }
 
+#[allow(dead_code)]
 fn print_first_n<T : std::fmt::Debug + Clone>(v: &Vec<T>, n: usize) {
     println!("{:?}", v[0..n].to_vec());
 }
@@ -128,8 +129,8 @@ fn test_sort_indirect(device : &wgpu::Device, queue: &wgpu::Queue, compute_pipel
     println!("Starting indirect dispatch test");
     // creating the data array
     let n = 100000usize;
-    let keys_per_wg = gpu_rs::histogram_wg_size * gpu_rs::rs_histogram_block_rows;
-    let dispatch_x = (n + keys_per_wg - 1) / keys_per_wg;
+    let keys_per_wg = gpu_rs::HISTOGRAM_WG_SIZE * gpu_rs::RS_HISTOGRAM_BLOCK_ROWS;
+    let _dispatch_x = (n + keys_per_wg - 1) / keys_per_wg;
     let scrambled_data : Vec<f32> = (0..n).rev().map(|x| x as f32).collect();
     let scrambled_payload : Vec<u32> = (0..n as u32).collect();
     let ref_data : Vec<f32> = (0..n).map(|x| x as f32).collect();
@@ -137,7 +138,7 @@ fn test_sort_indirect(device : &wgpu::Device, queue: &wgpu::Queue, compute_pipel
     
     let internal_mem_buffer = compute_pipeline.create_internal_mem_buffer(device, n);
     let (keyval_a, keyval_b, payload_a, payload_b) = GPURSSorter::create_keyval_buffers(device, n, 4);
-    let (uniform_infos, dispatch_buffer, bind_group, _dispatch_work_group) = compute_pipeline.create_bind_group(device, n, &internal_mem_buffer, &keyval_a, &keyval_b, &payload_a, &payload_b);
+    let (_uniform_infos, dispatch_buffer, bind_group, _dispatch_work_group) = compute_pipeline.create_bind_group(device, n, &internal_mem_buffer, &keyval_a, &keyval_b, &payload_a, &payload_b);
     
     upload_to_buffer(&keyval_a, &device, &queue, scrambled_data.as_slice());
     upload_to_buffer(&payload_a, &device, &queue, scrambled_payload.as_slice());
@@ -165,24 +166,24 @@ fn test_sort_throughput(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipe
     let scrambled_data : Vec<f32> = (0..n).rev().map(|x| x as f32).collect();
     let scrambled_payload : Vec<u32> = (0..n as u32).collect();
     let ref_data : Vec<f32> = (0..n).map(|x| x as f32).collect();
-    let ref_payload : Vec<u32> = scrambled_payload.iter().rev().cloned().collect();
+    let _ref_payload : Vec<u32> = scrambled_payload.iter().rev().cloned().collect();
     
     let internal_mem_buffer = compute_pipeline.create_internal_mem_buffer(device, n);
     let (keyval_a, keyval_b, payload_a, payload_b) = GPURSSorter::create_keyval_buffers(device, n, 4);
-    let (uniform_infos, _dispatch_buffer, bind_group, _dispatch_work_group) = compute_pipeline.create_bind_group(device, n, &internal_mem_buffer, &keyval_a, &keyval_b, &payload_a, &payload_b);
+    let (_uniform_infos, _dispatch_buffer, bind_group, _dispatch_work_group) = compute_pipeline.create_bind_group(device, n, &internal_mem_buffer, &keyval_a, &keyval_b, &payload_a, &payload_b);
     
     upload_to_buffer(&keyval_a, &device, &queue, scrambled_data.as_slice());
     upload_to_buffer(&payload_b, &device, &queue, scrambled_payload.as_slice());
     
     let mut commands = Vec::<wgpu::CommandBuffer>::new();
     let n_commands = 50;
-    for i in 0..n_commands {
+    for _i in 0..n_commands {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: Some("auf gehts")});
         compute_pipeline.record_sort(&bind_group, n, &mut encoder);
         commands.push(encoder.finish());
     }
     device.poll(wgpu::Maintain::Wait);
-    let mut t = Instant::now();
+    let t = Instant::now();
     for c in commands {
         queue.submit([c]);
     }

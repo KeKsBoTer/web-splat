@@ -271,12 +271,12 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     // filling the sorting buffers and the indirect sort dispatch buffer
     sort_depths[store_idx] = 1. - v_center.z;    // z is already larger than 1, as OpenGL projection is used
     sort_indices[store_idx] = store_idx;
-    if gid.x == 0u {
+    if idx == 0u {
         atomicAdd(&sort_dispatch.dispatch_x, 1u);   // safety addition to always have an unfull block at the end of the buffer
     }
     let cur_key_size = atomicAdd(&sort_infos.keys_size, 1u);
     let keys_per_wg = 256u * 15u;         // Caution: if workgroup size (256) or keys per thread (15) changes the dispatch is wrong!!
-    if cur_key_size > 0u && (cur_key_size % keys_per_wg) == 0u {
+    if (cur_key_size % keys_per_wg) == 0u {
         atomicAdd(&sort_dispatch.dispatch_x, 1u);
     }
 }

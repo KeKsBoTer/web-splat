@@ -32,9 +32,9 @@ impl Default for GaussianSplat {
     }
 }
 
+#[allow(dead_code)]
 pub struct PointCloud {
     vertex_buffer: wgpu::Buffer,
-    #[allow(dead_code)]
     sh_coef_buffer: wgpu::Buffer,
     splat_2d_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,

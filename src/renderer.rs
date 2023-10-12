@@ -146,7 +146,7 @@ impl GaussianRenderer {
             self.preprocess(&mut encoder, device, &queue, &pc, camera, viewport);
 
             // TODO @josef sort the pc.splat_2d_buffer buffer here
-            pc.sorter.record_sort(&pc.sorter_bg, pc.points().len(), &mut encoder);
+            pc.sorter.record_sort_indirect(&pc.sorter_bg, &pc.sorter_dis,&mut encoder);
 
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("render pass"),
