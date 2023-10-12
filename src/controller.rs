@@ -1,5 +1,5 @@
 use cgmath::*;
-use std::time::Duration;
+use instant::Duration;
 use winit::event::VirtualKeyCode;
 
 use crate::camera::{Camera, PerspectiveCamera};

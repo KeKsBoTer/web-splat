@@ -4,7 +4,7 @@ use cgmath::{Point3, Vector4};
 use clap::ValueEnum;
 use half::f16;
 use std::fmt::{Debug, Display};
-use std::io::{self, BufReader};
+use std::io::{self, BufReader, Read, Seek};
 use std::{mem, path::Path};
 use wgpu::util::DeviceExt;
 
@@ -43,23 +43,14 @@ impl Debug for PointCloud {
 }
 
 impl PointCloud {
-    pub fn load<P: AsRef<Path>>(
+    pub fn load<R: Read + Seek>(
         device: &wgpu::Device,
-        path: P,
+        f: R,
         sh_dtype: SHDType,
         max_sh_deg: Option<u32>,
     ) -> Result<Self, anyhow::Error> {
-        let f = std::fs::File::open(path.as_ref())?;
         let mut reader = BufReader::new(f);
-        let file_ext = path.as_ref().extension().unwrap().to_str().unwrap();
-        let mut reader: Box<dyn PointCloudReader> = match file_ext {
-            #[cfg(feature = "npz")]
-            "npz" => Box::new(crate::npz::NpzReader::new(&mut reader)?),
-            #[cfg(not(feature = "npz"))]
-            "npz" => return Err(anyhow::anyhow!("viewer was compiled without npz support")),
-            "ply" => Box::new(crate::ply::PlyReader::new(&mut reader)?),
-            _ => return Err(anyhow::anyhow!("file extension {file_ext} not supported")),
-        };
+        let mut reader = crate::ply::PlyReader::new(&mut reader)?;
 
         let file_sh_deg = reader.file_sh_deg()?;
         let num_points = reader.num_points()?;

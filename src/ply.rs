@@ -1,7 +1,7 @@
+use instant::Instant;
 use std::{
     io::{self},
     marker::PhantomData,
-    time::Instant,
 };
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt};

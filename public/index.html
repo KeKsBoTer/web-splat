@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <title>web-splat</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/normalize.css@8/normalize.css">
+    <style>
+        body {
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+        }
+    </style>
+</head>
+
+<body>
+    <script type="module">
+        import init, { run_wasm } from "./web_splats.js";
+        await init();
+
+        let resp_pc = await fetch("./point_cloud.ply");
+        let data_pc = new Uint8Array(await resp_pc.arrayBuffer());
+
+
+        let resp_scene = await fetch("./cameras.json");
+        let data_scene = new Uint8Array(await resp_scene.arrayBuffer());
+
+        run_wasm(data_pc, data_scene);
+
+        document.addEventListener('contextmenu', event => event.preventDefault());
+    </script>
+</body>
+
+</html>

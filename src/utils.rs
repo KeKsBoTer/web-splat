@@ -1,5 +1,6 @@
 use cgmath::{Matrix, Matrix3, Quaternion, SquareMatrix, Vector3};
 use half::f16;
+use instant::Duration;
 use std::{fmt::Debug, mem::MaybeUninit};
 use winit::event::VirtualKeyCode;
 
@@ -95,11 +96,12 @@ impl GPUStopwatch {
         self.index = 0;
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn take_measurements(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-    ) -> HashMap<String, std::time::Duration> {
+    ) -> HashMap<String, Duration> {
         let period = queue.get_timestamp_period();
 
         let labels: Vec<(String, u32)> = self.labels.drain().collect();
@@ -112,8 +114,7 @@ impl GPUStopwatch {
             for (label, index) in labels {
                 let diff_ticks =
                     timestamps[(index * 2 + 1) as usize] - timestamps[(index * 2) as usize];
-                let diff_time =
-                    std::time::Duration::from_nanos((diff_ticks as f32 * period) as u64);
+                let diff_time = Duration::from_nanos((diff_ticks as f32 * period) as u64);
                 durations.insert(label, diff_time);
             }
         }
@@ -162,6 +163,7 @@ where
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn download_buffer<'a>(
     device: &wgpu::Device,
     buffer: &'a wgpu::Buffer,

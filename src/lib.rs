@@ -1,14 +1,17 @@
 use std::{
     path::Path,
-    time::{Duration, Instant},
+   io::{Cursor, Seek, Read},
 };
+use instant::{Duration,Instant};
 
 use cgmath::{Deg, EuclideanSpace, Point3, Quaternion, Vector2};
 use egui::{epaint::Shadow, Rounding, TextStyle, Visuals};
 use egui_plot::{Legend, PlotPoints};
 use num_traits::One;
 
+use renderer::RenderStatistics;
 use utils::{key_to_num, RingBuffer};
+use wasm_bindgen::prelude::wasm_bindgen;
 use winit::{
     dpi::PhysicalSize,
     event::{DeviceEvent, ElementState, Event, VirtualKeyCode, WindowEvent},
@@ -38,7 +41,15 @@ pub use self::scene::{Scene, SceneCamera, Split};
 mod ui_renderer;
 mod uniform;
 mod utils;
+
+#[cfg(not(target_arch = "wasm32"))]
 pub use utils::download_buffer;
+
+// #[cfg(target_arch="wasm32")]
+// mod web;
+// #[cfg(target_arch="wasm32")]
+// pub use web::run_wasm;
+
 pub struct WGPUContext {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -68,8 +79,7 @@ impl WGPUContext {
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
-                    features: wgpu::Features::TIMESTAMP_QUERY
-                        | wgpu::Features::MAPPABLE_PRIMARY_BUFFERS,
+                    features: wgpu::Features::empty(),
                     limits: wgpu::Limits {
                         max_storage_buffer_binding_size: 1 << 30,
                         max_buffer_size: 1 << 30,
@@ -117,10 +127,10 @@ struct WindowContext {
 
 impl WindowContext {
     // Creating some of the wgpu types requires async code
-    async fn new<P: AsRef<Path>>(
+    async fn new<R:Read+Seek>(
         window: Window,
         event_loop: &EventLoop<()>,
-        pc_file: P,
+        pc_file: R,
         render_config: RenderConfig,
     ) -> Self {
         let size = window.inner_size();
@@ -236,12 +246,17 @@ impl WindowContext {
 
     fn ui(&mut self) {
         let ctx = &self.ui_renderer.ctx;
-        let stats = pollster::block_on(
-            self.renderer
-                .render_stats(&self.wgpu_context.device, &self.wgpu_context.queue),
-        );
-        let num_drawn =
-            pollster::block_on(self.renderer.num_visible_points(&self.wgpu_context.device));
+        // let stats = pollster::block_on(
+        //     self.renderer
+        //         .render_stats(&self.wgpu_context.device, &self.wgpu_context.queue),
+        // );
+        let stats =  RenderStatistics {
+            preprocess_time: Duration::ZERO,
+            sort_time: Duration::ZERO,
+            rasterization_time: Duration::ZERO,
+        };
+        let num_drawn = 0;
+            // pollster::block_on(self.renderer.num_visible_points(&self.wgpu_context.device));
         self.history.push((
             stats.preprocess_time,
             stats.sort_time,
@@ -472,11 +487,10 @@ pub fn smoothstep(x: f32) -> f32 {
     return x * x * (3.0 - 2.0 * x);
 }
 
-pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
-    file: P,
-    scene_file: Option<P>,
-    config: RenderConfig,
-) {
+
+pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(file: R, scene_file: Option<R>
+    ,config: RenderConfig) {
+        #[cfg(not(target_arch = "wasm32"))]
     env_logger::init();
     let event_loop = EventLoop::new();
 
@@ -498,6 +512,24 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
         .with_inner_size(window_size)
         .build(&event_loop)
         .unwrap();
+
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            use winit::platform::web::WindowExtWebSys;
+            // On wasm, append the canvas to the document body
+            web_sys::window()
+                .and_then(|win| win.document())
+                .and_then(|doc| doc.body())
+                .and_then(|body| {
+                    let canvas = window.canvas();
+                    canvas.set_width(body.client_width() as u32);
+                    canvas.set_height(body.client_height() as u32);
+                    let elm = web_sys::Element::from(canvas);
+                    body.append_child(&elm).ok()
+                })
+                .expect("couldn't append canvas to document body");
+        }
 
     let mut state = WindowContext::new(window, &event_loop, file, config).await;
 
@@ -611,4 +643,14 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
         }
         _ => {}
     });
+}
+
+#[wasm_bindgen]
+pub fn run_wasm(pc: Vec<u8>, scene: Option<Vec<u8>>) {
+    std::panic::set_hook(Box::new(console_error_panic_hook::hook));
+    console_log::init().expect("could not initialize logger");
+    let pc_reader = Cursor::new(pc);
+    let scene_reader = scene.map(|d: Vec<u8>| Cursor::new(d));
+
+    wasm_bindgen_futures::spawn_local(open_window(pc_reader, scene_reader,RenderConfig { max_sh_deg: 3, sh_dtype: SHDType::Byte, no_vsync: false }));
 }

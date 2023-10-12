@@ -2,8 +2,8 @@ use std::{
     path::Path,
     sync::{Arc, RwLock},
     thread,
-    time::{Duration, Instant},
 };
+use instant::{Duration,Instant};
 
 use cgmath::{Deg, EuclideanSpace, Point3, Quaternion, Transform, Vector2};
 use log::{debug, info};
@@ -200,6 +200,7 @@ pub async fn open_window<P: AsRef<Path> + Clone + Send + Sync + 'static>(
     file: P,
     scene_file: Option<P>,
 ) {
+    #[cfg(not(target_arch = "wasm32"))]
     env_logger::init();
     let event_loop = EventLoop::new();
 

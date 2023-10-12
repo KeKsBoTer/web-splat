@@ -2,7 +2,6 @@ use std::{num::NonZeroU64, time::Duration};
 
 use crate::{
     camera::{Camera, PerspectiveCamera, VIEWPORT_Y_FLIP},
-    download_buffer,
     pointcloud::{PointCloud, SHDType, Splat2D},
     uniform::UniformBuffer,
     utils::GPUStopwatch,
@@ -16,7 +15,7 @@ pub struct GaussianRenderer {
     draw_indirect_buffer: wgpu::Buffer,
     draw_indirect: wgpu::BindGroup,
     color_format: wgpu::TextureFormat,
-    stopwatch: GPUStopwatch,
+    // stopwatch: GPUStopwatch,
 }
 
 impl GaussianRenderer {
@@ -70,8 +69,7 @@ impl GaussianRenderer {
             size: std::mem::size_of::<wgpu::util::DrawIndirect>() as u64,
             usage: wgpu::BufferUsages::INDIRECT
                 | wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::MAP_READ,
+                | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -84,7 +82,7 @@ impl GaussianRenderer {
                 resource: draw_indirect_buffer.as_entire_binding(),
             }],
         });
-        let stopwatch = GPUStopwatch::new(device, Some(3));
+        // let stopwatch = GPUStopwatch::new(device, Some(3));
 
         let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
         let preprocess = PreprocessPipeline::new(device, sh_deg, sh_dtype);
@@ -95,7 +93,7 @@ impl GaussianRenderer {
             draw_indirect_buffer,
             draw_indirect,
             color_format,
-            stopwatch,
+            // stopwatch,
         }
     }
 
@@ -130,6 +128,7 @@ impl GaussianRenderer {
             .run(encoder, pc, &self.camera, &self.draw_indirect);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn num_visible_points(&self, device: &wgpu::Device) -> u32 {
         let n = {
             let a: wgpu::BufferView<'_> =
@@ -153,16 +152,16 @@ impl GaussianRenderer {
             label: Some("Render Encoder Compare"),
         });
         {
-            self.stopwatch.start(&mut encoder, "preprocess").unwrap();
+            // self.stopwatch.start(&mut encoder, "preprocess").unwrap();
             self.preprocess(&mut encoder, &queue, &pc, camera, viewport);
-            self.stopwatch.stop(&mut encoder, "preprocess").unwrap();
+            // self.stopwatch.stop(&mut encoder, "preprocess").unwrap();
 
-            self.stopwatch.start(&mut encoder, "sorting").unwrap();
+            // self.stopwatch.start(&mut encoder, "sorting").unwrap();
             // TODO @josef sort the pc.splat_2d_buffer buffer here
-            self.stopwatch.stop(&mut encoder, "sorting").unwrap();
+            // self.stopwatch.stop(&mut encoder, "sorting").unwrap();
 
             encoder.push_debug_group("render");
-            self.stopwatch.start(&mut encoder, "rasterization").unwrap();
+            // self.stopwatch.start(&mut encoder, "rasterization").unwrap();
             {
                 let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("render pass"),
@@ -182,10 +181,10 @@ impl GaussianRenderer {
                 render_pass.set_vertex_buffer(0, pc.splats_2d_buffer().slice(..));
                 render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
             }
-            self.stopwatch.stop(&mut encoder, "rasterization").unwrap();
+            // self.stopwatch.stop(&mut encoder, "rasterization").unwrap();
             encoder.pop_debug_group();
         }
-        self.stopwatch.end(&mut encoder);
+        // self.stopwatch.end(&mut encoder);
         queue.submit([encoder.finish()]);
     }
 
@@ -194,11 +193,16 @@ impl GaussianRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) -> RenderStatistics {
-        let durations = self.stopwatch.take_measurements(device, queue).await;
+        // let durations = self.stopwatch.take_measurements(device, queue).await;
+        // RenderStatistics {
+        //     preprocess_time: durations["preprocess"],
+        //     sort_time: durations["sorting"],
+        //     rasterization_time: durations["rasterization"],
+        // }
         RenderStatistics {
-            preprocess_time: durations["preprocess"],
-            sort_time: durations["sorting"],
-            rasterization_time: durations["rasterization"],
+            preprocess_time: Duration::ZERO,
+            sort_time: Duration::ZERO,
+            rasterization_time: Duration::ZERO,
         }
     }
 

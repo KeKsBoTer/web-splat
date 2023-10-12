@@ -2,7 +2,7 @@ use cgmath::Vector2;
 use clap::Parser;
 use image::{ImageBuffer, Rgba};
 use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
-use std::path::PathBuf;
+use std::{fs::File, path::PathBuf};
 use web_splats::{GaussianRenderer, PointCloud, SHDType, Scene, SceneCamera, Split, WGPUContext};
 
 #[derive(Debug, Parser)]
@@ -90,11 +90,17 @@ async fn render_views(
 
 #[pollster::main]
 async fn main() {
+    #[cfg(not(target_arch = "wasm32"))]
     env_logger::init();
     let opt = Opt::parse();
 
     println!("reading scene file '{}'", opt.scene.to_string_lossy());
-    let scene = Scene::from_json(opt.scene).unwrap();
+
+    // TODO this is suboptimal as it is never closed
+    let ply_file = File::open(&opt.input).unwrap();
+    let scene_file = File::open(opt.scene).unwrap();
+
+    let scene = Scene::from_json(scene_file).unwrap();
 
     let wgpu_context = WGPUContext::new_instance().await;
     let device = &wgpu_context.device;
@@ -103,7 +109,7 @@ async fn main() {
     println!("reading point cloud file '{}'", opt.input.to_string_lossy());
     let mut pc = PointCloud::load(
         &wgpu_context.device,
-        opt.input,
+        ply_file,
         opt.sh_dtype,
         Some(opt.max_sh_deg),
     )

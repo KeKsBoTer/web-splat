@@ -1,4 +1,4 @@
-use std::time::Duration;
+use instant::Duration;
 
 use cgmath::{InnerSpace, MetricSpace, Point3};
 

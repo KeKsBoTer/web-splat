@@ -1,6 +1,6 @@
 use clap::Parser;
-use std::path::PathBuf;
-use web_splats::{open_window, RenderConfig, SHDType};
+use std::{fs::File, path::PathBuf};
+use web_splats::{open_window, RenderConfig, SHDType, SceneCamera};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -27,9 +27,13 @@ struct Opt {
 async fn main() {
     let opt = Opt::parse();
 
+    // TODO this is suboptimal as it is never closed
+    let ply_file = File::open(opt.input).unwrap();
+    let scene_file = opt.scene.map(|p| File::open(p).unwrap());
+
     open_window(
-        opt.input,
-        opt.scene,
+        ply_file,
+        scene_file,
         RenderConfig {
             max_sh_deg: opt.max_sh_deg,
             sh_dtype: opt.sh_dtype,
