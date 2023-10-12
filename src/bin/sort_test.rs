@@ -72,7 +72,7 @@ fn test_sort_components(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipe
     // creating the gpu buffers
     let histograms = compute_pipeline.create_internal_mem_buffer(&device, test_data.len());
     let (keyval_a, keyval_b, payload_a, payload_b) = GPURSSorter::create_keyval_buffers(&device, test_data.len(), 4);
-    let (_uniform_infos, _dispatch_indirect, bind_group, _dispatch_work_group) = compute_pipeline.create_bind_group(&device, test_data.len(), &histograms, &keyval_a, &keyval_b, &payload_a, &payload_b);
+    let (_uniform_infos, _dispatch_indirect, bind_group, _dispatch_bg) = compute_pipeline.create_bind_group(&device, test_data.len(), &histograms, &keyval_a, &keyval_b, &payload_a, &payload_b);
     
     upload_to_buffer(&keyval_a, &device, &queue, test_data.as_slice());
     upload_to_buffer(&payload_a, &device, &queue, test_payload.as_slice());

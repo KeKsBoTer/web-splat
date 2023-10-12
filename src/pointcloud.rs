@@ -38,6 +38,7 @@ pub struct PointCloud {
     sh_coef_buffer: wgpu::Buffer,
     splat_2d_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    pub render_bind_group: wgpu::BindGroup,
     points: Vec<GaussianSplat>,
     num_points: u32,
     sh_deg: u32,
@@ -49,10 +50,12 @@ pub struct PointCloud {
     sorter_p_a: wgpu::Buffer,   // payload buffer a
     sorter_p_b: wgpu::Buffer,   // payload buffer b
     sorter_int: wgpu::Buffer,   // internal memory storage (used for histgoram calcs)
-    sorter_uni: wgpu::Buffer,   // uniform buffer information
+    pub sorter_uni: wgpu::Buffer,   // uniform buffer information
     pub sorter_dis: wgpu::Buffer, // dispatch buffer
     pub sorter_dis_bg: wgpu::BindGroup, // sorter dispatch bind group (needed mainly for the preprocess pipeline to set the correct dispatch count in shader)
     pub sorter_bg: wgpu::BindGroup, // sorter bind group
+    pub sorter_render_bg: wgpu::BindGroup, // bind group only with the sorted indices for rendering
+    pub sorter_bg_pre: wgpu::BindGroup  // bind group for the preprocess (is the sorter_dis and sorter_bg merged as we only have a limited amount of bgs for the preprocessing)
 }
 
 impl Debug for PointCloud {
@@ -148,22 +151,35 @@ impl PointCloud {
                 },
             ],
         });
+        let render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("point cloud rendering bind group"),
+            layout: &Self::bind_group_layout_render(device),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: splat_2d_buffer.as_entire_binding(),
+                }
+            ]
+        });
         
         let sorter = GPURSSorter::new(device, queue);
         let (sorter_b_a, sorter_b_b, sorter_p_a, sorter_p_b) = GPURSSorter::create_keyval_buffers(device, num_points, 4);
         let sorter_int = sorter.create_internal_mem_buffer(device, num_points);
         let (sorter_uni, sorter_dis, sorter_bg, sorter_dis_bg) = sorter.create_bind_group(device, num_points, &sorter_int, &sorter_b_a, &sorter_b_b, &sorter_p_a, &sorter_p_b);
+        let sorter_render_bg = sorter.create_bind_group_render(device, &sorter_p_a);
+        let sorter_bg_pre = sorter.create_bind_group_preprocess(device, &sorter_uni, &sorter_dis, &sorter_int, &sorter_b_a, &sorter_b_b, &sorter_p_a, &sorter_p_b);
 
         Ok(Self {
             vertex_buffer,
             sh_coef_buffer,
             splat_2d_buffer,
             bind_group,
+            render_bind_group,
             num_points: num_points as u32,
             points: vertices,
             sh_deg,
             sh_dtype,
-            sorter, sorter_b_a, sorter_b_b, sorter_p_a, sorter_p_b, sorter_int, sorter_uni, sorter_dis, sorter_dis_bg, sorter_bg,
+            sorter, sorter_b_a, sorter_b_b, sorter_p_a, sorter_p_b, sorter_int, sorter_uni, sorter_dis, sorter_dis_bg, sorter_bg, sorter_render_bg, sorter_bg_pre,
         })
     }
 
@@ -240,6 +256,24 @@ impl PointCloud {
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        })
+    }
+
+    pub fn bind_group_layout_render(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("point cloud rendering bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },

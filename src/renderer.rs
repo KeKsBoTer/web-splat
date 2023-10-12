@@ -24,12 +24,11 @@ impl GaussianRenderer {
         sh_deg: u32,
         sh_dtype: SHDType,
     ) -> Self {
-        let (sorter_data_layout, sorter_dispatch_layout) = GPURSSorter::bind_group_layouts(device);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render pipeline layout"),
             bind_group_layouts: &[
-                &PointCloud::bind_group_layout(device),     // Needed for points_2d (on binding 2)
-                &sorter_data_layout,                        // Needed for indices   (on binding 4)
+                &PointCloud::bind_group_layout_render(device),     // Needed for points_2d (on binding 2)
+                &GPURSSorter::bind_group_layout_rendering(device),// Needed for indices   (on binding 4)
             ],
             push_constant_ranges: &[],
         });
@@ -143,7 +142,7 @@ impl GaussianRenderer {
             label: Some("Render Encoder Compare"),
         });
         {
-            GPURSSorter::record_reset_indirect_buffer(&pc.sorter_dis, &queue);
+            GPURSSorter::record_reset_indirect_buffer(&pc.sorter_dis, &pc.sorter_uni, &queue);
             self.preprocess(&mut encoder, device, &queue, &pc, camera, viewport);
 
             // TODO @josef sort the pc.splat_2d_buffer buffer here
@@ -162,8 +161,8 @@ impl GaussianRenderer {
                 depth_stencil_attachment: None,
             });
 
-            render_pass.set_bind_group(0, pc.bind_group(), &[]);
-            render_pass.set_bind_group(1, &pc.sorter_bg, &[]);
+            render_pass.set_bind_group(0, &pc.render_bind_group, &[]);
+            render_pass.set_bind_group(1, &pc.sorter_render_bg, &[]);
             render_pass.set_pipeline(&self.pipeline);
 
             // render_pass.set_vertex_buffer(0, pc.splats_2d_buffer().slice(..));
@@ -256,15 +255,13 @@ struct PreprocessPipeline(wgpu::ComputePipeline);
 
 impl PreprocessPipeline {
     fn new(device: &wgpu::Device, sh_deg: u32, sh_dtype: SHDType) -> Self {
-        let (sorter_data_layout, sorter_dispatch_layout) = GPURSSorter::bind_group_layouts(device);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("preprocess pipeline layout"),
             bind_group_layouts: &[
                 &UniformBuffer::<CameraUniform>::bind_group_layout(device),
                 &PointCloud::bind_group_layout(device),
                 &GaussianRenderer::bind_group_layout(device),
-                &sorter_data_layout,
-                &sorter_dispatch_layout,
+                &GPURSSorter::bind_group_layout_preprocess(device),
             ],
             push_constant_ranges: &[],
         });
@@ -307,9 +304,9 @@ impl PreprocessPipeline {
         pass.set_pipeline(&self.0);
         pass.set_bind_group(0, camera.bind_group(), &[]);
         pass.set_bind_group(1, pc.bind_group(), &[]);
-        pass.set_bind_group(3, &pc.sorter_bg, &[]);
-
         pass.set_bind_group(2, draw_indirect, &[]);
+        pass.set_bind_group(3, &pc.sorter_bg_pre, &[]);
+
         let per_dim = (pc.num_points() as f32).sqrt().ceil() as u32;
         let wgs_x = (per_dim + 15) / 16;
         let wgs_y = (per_dim + 15) / 16;
