@@ -2,7 +2,12 @@ use std::{
     path::Path,
    io::{Cursor, Seek, Read},
 };
+
+#[cfg(target_arch = "wasm32")]
 use instant::{Duration,Instant};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration,Instant};
+
 
 use cgmath::{Deg, EuclideanSpace, Point3, Quaternion, Vector2};
 use egui::{epaint::Shadow, Rounding, TextStyle, Visuals};
@@ -11,6 +16,8 @@ use num_traits::One;
 
 use renderer::RenderStatistics;
 use utils::{key_to_num, RingBuffer};
+
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::wasm_bindgen;
 use winit::{
     dpi::PhysicalSize,
@@ -645,6 +652,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(file: R, scene_
     });
 }
 
+#[cfg(target_arch="wasm32")]
 #[wasm_bindgen]
 pub fn run_wasm(pc: Vec<u8>, scene: Option<Vec<u8>>) {
     std::panic::set_hook(Box::new(console_error_panic_hook::hook));

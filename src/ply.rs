@@ -1,4 +1,8 @@
-use instant::Instant;
+#[cfg(target_arch = "wasm32")]
+use instant::{Duration, Instant};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, Instant};
+
 use std::{
     io::{self},
     marker::PhantomData,

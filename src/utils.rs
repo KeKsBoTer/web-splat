@@ -1,6 +1,10 @@
 use cgmath::{Matrix, Matrix3, Quaternion, SquareMatrix, Vector3};
 use half::f16;
-use instant::Duration;
+#[cfg(target_arch = "wasm32")]
+use instant::{Duration, Instant};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, Instant};
+
 use std::{fmt::Debug, mem::MaybeUninit};
 use winit::event::VirtualKeyCode;
 

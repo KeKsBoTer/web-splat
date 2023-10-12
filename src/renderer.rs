@@ -6,6 +6,10 @@ use crate::{
     uniform::UniformBuffer,
     utils::GPUStopwatch,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+use crate::download_buffer;
+
 use cgmath::{Matrix4, SquareMatrix, Vector2};
 
 pub struct GaussianRenderer {
