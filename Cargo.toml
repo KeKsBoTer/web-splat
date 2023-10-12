@@ -36,6 +36,8 @@ egui-wgpu = "0.23.0"
 egui-winit = "0.23.0"
 egui_plot = "0.23.0"
 
+npyz = { version = "0.8", features = ["npz"], optional = true }
+
 [lib]
 path = "src/lib.rs"
 
@@ -44,3 +46,6 @@ name = "viewer"
 
 [[bin]]
 name = "render"
+
+[features]
+npz = ["dep:npyz"]

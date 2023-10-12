@@ -101,7 +101,7 @@ async fn main() {
     let queue = &wgpu_context.queue;
 
     println!("reading point cloud file '{}'", opt.input.to_string_lossy());
-    let mut pc = PointCloud::load_ply(
+    let mut pc = PointCloud::load(
         &wgpu_context.device,
         opt.input,
         opt.sh_dtype,

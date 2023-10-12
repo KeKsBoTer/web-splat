@@ -1,7 +1,11 @@
+use cgmath::{Matrix, Matrix3, Quaternion, SquareMatrix, Vector3};
+use half::f16;
 use std::{fmt::Debug, mem::MaybeUninit};
 use winit::event::VirtualKeyCode;
 
 use std::{collections::HashMap, mem::size_of, ops::Deref};
+
+use crate::SHDType;
 pub fn key_to_num(key: VirtualKeyCode) -> Option<u32> {
     match key {
         VirtualKeyCode::Key0 => Some(0),
@@ -175,4 +179,57 @@ pub async fn download_buffer<'a>(
 
     let view = slice.get_mapped_range();
     return view;
+}
+
+pub fn sh_num_coefficients(sh_deg: u32) -> u32 {
+    (sh_deg + 1) * (sh_deg + 1)
+}
+
+pub fn sh_deg_from_num_coefs(n: u32) -> Option<u32> {
+    let sqrt = (n as f32).sqrt();
+    if sqrt.fract() != 0. {
+        return None;
+    }
+    return Some((sqrt as u32) - 1);
+}
+
+/// calculates the maximum sh degree that will fit into
+/// the max_buffer_size
+pub fn max_supported_sh_deg(
+    max_buffer_size: u64,
+    num_points: u64,
+    sh_dtype: SHDType,
+    max_deg: u32,
+) -> Option<u32> {
+    for i in (0..=max_deg).rev() {
+        let n_coefs = sh_num_coefficients(i) * 3;
+        let buf_size = num_points as u64 * sh_dtype.packed_size() as u64 * n_coefs as u64;
+        if buf_size < max_buffer_size {
+            return Some(i);
+        }
+    }
+    return None;
+}
+
+/// builds a covariance matrix based on a quaterion and rotation
+/// the matrix is symmetric so we only return the upper right half
+/// see "3D Gaussian Splatting" Kerbel et al.
+pub fn build_cov(rot: Quaternion<f32>, scale: Vector3<f32>) -> [f16; 6] {
+    let r = Matrix3::from(rot);
+    let s = Matrix3::from_diagonal(scale);
+
+    let l = r * s;
+
+    let m = l * l.transpose();
+
+    return [m[0][0], m[0][1], m[0][2], m[1][1], m[1][2], m[2][2]].map(|v| f16::from_f32(v));
+}
+
+/// numerical stable sigmoid function
+pub fn sigmoid(x: f32) -> f32 {
+    if x >= 0. {
+        1. / (1. + (-x).exp())
+    } else {
+        x.exp() / (1. + x.exp())
+    }
 }

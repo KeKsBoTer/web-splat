@@ -25,6 +25,10 @@ pub use controller::CameraController;
 mod pointcloud;
 pub use pointcloud::{PointCloud, SHDType};
 
+#[cfg(feature="npz")]
+mod npz;
+mod ply;
+
 mod renderer;
 pub use renderer::GaussianRenderer;
 
@@ -158,7 +162,7 @@ impl WindowContext {
             view_formats: vec![],
         };
         surface.configure(&device, &config);
-        let pc = PointCloud::load_ply(
+        let pc = PointCloud::load(
             &device,
             pc_file,
             render_config.sh_dtype,
