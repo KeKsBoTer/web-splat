@@ -8,7 +8,7 @@
     All shaders can be found in shaders/radix_sort.wgsl
 */
 
-use wgpu::{ComputePassDescriptor, util::DeviceExt};
+use wgpu::{ComputePassDescriptor, util::{DeviceExt, DispatchIndirect}};
 
 use crate::{
     camera::{Camera},
@@ -27,7 +27,8 @@ const scatter_wg_size: usize = 1 << 8;
 
 
 pub struct GPURSSorter {
-    pub bind_group_layout: wgpu::BindGroupLayout,
+    bind_group_layout: wgpu::BindGroupLayout,
+    dispatch_bind_group_layout: wgpu::BindGroupLayout,
     zero_p:         wgpu::ComputePipeline,
     histogram_p:    wgpu::ComputePipeline,
     prefix_p:       wgpu::ComputePipeline,
@@ -36,10 +37,13 @@ pub struct GPURSSorter {
     subgroup_size:  usize,
 }
 
+pub struct IndirectDispatch{
+    dispatch_x: u32,
+    dispatch_y: u32,
+    dispatch_z: u32,
+}
+
 pub struct GeneralInfo{
-    pub dispatch_x:     u32,
-    pub dispatch_y:     u32,
-    pub dispatch_z:     u32,
     pub keys_size:      u32,
     pub padded_size:    u32,
     pub passes:         u32,
@@ -79,7 +83,7 @@ impl GPURSSorter{
                     else {cur_size -= 1;}
             }
         }
-        println!("Created a sorter with subgroup size {}", cur_sorter.subgroup_size);
+        println!("Created a sorter with subgroup size {}\n", cur_sorter.subgroup_size);
         return cur_sorter;
     }
     
@@ -98,7 +102,7 @@ impl GPURSSorter{
         let rs_mem_sweep_1_offset : usize = rs_mem_sweep_0_offset + rs_sweep_0_size;
         let rs_mem_sweep_2_offset : usize = rs_mem_sweep_1_offset + rs_sweep_1_size;
         
-        let bind_group_layout = Self::bind_group_layout(device);
+        let (bind_group_layout, dispatch_bind_group_layout) = Self::bind_group_layouts(device);
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("preprocess pipeline layout"),
@@ -122,7 +126,7 @@ impl GPURSSorter{
         let shader_code = shader_w_const.replace("{histogram_wg_size}", histogram_wg_size.to_string().as_str())
             .replace("{prefix_wg_size}", prefix_wg_size.to_string().as_str())
             .replace("{scatter_wg_size}", scatter_wg_size.to_string().as_str());
-        // println!("{}", shader_code);
+        //println!("{}", shader_code);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Radix sort shader"),
             source: wgpu::ShaderSource::Wgsl(shader_code.into()),
@@ -158,7 +162,7 @@ impl GPURSSorter{
             entry_point: "scatter_odd",
         });
 
-        return Self { bind_group_layout, zero_p, histogram_p, prefix_p, scatter_even_p, scatter_odd_p , subgroup_size: histogram_sg_size };
+        return Self { bind_group_layout, dispatch_bind_group_layout, zero_p, histogram_p, prefix_p, scatter_even_p, scatter_odd_p , subgroup_size: histogram_sg_size };
     }
     
     fn test_sort(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> bool {
@@ -169,7 +173,7 @@ impl GPURSSorter{
 
         let internal_mem_buffer = Self::create_internal_mem_buffer(self, device, n);
         let (keyval_a, keyval_b, payload_a, payload_b) = Self::create_keyval_buffers(device, n, 4);
-        let (uniform_buffer, bind_group) = self.create_bind_group(device, n, &internal_mem_buffer, &keyval_a, &keyval_b, &payload_a, &payload_b);
+        let (uniform_buffer, dispatch_buffer, bind_group, dispatch_bind_group) = self.create_bind_group(device, n, &internal_mem_buffer, &keyval_a, &keyval_b, &payload_a, &payload_b);
 
         upload_to_buffer(&keyval_a, device, queue, scrambled_data.as_slice());
         
@@ -187,8 +191,8 @@ impl GPURSSorter{
         return true;
     }
     
-    pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-        return device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+    pub fn bind_group_layouts(device: &wgpu::Device) -> (wgpu::BindGroupLayout, wgpu::BindGroupLayout) {
+        return (device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
             label: Some("Radix bind group layout"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -252,7 +256,22 @@ impl GPURSSorter{
                     count: None,
                 },
             ]
-        })
+        }),
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor{
+            label: Some("Radix bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer { 
+                        ty: wgpu::BufferBindingType::Storage { read_only: false } , 
+                        has_dynamic_offset: false,
+                        min_binding_size: None 
+                    },
+                    count: None,
+                },
+            ]}),
+        );
     }
     
     fn get_scatter_histogram_sizes(keysize: usize) -> (usize, usize, usize, usize, usize, usize) {
@@ -316,7 +335,6 @@ impl GPURSSorter{
         let internal_sg_size : usize = histo_sg_size;
 
         // The "internal" memory map looks like this:
-        //
         //   +---------------------------------+ <-- 0
         //   | histograms[keyval_size]         |
         //   +---------------------------------+ <-- keyval_size                           * histo_size
@@ -347,15 +365,22 @@ impl GPURSSorter{
         return buffer;
     }
     
-    pub fn create_bind_group(&self, device: &wgpu::Device , keysize: usize, internal_mem_buffer: &wgpu::Buffer, keyval_a: &wgpu::Buffer, keyval_b: &wgpu::Buffer, payload_a: &wgpu::Buffer, payload_b: &wgpu::Buffer) -> (wgpu::Buffer, wgpu::BindGroup){
+    pub fn create_bind_group(&self, device: &wgpu::Device , keysize: usize, internal_mem_buffer: &wgpu::Buffer, keyval_a: &wgpu::Buffer, keyval_b: &wgpu::Buffer, payload_a: &wgpu::Buffer, payload_b: &wgpu::Buffer)
+            -> (wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup, wgpu::BindGroup){
         let (scatter_block_kvs, scatter_blocks_ru, count_ru_scatter, histo_block_kvs, hist_blocks_ru, count_ru_histo) = Self::get_scatter_histogram_sizes(keysize);
         if keyval_a.size() as usize != count_ru_histo * std::mem::size_of::<f32>() || keyval_b.size() as usize != count_ru_histo * std::mem::size_of::<f32>() {
             panic!("Keyval buffers are not padded correctly. Were they created with GPURSSorter::create_keyval_buffers()");
         }
-        let uniform_infos = GeneralInfo{dispatch_x: 0, dispatch_y: 1, dispatch_z: 1 , keys_size: keysize as u32, padded_size: count_ru_histo as u32, passes: 4, even_pass: 0, odd_pass: 0};
+        let dispatch_infos = IndirectDispatch{dispatch_x: scatter_blocks_ru as u32, dispatch_y: 1, dispatch_z: 1};
+        let uniform_infos = GeneralInfo{keys_size: keysize as u32, padded_size: count_ru_histo as u32, passes: 4, even_pass: 0, odd_pass: 0};
         let uniform_buffer= device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Radix uniform buffer"),
             contents: unsafe{any_as_u8_slice(&uniform_infos)},
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        let dispatch_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Dispatch indirect buffer"),
+            contents: unsafe{any_as_u8_slice(&dispatch_infos)},
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDIRECT,
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -387,7 +412,21 @@ impl GPURSSorter{
             },
             ]
         });
-        return (uniform_buffer, bind_group);
+        let indirect_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Indirect dispatch bind group"),
+            layout: &self.dispatch_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: dispatch_buffer.as_entire_binding(),
+            },
+            ]
+        });
+        return (uniform_buffer, dispatch_buffer, bind_group, indirect_bind_group);
+    }
+    
+    pub fn record_reset_indirect_buffer(indirect_buffer: &wgpu::Buffer, queue: &wgpu::Queue) {
+        queue.write_buffer(indirect_buffer, 0, &[0u8, 0u8, 0u8, 0u8]);  // nulling dispatch x
+        queue.write_buffer(indirect_buffer, 12, &[0u8, 0u8, 0u8, 0u8]); // nulling keysize
     }
     
     pub fn record_calculate_histogram(&self, bind_group: &wgpu::BindGroup, keysize: usize, encoder: &mut wgpu::CommandEncoder) {
@@ -407,9 +446,7 @@ impl GPURSSorter{
             
             pass.set_pipeline(&self.zero_p);
             pass.set_bind_group(0, bind_group, &[]);
-            let n = (rs_keyval_size + scatter_blocks_ru - 1) * histo_size + if count_ru_histo > keysize {count_ru_histo - keysize} else {0};
-            let dispatch = ((n as f32 / histogram_wg_size as f32)).ceil() as u32;
-            pass.dispatch_workgroups(dispatch, 1, 1);
+            pass.dispatch_workgroups(hist_blocks_ru as u32, 1, 1);
         }
 
         {

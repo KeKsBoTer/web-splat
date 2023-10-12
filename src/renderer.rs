@@ -24,11 +24,12 @@ impl GaussianRenderer {
         sh_deg: u32,
         sh_dtype: SHDType,
     ) -> Self {
+        let (sorter_data_layout, sorter_dispatch_layout) = GPURSSorter::bind_group_layouts(device);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render pipeline layout"),
             bind_group_layouts: &[
                 &PointCloud::bind_group_layout(device),     // Needed for points_2d (on binding 2)
-                &GPURSSorter::bind_group_layout(device),    // Needed for indices   (on binding 4)
+                &sorter_data_layout,                        // Needed for indices   (on binding 4)
             ],
             push_constant_ranges: &[],
         });
@@ -142,6 +143,7 @@ impl GaussianRenderer {
             label: Some("Render Encoder Compare"),
         });
         {
+            GPURSSorter::record_reset_indirect_buffer(&pc.sorter_dis, &queue);
             self.preprocess(&mut encoder, device, &queue, &pc, camera, viewport);
 
             // TODO @josef sort the pc.splat_2d_buffer buffer here
@@ -254,13 +256,15 @@ struct PreprocessPipeline(wgpu::ComputePipeline);
 
 impl PreprocessPipeline {
     fn new(device: &wgpu::Device, sh_deg: u32, sh_dtype: SHDType) -> Self {
+        let (sorter_data_layout, sorter_dispatch_layout) = GPURSSorter::bind_group_layouts(device);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("preprocess pipeline layout"),
             bind_group_layouts: &[
                 &UniformBuffer::<CameraUniform>::bind_group_layout(device),
                 &PointCloud::bind_group_layout(device),
                 &GaussianRenderer::bind_group_layout(device),
-                &GPURSSorter::bind_group_layout(device),
+                &sorter_data_layout,
+                &sorter_dispatch_layout,
             ],
             push_constant_ranges: &[],
         });

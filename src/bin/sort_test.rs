@@ -72,7 +72,7 @@ fn test_sort_components(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipe
     // creating the gpu buffers
     let histograms = compute_pipeline.create_internal_mem_buffer(&device, test_data.len());
     let (keyval_a, keyval_b, payload_a, payload_b) = GPURSSorter::create_keyval_buffers(&device, test_data.len(), 4);
-    let (uniform_infos, bind_group) = compute_pipeline.create_bind_group(&device, test_data.len(), &histograms, &keyval_a, &keyval_b, &payload_a, &payload_b);
+    let (_uniform_infos, _dispatch_indirect, bind_group, _dispatch_work_group) = compute_pipeline.create_bind_group(&device, test_data.len(), &histograms, &keyval_a, &keyval_b, &payload_a, &payload_b);
     
     upload_to_buffer(&keyval_a, &device, &queue, test_data.as_slice());
     upload_to_buffer(&payload_a, &device, &queue, test_payload.as_slice());
@@ -124,7 +124,7 @@ fn test_sort_components(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipe
 }
 
 fn test_sort_indirect(device : &wgpu::Device, queue: &wgpu::Queue, compute_pipeline: &mut GPURSSorter) {
-    println!("----------------------------------------------------\n");
+    println!("----------------------------------------------------");
     println!("Starting indirect dispatch test");
     // creating the data array
     let n = 100000usize;
@@ -137,14 +137,13 @@ fn test_sort_indirect(device : &wgpu::Device, queue: &wgpu::Queue, compute_pipel
     
     let internal_mem_buffer = compute_pipeline.create_internal_mem_buffer(device, n);
     let (keyval_a, keyval_b, payload_a, payload_b) = GPURSSorter::create_keyval_buffers(device, n, 4);
-    let (uniform_infos, bind_group) = compute_pipeline.create_bind_group(device, n, &internal_mem_buffer, &keyval_a, &keyval_b, &payload_a, &payload_b);
+    let (uniform_infos, dispatch_buffer, bind_group, _dispatch_work_group) = compute_pipeline.create_bind_group(device, n, &internal_mem_buffer, &keyval_a, &keyval_b, &payload_a, &payload_b);
     
     upload_to_buffer(&keyval_a, &device, &queue, scrambled_data.as_slice());
-    upload_to_buffer(&payload_b, &device, &queue, scrambled_payload.as_slice());
-    upload_to_buffer(&uniform_infos, device, queue, &[dispatch_x]);
+    upload_to_buffer(&payload_a, &device, &queue, scrambled_payload.as_slice());
     
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor{label: Some("auf gehts")});
-    compute_pipeline.record_sort_indirect(&bind_group, &uniform_infos, &mut encoder);
+    compute_pipeline.record_sort_indirect(&bind_group, &dispatch_buffer, &mut encoder);
     queue.submit([encoder.finish()]);
     device.poll(wgpu::Maintain::Wait);
 
@@ -159,7 +158,7 @@ fn test_sort_indirect(device : &wgpu::Device, queue: &wgpu::Queue, compute_pipel
 }
 
 fn test_sort_throughput(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipeline: &mut GPURSSorter) {
-    println!("----------------------------------------------------\n");
+    println!("----------------------------------------------------");
     println!("Starting performance test");
     // creating the data array
     let n = 1e7 as usize;
@@ -170,7 +169,7 @@ fn test_sort_throughput(device: &wgpu::Device, queue: &wgpu::Queue, compute_pipe
     
     let internal_mem_buffer = compute_pipeline.create_internal_mem_buffer(device, n);
     let (keyval_a, keyval_b, payload_a, payload_b) = GPURSSorter::create_keyval_buffers(device, n, 4);
-    let (uniform_infos, bind_group) = compute_pipeline.create_bind_group(device, n, &internal_mem_buffer, &keyval_a, &keyval_b, &payload_a, &payload_b);
+    let (uniform_infos, _dispatch_buffer, bind_group, _dispatch_work_group) = compute_pipeline.create_bind_group(device, n, &internal_mem_buffer, &keyval_a, &keyval_b, &payload_a, &payload_b);
     
     upload_to_buffer(&keyval_a, &device, &queue, scrambled_data.as_slice());
     upload_to_buffer(&payload_b, &device, &queue, scrambled_payload.as_slice());

@@ -13,9 +13,6 @@
 // const rs_scatter_block_rows
 
 struct GeneralInfo{
-    dispatch_x: u32,
-    dispatch_y: u32,
-    dispatch_z: u32,
     keys_size: u32,
     padded_size: u32,
     passes: u32,
@@ -49,7 +46,7 @@ var<storage, read_write> payload_b : array<u32>;
 // Filling histograms and keys with default values (also resets the pass infos for odd and even scattering)
 // --------------------------------------------------------------------------------------------------------------
 @compute @workgroup_size({histogram_wg_size})
-fn zero_histograms(@builtin(global_invocation_id) gid : vec3<u32>) {
+fn zero_histograms(@builtin(global_invocation_id) gid : vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
     if gid.x == 0u {
         infos.even_pass = 0u;
         infos.odd_pass = 1u;    // has to be one, as on the first call to even pass + 1 % 2 is calculated
@@ -66,18 +63,21 @@ fn zero_histograms(@builtin(global_invocation_id) gid : vec3<u32>) {
         n += infos.padded_size - infos.keys_size;
     }
     
-    if gid.x >= n {
-        return;
-    }
-        
-    if gid.x < rs_keyval_size * histo_size {
-        histograms[gid.x] = 0u;
-    }
-    else if gid.x < b {
-        histograms[gid.x] = 0u;//0xFFFFFFFFu;
-    }
-    else {
-        keys[infos.keys_size + gid.x - b] = bitcast<f32>(0xFFFFFFFFu);
+    let line_size = nwg.x * {histogram_wg_size}u;
+    for (var cur_index = gid.x; cur_index < n; cur_index += line_size){
+        if cur_index >= n {
+            return;
+        }
+            
+        if cur_index  < rs_keyval_size * histo_size {
+            histograms[cur_index] = 0u;
+        }
+        else if cur_index < b {
+            histograms[cur_index] = 0u;//0xFFFFFFFFu;
+        }
+        else {
+            keys[infos.keys_size + cur_index - b] = bitcast<f32>(0xFFFFFFFFu);
+        }
     }
 }
 
@@ -488,9 +488,5 @@ fn scatter_odd(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_
         payload_a[kr[i]] = pv[i];
     }
 
-    // resetting the dispatch on last pass
-    if gid.x == 0u && cur_pass == infos.passes - 1u {
-        infos.dispatch_x = 0u;
-        infos.keys_size = 0u;
-    }
+    // the indirect buffer is reset after scattering via write buffer, see record_scatter_indirect for details
 }

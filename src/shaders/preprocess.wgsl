@@ -69,10 +69,13 @@ struct DrawIndirect {
     base_instance: u32,
 }
 
-struct SortInfos {
-    dispatch_x: atomic<u32>,    // is increased by one, when the key_size is dividable by worgroup_size * keys_per_thread = 256 * 15, for safety dispatch_x is added one by the first worker(otherwise the last block might get lost)
+struct DispatchIndirect {
+    dispatch_x: atomic<u32>,
     dispatch_y: u32,
     dispatch_z: u32,
+}
+
+struct SortInfos {
     keys_size: atomic<u32>,     // essentially contains the same info as instance_count in DrawIndirect
     padded_size: u32,
     passes: u32,
@@ -100,6 +103,8 @@ var<storage, read_write> sort_infos: SortInfos;
 var<storage, write> sort_depths : array<f32>;
 @group(3) @binding(4)
 var<storage, write> sort_indices : array<u32>;
+@group(4) @binding(0)
+var<storage, read_write> sort_dispatch: DispatchIndirect;
 
 
 /// reads the ith sh coef from the vertex buffer
@@ -272,6 +277,6 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let cur_key_size = atomicAdd(&sort_infos.keys_size, 1u);
     let keys_per_wg = 256 * 15;         // Caution: if workgroup size (256) or keys per thread (15) changes the dispatch is wrong!!
     if cur_key_size > 0 && cur_key_size % keys_per_wg == 0 {
-        atomicAdd(&infos.dispatch_x, 1u);
+        atomicAdd(&sort_dispatch.dispatch_x, 1u);
     }
 }

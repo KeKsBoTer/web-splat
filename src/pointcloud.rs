@@ -50,6 +50,8 @@ pub struct PointCloud {
     sorter_p_b: wgpu::Buffer,   // payload buffer b
     sorter_int: wgpu::Buffer,   // internal memory storage (used for histgoram calcs)
     sorter_uni: wgpu::Buffer,   // uniform buffer information
+    pub sorter_dis: wgpu::Buffer, // dispatch buffer
+    pub sorter_dis_bg: wgpu::BindGroup, // sorter dispatch bind group (needed mainly for the preprocess pipeline to set the correct dispatch count in shader)
     pub sorter_bg: wgpu::BindGroup, // sorter bind group
 }
 
@@ -150,7 +152,7 @@ impl PointCloud {
         let sorter = GPURSSorter::new(device, queue);
         let (sorter_b_a, sorter_b_b, sorter_p_a, sorter_p_b) = GPURSSorter::create_keyval_buffers(device, num_points, 4);
         let sorter_int = sorter.create_internal_mem_buffer(device, num_points);
-        let (sorter_uni, sorter_bg) = sorter.create_bind_group(device, num_points, &sorter_int, &sorter_b_a, &sorter_b_b, &sorter_p_a, &sorter_p_b);
+        let (sorter_uni, sorter_dis, sorter_bg, sorter_dis_bg) = sorter.create_bind_group(device, num_points, &sorter_int, &sorter_b_a, &sorter_b_b, &sorter_p_a, &sorter_p_b);
 
         Ok(Self {
             vertex_buffer,
@@ -161,14 +163,7 @@ impl PointCloud {
             points: vertices,
             sh_deg,
             sh_dtype,
-            sorter,
-            sorter_b_a,
-            sorter_b_b,
-            sorter_p_a,
-            sorter_p_b,
-            sorter_int,
-            sorter_uni,
-            sorter_bg,
+            sorter, sorter_b_a, sorter_b_b, sorter_p_a, sorter_p_b, sorter_int, sorter_uni, sorter_dis, sorter_dis_bg, sorter_bg,
         })
     }
 

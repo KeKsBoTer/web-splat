@@ -1,8 +1,8 @@
-pub fn compare_slice_beginning<T: std::cmp::PartialEq>(a: &[T], b: &[T]) {
+pub fn compare_slice_beginning<T: std::cmp::PartialEq + std::fmt::Debug>(a: &[T], b: &[T]) {
     let len = a.len().min(b.len());
     for i in 0..len {
         if a[i] != b[i] {
-            println!("Comparison failed");
+            println!("Comparison failed at index {i} with values a: {:?}, b: {:?}", a[i], b[i]);
             return;
         }
     }
