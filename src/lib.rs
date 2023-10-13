@@ -48,6 +48,7 @@ pub use self::scene::{Scene, SceneCamera, Split};
 mod ui_renderer;
 mod uniform;
 mod utils;
+pub mod gpu_rs;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use utils::download_buffer;
@@ -181,6 +182,7 @@ impl WindowContext {
         surface.configure(&device, &config);
         let pc = PointCloud::load(
             &device,
+            &wgpu_context.queue,
             pc_file,
             render_config.sh_dtype,
             Some(render_config.max_sh_deg),

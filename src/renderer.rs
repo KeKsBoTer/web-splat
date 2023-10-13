@@ -1,11 +1,16 @@
-use std::{num::NonZeroU64, time::Duration};
-
+use crate::gpu_rs::{self, GPURSSorter};
 use crate::{
     camera::{Camera, PerspectiveCamera, VIEWPORT_Y_FLIP},
     pointcloud::{PointCloud, SHDType, Splat2D},
     uniform::UniformBuffer,
     utils::GPUStopwatch,
 };
+use std::num::NonZeroU64;
+
+#[cfg(target_arch = "wasm32")]
+use instant::{Duration, Instant};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, Instant};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::download_buffer;
@@ -31,7 +36,10 @@ impl GaussianRenderer {
     ) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render pipeline layout"),
-            bind_group_layouts: &[],
+            bind_group_layouts: &[
+                &PointCloud::bind_group_layout(device), // Needed for points_2d (on binding 2)
+                &GPURSSorter::bind_group_layout(device), // Needed for indices   (on binding 4)
+            ],
             push_constant_ranges: &[],
         });
 
@@ -43,7 +51,7 @@ impl GaussianRenderer {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[Splat2D::desc()],
+                buffers: &[], //&[Splat2D::desc()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -161,7 +169,8 @@ impl GaussianRenderer {
             // self.stopwatch.stop(&mut encoder, "preprocess").unwrap();
 
             // self.stopwatch.start(&mut encoder, "sorting").unwrap();
-            // TODO @josef sort the pc.splat_2d_buffer buffer here
+            pc.sorter
+                .record_sort(&pc.sorter_bg, pc.points().len(), &mut encoder);
             // self.stopwatch.stop(&mut encoder, "sorting").unwrap();
 
             encoder.push_debug_group("render");
@@ -180,14 +189,16 @@ impl GaussianRenderer {
                     depth_stencil_attachment: None,
                 });
 
+                render_pass.set_bind_group(0, pc.bind_group(), &[]);
+                render_pass.set_bind_group(1, &pc.sorter_bg, &[]);
                 render_pass.set_pipeline(&self.pipeline);
 
-                render_pass.set_vertex_buffer(0, pc.splats_2d_buffer().slice(..));
+                // render_pass.set_vertex_buffer(0, pc.splats_2d_buffer().slice(..));
                 render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
             }
-            // self.stopwatch.stop(&mut encoder, "rasterization").unwrap();
-            encoder.pop_debug_group();
         }
+        // self.stopwatch.stop(&mut encoder, "rasterization").unwrap();
+        encoder.pop_debug_group();
         // self.stopwatch.end(&mut encoder);
         queue.submit([encoder.finish()]);
     }
@@ -299,6 +310,7 @@ impl PreprocessPipeline {
                 &UniformBuffer::<CameraUniform>::bind_group_layout(device),
                 &PointCloud::bind_group_layout(device),
                 &GaussianRenderer::bind_group_layout(device),
+                &GPURSSorter::bind_group_layout(device),
             ],
             push_constant_ranges: &[],
         });
@@ -335,23 +347,19 @@ impl PreprocessPipeline {
         camera: &UniformBuffer<CameraUniform>,
         draw_indirect: &wgpu::BindGroup,
     ) {
-        encoder.push_debug_group("preprocess");
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("preprocess compute pass"),
-            });
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("preprocess compute pass"),
+        });
+        pass.set_pipeline(&self.0);
+        pass.set_bind_group(0, camera.bind_group(), &[]);
+        pass.set_bind_group(1, pc.bind_group(), &[]);
+        pass.set_bind_group(3, &pc.sorter_bg, &[]);
 
-            pass.set_pipeline(&self.0);
-            pass.set_bind_group(0, camera.bind_group(), &[]);
-            pass.set_bind_group(1, pc.bind_group(), &[]);
-
-            pass.set_bind_group(2, draw_indirect, &[]);
-            let per_dim = (pc.num_points() as f32).sqrt().ceil() as u32;
-            let wgs_x = (per_dim + 15) / 16;
-            let wgs_y = (per_dim + 15) / 16;
-            pass.dispatch_workgroups(wgs_x, wgs_y, 1);
-        }
-        encoder.pop_debug_group();
+        pass.set_bind_group(2, draw_indirect, &[]);
+        let per_dim = (pc.num_points() as f32).sqrt().ceil() as u32;
+        let wgs_x = (per_dim + 15) / 16;
+        let wgs_y = (per_dim + 15) / 16;
+        pass.dispatch_workgroups(wgs_x, wgs_y, 1);
     }
 }
 

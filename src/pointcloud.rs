@@ -7,7 +7,10 @@ use std::fmt::{Debug, Display};
 use std::io::{self, BufReader, Read, Seek};
 use std::{mem, path::Path};
 use wgpu::util::DeviceExt;
+use wgpu::Queue;
 
+use crate::camera::Camera;
+use crate::gpu_rs::{self, GPURSSorter};
 use crate::utils::max_supported_sh_deg;
 
 #[repr(C)]
@@ -32,6 +35,15 @@ pub struct PointCloud {
     num_points: u32,
     sh_deg: u32,
     sh_dtype: SHDType,
+    // Fields needed for data sorting
+    pub sorter: GPURSSorter,
+    sorter_b_a: wgpu::Buffer,       // buffer a for keyval
+    sorter_b_b: wgpu::Buffer,       // buffer b for keyval
+    sorter_p_a: wgpu::Buffer,       // payload buffer a
+    sorter_p_b: wgpu::Buffer,       // payload buffer b
+    sorter_int: wgpu::Buffer,       // internal memory storage (used for histgoram calcs)
+    sorter_uni: wgpu::Buffer,       // uniform buffer information
+    pub sorter_bg: wgpu::BindGroup, // sorter bind group
 }
 
 impl Debug for PointCloud {
@@ -45,6 +57,7 @@ impl Debug for PointCloud {
 impl PointCloud {
     pub fn load<R: Read + Seek>(
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         f: R,
         sh_dtype: SHDType,
         max_sh_deg: Option<u32>,
@@ -110,6 +123,20 @@ impl PointCloud {
             ],
         });
 
+        let sorter = GPURSSorter::new(device, queue);
+        let (sorter_b_a, sorter_b_b, sorter_p_a, sorter_p_b) =
+            GPURSSorter::create_keyval_buffers(device, num_points, 4);
+        let sorter_int = sorter.create_internal_mem_buffer(device, num_points);
+        let (sorter_uni, sorter_bg) = sorter.create_bind_group(
+            device,
+            num_points,
+            &sorter_int,
+            &sorter_b_a,
+            &sorter_b_b,
+            &sorter_p_a,
+            &sorter_p_b,
+        );
+
         Ok(Self {
             splat_2d_buffer,
             bind_group,
@@ -117,6 +144,14 @@ impl PointCloud {
             points: vertices,
             sh_deg,
             sh_dtype,
+            sorter,
+            sorter_b_a,
+            sorter_b_b,
+            sorter_p_a,
+            sorter_p_b,
+            sorter_int,
+            sorter_uni,
+            sorter_bg,
         })
     }
 

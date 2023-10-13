@@ -46,6 +46,10 @@ name = "viewer"
 [[bin]]
 name = "render"
 
+[[bin]]
+name = "sort_test"
+
+
 [features]
 npz = ["dep:npyz"]
 

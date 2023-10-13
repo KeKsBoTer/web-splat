@@ -1,9 +1,9 @@
+use instant::{Duration, Instant};
 use std::{
     path::Path,
     sync::{Arc, RwLock},
     thread,
 };
-use instant::{Duration,Instant};
 
 use cgmath::{Deg, EuclideanSpace, Point3, Quaternion, Transform, Vector2};
 use log::{debug, info};
