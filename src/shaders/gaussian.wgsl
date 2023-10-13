@@ -27,18 +27,18 @@ var<storage, read> indices : array<u32>;
 
 @vertex
 fn vs_main(
-    @builtin(vertex_index) in_vertex_index: u32//,
-    //vertex: VertexInput,
+    @builtin(vertex_index) in_vertex_index: u32,
+    @builtin(instance_index) in_instance_index: u32
 ) -> VertexOutput {
     var out: VertexOutput;
     
-    let vertex = points_2d[indices[in_vertex_index]];
+    let vertex = points_2d[indices[in_instance_index]];
 
     // scaled eigenvectors in screen space 
-    let v1 = vertex.v.xy;
-    let v2 = vertex.v.zw;
+    let v1 = unpack2x16float(vertex.v.x);
+    let v2 = unpack2x16float(vertex.v.y);
 
-    let v_center = vertex.pos.xy;
+    let v_center = unpack2x16float(vertex.pos.x);
 
     // splat rectangle with left lower corner at (-2,-2)
     // and upper right corner at (2,2)
@@ -49,9 +49,9 @@ fn vs_main(
 
     // let offset = position * 0.01;
     let offset = position.x * v1 * 2.0 + position.y * v2 * 2.0;
-    out.position = vec4<f32>(v_center + offset, vertex.pos.zw);
+    out.position = vec4<f32>(v_center + offset, unpack2x16float(vertex.pos.y));
     out.screen_pos = position;
-    out.color = vertex.color;
+    out.color = unpack4x8unorm(vertex.color);
 
     return out;
 }
