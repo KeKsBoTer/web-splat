@@ -1,7 +1,7 @@
 #[cfg(target_arch = "wasm32")]
-use instant::{Duration, Instant};
+use instant::Duration;
 #[cfg(not(target_arch = "wasm32"))]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use cgmath::{InnerSpace, MetricSpace, Point3};
 

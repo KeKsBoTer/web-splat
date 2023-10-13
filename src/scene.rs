@@ -1,8 +1,4 @@
-use std::{
-    fs::File,
-    io::{self, BufReader},
-    path::Path,
-};
+use std::io::{self, BufReader};
 
 use cgmath::{Matrix3, MetricSpace, Point3, Vector2};
 use serde::{Deserialize, Serialize};

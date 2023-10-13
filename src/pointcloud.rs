@@ -5,12 +5,10 @@ use clap::ValueEnum;
 use half::f16;
 use std::fmt::{Debug, Display};
 use std::io::{self, BufReader, Read, Seek};
-use std::{mem, path::Path};
+use std::mem;
 use wgpu::util::DeviceExt;
-use wgpu::Queue;
 
-use crate::camera::Camera;
-use crate::gpu_rs::{self, GPURSSorter};
+use crate::gpu_rs::GPURSSorter;
 use crate::utils::max_supported_sh_deg;
 
 #[repr(C)]
@@ -189,9 +187,6 @@ impl PointCloud {
         })
     }
 
-    pub(crate) fn splats_2d_buffer(&self) -> &wgpu::Buffer {
-        &self.splat_2d_buffer
-    }
     pub fn num_points(&self) -> u32 {
         self.num_points
     }
@@ -273,37 +268,6 @@ pub struct Splat2D {
     pos: Vector4<f16>,
     color: Vector4<u8>,
     _pad: u32,
-}
-
-impl Splat2D {
-    pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
-        const COV_SIZE: u64 = wgpu::VertexFormat::Float16x4.size();
-        const XYZ_SIZE: u64 = wgpu::VertexFormat::Float16x4.size();
-        wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &[
-                // cov_1 + cov_2
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float16x4,
-                },
-                // xyz
-                wgpu::VertexAttribute {
-                    offset: COV_SIZE,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float16x4,
-                },
-                // color + opacity
-                wgpu::VertexAttribute {
-                    offset: COV_SIZE + XYZ_SIZE,
-                    shader_location: 2,
-                    format: wgpu::VertexFormat::Unorm8x4,
-                },
-            ],
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]

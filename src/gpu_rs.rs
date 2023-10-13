@@ -55,50 +55,55 @@ unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
 impl GPURSSorter {
     // The new call also needs the queue to be able to determine the maximum subgroup size (Does so by running test runs)
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
-        println!("Searching for the maximum subgroup size (wgpu currently does not allow to query subgroup sizes)");
-        let sizes = vec![1, 16, 32, 64, 128];
-        let mut cur_size = 2;
         let mut cur_sorter;
-        enum State {
-            Init,
-            Increasing,
-            Decreasing,
-        }
-        let mut s = State::Init;
-        loop {
-            if cur_size >= sizes.len() {
-                panic!("GPURSSorter::new() No workgroup size that works was found. Unable to use sorter");
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            println!("Searching for the maximum subgroup size (wgpu currently does not allow to query subgroup sizes)");
+            let sizes = vec![1, 16, 32, 64, 128];
+            let mut cur_size = 2;
+            enum State {
+                Init,
+                Increasing,
+                Decreasing,
             }
-            println!("Checking sorting with subgroupsize {}", sizes[cur_size]);
-            cur_sorter = Self::new_with_sg_size(device, sizes[cur_size]);
-            let sort_success = cur_sorter.test_sort(device, queue);
-            match s {
-                State::Init => {
-                    if sort_success {
-                        s = State::Increasing;
-                        cur_size += 1;
-                    } else {
-                        s = State::Decreasing;
-                        cur_size -= 1;
-                    }
+            let mut s = State::Init;
+            loop {
+                if cur_size >= sizes.len() {
+                    panic!("GPURSSorter::new() No workgroup size that works was found. Unable to use sorter");
                 }
-                State::Increasing => {
-                    if sort_success {
-                        cur_size += 1;
-                    } else {
-                        cur_sorter = Self::new_with_sg_size(device, sizes[cur_size - 1]);
-                        break;
+                println!("Checking sorting with subgroupsize {}", sizes[cur_size]);
+                cur_sorter = Self::new_with_sg_size(device, sizes[cur_size]);
+                let sort_success = cur_sorter.test_sort(device, queue);
+                match s {
+                    State::Init => {
+                        if sort_success {
+                            s = State::Increasing;
+                            cur_size += 1;
+                        } else {
+                            s = State::Decreasing;
+                            cur_size -= 1;
+                        }
                     }
-                }
-                State::Decreasing => {
-                    if sort_success {
-                        break;
-                    } else {
-                        cur_size -= 1;
+                    State::Increasing => {
+                        if sort_success {
+                            cur_size += 1;
+                        } else {
+                            cur_sorter = Self::new_with_sg_size(device, sizes[cur_size - 1]);
+                            break;
+                        }
+                    }
+                    State::Decreasing => {
+                        if sort_success {
+                            break;
+                        } else {
+                            cur_size -= 1;
+                        }
                     }
                 }
             }
         }
+        #[cfg(target_arch = "wasm32")]
+        let cur_sorter = Self::new_with_sg_size(device, 32);
         println!(
             "Created a sorter with subgroup size {}\n",
             cur_sorter.subgroup_size
@@ -214,6 +219,7 @@ impl GPURSSorter {
         };
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn test_sort(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> bool {
         // smiply runs a small sort and check if the sorting result is correct
         let n = 512; // means that 2 workgroups are needed for sorting

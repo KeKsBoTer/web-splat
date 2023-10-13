@@ -1,14 +1,14 @@
 use cgmath::{Matrix, Matrix3, Quaternion, SquareMatrix, Vector3};
 use half::f16;
 #[cfg(target_arch = "wasm32")]
-use instant::{Duration, Instant};
+use instant::Duration;
 #[cfg(not(target_arch = "wasm32"))]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use std::{fmt::Debug, mem::MaybeUninit};
 use winit::event::VirtualKeyCode;
 
-use std::{collections::HashMap, mem::size_of, ops::Deref};
+use std::{collections::HashMap, mem::size_of};
 
 use crate::SHDType;
 pub fn key_to_num(key: VirtualKeyCode) -> Option<u32> {
@@ -47,9 +47,7 @@ impl GPUStopwatch {
         let query_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("query set buffer"),
             size: capacity as u64 * 2 * size_of::<u64>() as u64,
-            usage: wgpu::BufferUsages::QUERY_RESOLVE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::MAP_READ,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
@@ -100,7 +98,7 @@ impl GPUStopwatch {
         self.index = 0;
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    // #[cfg(not(target_arch = "wasm32"))]
     pub async fn take_measurements(
         &mut self,
         device: &wgpu::Device,
@@ -109,20 +107,29 @@ impl GPUStopwatch {
         let period = queue.get_timestamp_period();
 
         let labels: Vec<(String, u32)> = self.labels.drain().collect();
+        let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
 
-        let mut durations = HashMap::new();
-        {
-            let view = download_buffer(device, &self.query_buffer, None).await;
-            let data_raw: &[u8] = view.deref();
-            let timestamps: &[u64] = bytemuck::cast_slice(data_raw);
-            for (label, index) in labels {
-                let diff_ticks =
-                    timestamps[(index * 2 + 1) as usize] - timestamps[(index * 2) as usize];
-                let diff_time = Duration::from_nanos((diff_ticks as f32 * period) as u64);
-                durations.insert(label, diff_time);
-            }
-        }
-        self.query_buffer.unmap();
+        wgpu::util::DownloadBuffer::read_buffer(
+            device,
+            queue,
+            &self.query_buffer.slice(..),
+            move |b| {
+                let mut durations = HashMap::new();
+                let download = b.unwrap();
+                let data_raw: &[u8] = &download;
+                let timestamps: &[u64] = bytemuck::cast_slice(data_raw);
+                for (label, index) in labels {
+                    let diff_ticks =
+                        timestamps[(index * 2 + 1) as usize] - timestamps[(index * 2) as usize];
+                    let diff_time = Duration::from_nanos((diff_ticks as f32 * period) as u64);
+                    durations.insert(label, diff_time);
+                }
+                tx.send(durations).unwrap();
+            },
+        );
+        device.poll(wgpu::Maintain::Wait);
+        let durations: HashMap<String, Duration> = rx.receive().await.unwrap();
+        // self.query_buffer.unmap();
         return durations;
     }
 }

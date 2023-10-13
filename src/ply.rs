@@ -1,7 +1,7 @@
 #[cfg(target_arch = "wasm32")]
-use instant::{Duration, Instant};
+use instant::Instant;
 #[cfg(not(target_arch = "wasm32"))]
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use std::{
     io::{self},

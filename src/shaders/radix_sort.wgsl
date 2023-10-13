@@ -387,8 +387,7 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
     // reorder kv[] and kr[], corresponds to rs_reorder
     let smem_reorder_offset = rs_radix_size;
     let smem_base = smem_reorder_offset + lid.x;  // as we are in smem, the radix_size offset is not needed
-    //for (var i = 0u; i < passes; i++){
-        
+  
         // keyvalues ----------------------------------------------
         // store keyval to sorted location
         for (var j = 0u; j < rs_scatter_block_rows; j++) {

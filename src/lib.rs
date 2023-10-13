@@ -1,20 +1,15 @@
-use std::{
-    path::Path,
-   io::{Cursor, Seek, Read},
-};
+use std::io::{ Seek, Read};
 
 #[cfg(target_arch = "wasm32")]
 use instant::{Duration,Instant};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration,Instant};
 
-
 use cgmath::{Deg, EuclideanSpace, Point3, Quaternion, Vector2};
 use egui::{epaint::Shadow, Rounding, TextStyle, Visuals};
 use egui_plot::{Legend, PlotPoints};
 use num_traits::One;
 
-use renderer::RenderStatistics;
 use utils::{key_to_num, RingBuffer};
 
 #[cfg(target_arch = "wasm32")]
@@ -84,18 +79,25 @@ impl WGPUContext {
             .await
             .unwrap();
 
+        #[cfg(target_arch="wasm32")]
+        let features =  wgpu::Features::default();
+        #[cfg(not(target_arch="wasm32"))]
+        let features  =wgpu::Features::TIMESTAMP_QUERY;
+
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
-                    features: wgpu::Features::empty(),
+                    features,
                     limits: wgpu::Limits {
                         max_storage_buffer_binding_size: 1 << 30,
                         max_buffer_size: 1 << 30,
+                        max_storage_buffers_per_shader_stage: 12,
+                        max_compute_workgroup_storage_size:1<<15,
                         ..Default::default()
                     },
                     label: None,
                 },
-                None, // Trace path
+                None,
             )
             .await
             .unwrap();
@@ -130,6 +132,8 @@ struct WindowContext {
     current_view: Option<usize>,
     ui_renderer: ui_renderer::EguiWGPU,
     fps: f32,
+
+    #[cfg(not(target_arch="wasm32"))]
     history: RingBuffer<(Duration, Duration, Duration)>,
 }
 
@@ -221,6 +225,7 @@ impl WindowContext {
             current_view: None,
             ui_renderer,
             fps: 0.,
+            #[cfg(not(target_arch="wasm32"))]
             history: RingBuffer::new(512),
         }
     }
@@ -255,17 +260,15 @@ impl WindowContext {
 
     fn ui(&mut self) {
         let ctx = &self.ui_renderer.ctx;
-        // let stats = pollster::block_on(
-        //     self.renderer
-        //         .render_stats(&self.wgpu_context.device, &self.wgpu_context.queue),
-        // );
-        let stats =  RenderStatistics {
-            preprocess_time: Duration::ZERO,
-            sort_time: Duration::ZERO,
-            rasterization_time: Duration::ZERO,
-        };
-        let num_drawn = 0;
-            // pollster::block_on(self.renderer.num_visible_points(&self.wgpu_context.device));
+        #[cfg(not(target_arch="wasm32"))]
+        let stats = pollster::block_on(
+            self.renderer
+                .render_stats(&self.wgpu_context.device, &self.wgpu_context.queue),
+        );
+        #[cfg(not(target_arch="wasm32"))]
+        let num_drawn = pollster::block_on(self.renderer.num_visible_points(&self.wgpu_context.device,&self.wgpu_context.queue));
+        
+        #[cfg(not(target_arch="wasm32"))]
         self.history.push((
             stats.preprocess_time,
             stats.sort_time,
@@ -277,6 +280,7 @@ impl WindowContext {
             ..Default::default()
         });
 
+        #[cfg(not(target_arch="wasm32"))]
         egui::Window::new("Render Stats")
             .default_width(200.)
             .default_height(100.)
@@ -522,7 +526,6 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(file: R, scene_
         .build(&event_loop)
         .unwrap();
 
-
         #[cfg(target_arch = "wasm32")]
         {
             use winit::platform::web::WindowExtWebSys;
@@ -654,9 +657,11 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(file: R, scene_
     });
 }
 
+
 #[cfg(target_arch="wasm32")]
 #[wasm_bindgen]
 pub fn run_wasm(pc: Vec<u8>, scene: Option<Vec<u8>>) {
+    use std::io::Cursor;
     std::panic::set_hook(Box::new(console_error_panic_hook::hook));
     console_log::init().expect("could not initialize logger");
     let pc_reader = Cursor::new(pc);

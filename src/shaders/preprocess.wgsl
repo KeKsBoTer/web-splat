@@ -100,9 +100,9 @@ var<storage,read_write> indirect_draw_call : DrawIndirect;
 @group(3) @binding(0)
 var<storage, read_write> sort_infos: SortInfos;
 @group(3) @binding(2)
-var<storage, write> sort_depths : array<f32>;
+var<storage, read_write> sort_depths : array<f32>;
 @group(3) @binding(4)
-var<storage, write> sort_indices : array<u32>;
+var<storage, read_write> sort_indices : array<u32>;
 @group(3) @binding(6)
 var<storage, read_write> sort_dispatch: DispatchIndirect;
 
