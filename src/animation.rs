@@ -85,7 +85,7 @@ impl TrackingShot {
                 })
                 .unwrap()
                 .0;
-            (start, cameras[idx], ((idx as i32 - 1) % n as i32) as usize)
+            (start, cameras[idx], ((idx as i32 + n as i32 - 1) % n as i32) as usize)
         } else {
             (cameras[0], cameras[1], 0)
         };
