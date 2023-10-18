@@ -9,6 +9,7 @@ use std::num::NonZeroU64;
 
 #[cfg(target_arch = "wasm32")]
 use instant::Duration;
+use rand::distributions::Uniform;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
@@ -261,6 +262,84 @@ impl GaussianRenderer {
 
     pub fn color_format(&self) -> wgpu::TextureFormat {
         self.color_format
+    }
+}
+
+pub struct GaussianRendererCompute {
+    pipeline: wgpu::ComputePipeline,
+    camera:  UniformBuffer<CameraUniform>,
+    preprocess: PreprocessPipeline,
+    dispatch_indirect_buffer: wgpu::Buffer,
+    dispatch_indirect: wgpu::BindGroup,
+    color_format: wgpu::TextureFormat,
+    stopwatch: GPUStopwatch,
+}
+
+impl GaussianRendererCompute  {
+    pub fn new(
+        device: &wgpu::Device,
+        color_format: wgpu::TextureFormat,
+        sh_deg: u32,
+        sh_dtype: SHDType,
+    ) -> Self {
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
+            label: Some("Compute renderer pipeline layout"),
+            bind_group_layouts: &[
+                &PointCloud::bind_group_layout_render(device),      // needed for points_2d (on binding 2)
+                &GPURSSorter::bind_group_layout_rendering(device),  // needed for sorted indices (on binding 4)
+            ],
+            push_constant_ranges: &[],
+        });
+        
+        let shader = device.create_shader_module(wgpu::include_wgsl!("shaders/gaussian_compute.wgsl"));
+        
+        let pipline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Gaussian renderer compute pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: "render_splat",
+        });
+        
+        let dispatch_indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("indirect dispatch buffer rendering"),
+            size: std::mem::size_of::<wgpu::util::DispatchIndirect>() as u64,
+            usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        
+        let indirect_layout = Self::bind_group_layout(device);
+        let dispatch_indirect = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("dispatch indirect buffer"),
+            layout: &indirect_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: dispatch_indirect_buffer.as_entire_binding(),
+            }],
+        });
+        
+        let stopwatch = GPUStopwatch::new(device, Some(3));
+
+        let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
+        let preprocess = PreprocessPipeline::new(device, sh_deg, sh_dtype);
+    }
+    
+    pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("dispatch indirect"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: Some(
+                        NonZeroU64::new(std::mem::size_of::<wgpu::util::DrawIndirect>() as u64)
+                            .unwrap(),
+                    ),
+                },
+                count: None,
+            }],
+        })
     }
 }
 

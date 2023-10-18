@@ -16,7 +16,7 @@ const RS_RADIX_LOG2: usize = 8; // 8 bit radices
 const RS_RADIX_SIZE: usize = 1 << RS_RADIX_LOG2; // 256 entries into the radix table
 const RS_KEYVAL_SIZE: usize = 32 / RS_RADIX_LOG2;
 pub const RS_HISTOGRAM_BLOCK_ROWS: usize = 15;
-const RS_SCATTER_BLOCK_ROWS: usize = RS_HISTOGRAM_BLOCK_ROWS; // DO NOT CHANGE, shader assume this automatically
+const RS_SCATTER_BLOCK_ROWS: usize = RS_HISTOGRAM_BLOCK_ROWS; // DO NOT CHANGE, shader assume this!!!
 const PREFIX_WG_SIZE: usize = 1 << 7; // one thread operates on 2 prefixes at the same time
 const SCATTER_WG_SIZE: usize = 1 << 8;
 
