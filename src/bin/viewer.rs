@@ -21,6 +21,10 @@ struct Opt {
 
     #[arg(long)]
     no_vsync: bool,
+    
+    /// select renderer, "rast" for rasterizer, "comp" for software rasterization via compute shader
+    #[arg(long, default_value_t = "comp")]
+    renderer: &str,
 }
 
 #[pollster::main]
@@ -30,6 +34,8 @@ async fn main() {
     // TODO this is suboptimal as it is never closed
     let ply_file = File::open(opt.input).unwrap();
     let scene_file = opt.scene.map(|p| File::open(p).unwrap());
+    
+    println!("Using renderer {}", opt.renderer);
 
     open_window(
         ply_file,
@@ -38,6 +44,7 @@ async fn main() {
             max_sh_deg: opt.max_sh_deg,
             sh_dtype: opt.sh_dtype,
             no_vsync: opt.no_vsync,
+            renderer: opt.renderer,
         },
     )
     .await;

@@ -21,7 +21,10 @@ use crate::{
     camera::{Camera, PerspectiveCamera, PerspectiveProjection},
     controller::CameraController,
     pc,
+    renderer::Renderer,
+    renderer::GaussianRendererCompute,
     renderer::GaussianRenderer,
+
     utils, PointCloud, Scene, WGPUContext,
 };
 
@@ -33,7 +36,7 @@ struct WindowContext {
     scale_factor: f32,
 
     pc: Arc<RwLock<PointCloud>>,
-    renderer: GaussianRenderer,
+    renderer: Renderer,
     camera: Arc<RwLock<PerspectiveCamera>>,
     animation: Option<Box<dyn Animation<Animatable = PerspectiveCamera>>>,
     controller: CameraController,
@@ -80,7 +83,12 @@ impl WindowContext {
         let pc = PointCloud::load_ply(&device, pc_file, pc::SHDtype::Byte).unwrap();
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
-        let renderer = GaussianRenderer::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype());
+        let renderer = match window.render_config.renderer {
+            "rast" => GaussianRenderer::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype())
+            "comp" => GaussianRendererCompute::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype())
+            _ => println!("Renderer {} not supported, using \"comp\" as default", window.render_config.renderer);
+                GaussianRendererCompute::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype())
+        }
 
         let aspect = size.width as f32 / size.height as f32;
         let view_camera = PerspectiveCamera::new(

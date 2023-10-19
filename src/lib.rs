@@ -114,12 +114,14 @@ pub struct RenderConfig {
     pub max_sh_deg: u32,
     pub sh_dtype: SHDType,
     pub no_vsync: bool,
+    pub renderer: &str,
 }
 
 struct WindowContext {
     wgpu_context: WGPUContext,
     surface: wgpu::Surface,
     config: wgpu::SurfaceConfiguration,
+    pub render_config: RenderConfig,
     window: Window,
     scale_factor: f32,
 
@@ -216,6 +218,7 @@ impl WindowContext {
             window,
             surface,
             config,
+            render_config,
             renderer,
             pc,
             camera: view_camera,

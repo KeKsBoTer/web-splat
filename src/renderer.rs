@@ -15,6 +15,11 @@ use std::time::Duration;
 
 use cgmath::{Matrix4, SquareMatrix, Vector2};
 
+enum Renderer{
+    GaussianRenderer,
+    GaussianRendererCompute,
+}
+
 pub struct GaussianRenderer {
     pipeline: wgpu::RenderPipeline,
     camera: UniformBuffer<CameraUniform>,
@@ -321,8 +326,138 @@ impl GaussianRendererCompute  {
 
         let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
         let preprocess = PreprocessPipeline::new(device, sh_deg, sh_dtype);
+        
+        GaussianRendererCompute {
+            pipeline,
+            camera,
+            preprocess,
+            dispatch_indirect_buffer,
+            dispatch_indirect
+            color_format,
+            stopwatch,
+        }
     }
     
+    pub fn preprocess<'a>(
+        &'a mut self,
+        encoder: &'a mut wgpu::CommandEncoder,
+        queue: &wgpu::Queue,
+        pc: &'a PointCloud,
+        camera: PerspectiveCamera,
+        viewport: Vector2<u32>,
+    ) {
+        let mut camera = camera;
+        camera.projection.resize(viewport.x, viewport.y);
+        let uniform = self.camera.as_mut();
+        uniform.set_camera(camera);
+        uniform.set_focal(camera.projection.focal(viewport));
+        uniform.set_viewport(viewport.cast().unwrap());
+        self.camera.sync(queue);
+        // TODO perform this in vertex buffer after draw call
+        queue.write_buffer(
+            &self.draw_indirect_buffer,
+            0,
+            wgpu::util::DrawIndirect {
+                vertex_count: 4,
+                instance_count: 0,
+                base_vertex: 0,
+                base_instance: 0,
+            }
+            .as_bytes(),
+        );
+        self.preprocess
+            .run(encoder, pc, &self.camera, &self.draw_indirect);
+    }
+    
+    pub async fn num_visible_points(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> u32 {
+        let n = {
+            let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
+
+            wgpu::util::DownloadBuffer::read_buffer(
+                device,
+                queue,
+                &self.draw_indirect_buffer.slice(..),
+                move |b| {
+                    let download = b.unwrap();
+                    let data = download.as_ref();
+                    let num_points = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+                    tx.send(num_points).unwrap();
+                },
+            );
+            device.poll(wgpu::Maintain::Wait);
+            rx.receive().await.unwrap()
+        };
+        return n;
+    }
+
+    pub fn render<'a>(
+        &'a mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target: &wgpu::TextureView,
+        pc: &'a PointCloud,
+        camera: PerspectiveCamera,
+        viewport: Vector2<u32>,
+    ) {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Render Encoder Compare"),
+        });
+        {
+            GPURSSorter::record_reset_indirect_buffer(&pc.sorter_dis, &pc.sorter_uni, &queue);
+
+            // convert 3D gaussian splats to 2D gaussian splats
+            #[cfg(not(target_arch = "wasm32"))]
+            self.stopwatch.start(&mut encoder, "preprocess").unwrap();
+            self.preprocess(&mut encoder, queue, &pc, camera, viewport);
+            #[cfg(not(target_arch = "wasm32"))]
+            self.stopwatch.stop(&mut encoder, "preprocess").unwrap();
+
+            // sort 2d splats
+            #[cfg(not(target_arch = "wasm32"))]
+            self.stopwatch.start(&mut encoder, "sorting").unwrap();
+            pc.sorter
+                .record_sort_indirect(&pc.sorter_bg, &pc.sorter_dis, &mut encoder);
+            #[cfg(not(target_arch = "wasm32"))]
+            self.stopwatch.stop(&mut encoder, "sorting").unwrap();
+
+            // rasterize splats
+            encoder.push_debug_group("render");
+            #[cfg(not(target_arch = "wasm32"))]
+            self.stopwatch.start(&mut encoder, "rasterization").unwrap();
+            {
+                let mut render_pass = encoder.begin_compute_pass(&RenderPassDescriptor {
+                    label: Some("Gaussian Renderer Compute"),
+                });
+
+                render_pass.set_bind_group(0, &pc.render_bind_group, &[]);
+                render_pass.set_bind_group(1, &pc.sorter_render_bg, &[]);
+                render_pass.set_pipeline(&self.pipeline);
+
+                render_pass.dispatch_indirect(&self.dispatch_indirect, 0);
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.stopwatch.stop(&mut encoder, "rasterization").unwrap();
+        encoder.pop_debug_group();
+        #[cfg(not(target_arch = "wasm32"))]
+        self.stopwatch.end(&mut encoder);
+        queue.submit([encoder.finish()]);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn render_stats(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> RenderStatistics {
+        let durations = self.stopwatch.take_measurements(device, queue).await;
+        RenderStatistics {
+            preprocess_time: durations["preprocess"],
+            sort_time: durations["sorting"],
+            rasterization_time: durations["rasterization"],
+        }
+    }
+
     pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("dispatch indirect"),
