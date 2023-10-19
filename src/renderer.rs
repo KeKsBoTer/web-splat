@@ -9,15 +9,14 @@ use std::num::NonZeroU64;
 
 #[cfg(target_arch = "wasm32")]
 use instant::Duration;
-use rand::distributions::Uniform;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 use cgmath::{Matrix4, SquareMatrix, Vector2};
 
-enum Renderer{
-    GaussianRenderer,
-    GaussianRendererCompute,
+pub enum Renderer{
+    Rast(GaussianRenderer),
+    Comp(GaussianRendererCompute),
 }
 
 pub struct GaussianRenderer {
@@ -292,13 +291,14 @@ impl GaussianRendererCompute  {
             bind_group_layouts: &[
                 &PointCloud::bind_group_layout_render(device),      // needed for points_2d (on binding 2)
                 &GPURSSorter::bind_group_layout_rendering(device),  // needed for sorted indices (on binding 4)
+                &Self::bing_group_layout_resolve_images(device),
             ],
             push_constant_ranges: &[],
         });
         
         let shader = device.create_shader_module(wgpu::include_wgsl!("shaders/gaussian_compute.wgsl"));
         
-        let pipline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Gaussian renderer compute pipeline"),
             layout: Some(&pipeline_layout),
             module: &shader,
@@ -332,7 +332,7 @@ impl GaussianRendererCompute  {
             camera,
             preprocess,
             dispatch_indirect_buffer,
-            dispatch_indirect
+            dispatch_indirect,
             color_format,
             stopwatch,
         }
@@ -355,18 +355,17 @@ impl GaussianRendererCompute  {
         self.camera.sync(queue);
         // TODO perform this in vertex buffer after draw call
         queue.write_buffer(
-            &self.draw_indirect_buffer,
+            &self.dispatch_indirect_buffer,
             0,
-            wgpu::util::DrawIndirect {
-                vertex_count: 4,
-                instance_count: 0,
-                base_vertex: 0,
-                base_instance: 0,
+            wgpu::util::DispatchIndirect {
+                x: 0,
+                y: 1,
+                z: 1
             }
             .as_bytes(),
         );
         self.preprocess
-            .run(encoder, pc, &self.camera, &self.draw_indirect);
+            .run(encoder, pc, &self.camera, &self.dispatch_indirect);
     }
     
     pub async fn num_visible_points(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> u32 {
@@ -376,7 +375,7 @@ impl GaussianRendererCompute  {
             wgpu::util::DownloadBuffer::read_buffer(
                 device,
                 queue,
-                &self.draw_indirect_buffer.slice(..),
+                &self.dispatch_indirect_buffer.slice(..),
                 move |b| {
                     let download = b.unwrap();
                     let data = download.as_ref();
@@ -425,7 +424,7 @@ impl GaussianRendererCompute  {
             #[cfg(not(target_arch = "wasm32"))]
             self.stopwatch.start(&mut encoder, "rasterization").unwrap();
             {
-                let mut render_pass = encoder.begin_compute_pass(&RenderPassDescriptor {
+                let mut render_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("Gaussian Renderer Compute"),
                 });
 
@@ -433,7 +432,7 @@ impl GaussianRendererCompute  {
                 render_pass.set_bind_group(1, &pc.sorter_render_bg, &[]);
                 render_pass.set_pipeline(&self.pipeline);
 
-                render_pass.dispatch_indirect(&self.dispatch_indirect, 0);
+                render_pass.dispatch_workgroups_indirect(&self.dispatch_indirect_buffer, 0);
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -474,6 +473,40 @@ impl GaussianRendererCompute  {
                 },
                 count: None,
             }],
+        })
+    }
+    
+    pub fn bing_group_layout_resolve_images(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("bind group layout resolve images"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer { 
+                    ty: wgpu::BufferBindingType::Storage { read_only: false }, 
+                    has_dynamic_offset: false, 
+                    min_binding_size: None },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer { 
+                    ty: wgpu::BufferBindingType::Storage { read_only: false }, 
+                    has_dynamic_offset: false, 
+                    min_binding_size: None },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture { 
+                    access: wgpu::StorageTextureAccess::WriteOnly, 
+                    format: wgpu::TextureFormat::Rgba8Unorm, 
+                    view_dimension: wgpu::TextureViewDimension::D2 },
+                count: None,
+            },
+            ],
         })
     }
 }

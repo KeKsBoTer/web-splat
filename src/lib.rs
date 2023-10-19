@@ -36,6 +36,8 @@ mod ply;
 
 mod renderer;
 pub use renderer::GaussianRenderer;
+pub use renderer::GaussianRendererCompute;
+pub use renderer::Renderer;
 
 mod scene;
 pub use self::scene::{Scene, SceneCamera, Split};
@@ -114,7 +116,7 @@ pub struct RenderConfig {
     pub max_sh_deg: u32,
     pub sh_dtype: SHDType,
     pub no_vsync: bool,
-    pub renderer: &str,
+    pub renderer: String,
 }
 
 struct WindowContext {
@@ -126,7 +128,7 @@ struct WindowContext {
     scale_factor: f32,
 
     pc: PointCloud,
-    renderer: GaussianRenderer,
+    renderer: Renderer,
     camera: PerspectiveCamera,
     animation: Option<Box<dyn Animation<Animatable = PerspectiveCamera>>>,
     controller: CameraController,
@@ -196,7 +198,13 @@ impl WindowContext {
         .unwrap();
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
-        let renderer = GaussianRenderer::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype());
+        println!("render_config has: {}", render_config.renderer);
+        let renderer = match render_config.renderer.as_str() {
+            "rast" => Renderer::Rast(GaussianRenderer::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype())),
+            "comp" => Renderer::Comp(GaussianRendererCompute::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype())),
+            _ => {println!("Renderer {} not supported, using \"comp\" as default", render_config.renderer);
+                Renderer::Comp(GaussianRendererCompute::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype()))}
+        };
 
         let aspect = size.width as f32 / size.height as f32;
         let view_camera = PerspectiveCamera::new(
@@ -264,12 +272,15 @@ impl WindowContext {
     fn ui(&mut self) {
         let ctx = &self.ui_renderer.ctx;
         #[cfg(not(target_arch="wasm32"))]
-        let stats = pollster::block_on(
-            self.renderer
-                .render_stats(&self.wgpu_context.device, &self.wgpu_context.queue),
-        );
+        let stats = match &mut self.renderer{
+            Renderer::Rast(ref mut r) => pollster::block_on(r.render_stats(&self.wgpu_context.device, &self.wgpu_context.queue)),
+            Renderer::Comp(ref mut c) => pollster::block_on(c.render_stats(&self.wgpu_context.device, &self.wgpu_context.queue)),
+        };
         #[cfg(not(target_arch="wasm32"))]
-        let num_drawn = pollster::block_on(self.renderer.num_visible_points(&self.wgpu_context.device,&self.wgpu_context.queue));
+        let num_drawn = match &self.renderer {
+            Renderer::Rast(ref r) => pollster::block_on(r.num_visible_points(&self.wgpu_context.device, &self.wgpu_context.queue)),
+            Renderer::Comp(ref c) => pollster::block_on(c.num_visible_points(&self.wgpu_context.device, &self.wgpu_context.queue)),
+        };
         
         #[cfg(not(target_arch="wasm32"))]
         self.history.push((
@@ -430,14 +441,24 @@ impl WindowContext {
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         let viewport = Vector2::new(self.config.width, self.config.height);
-        self.renderer.render(
-            &self.wgpu_context.device,
-            &self.wgpu_context.queue,
-            &view,
-            &self.pc,
-            self.camera,
-            viewport,
-        );
+        match &mut self.renderer {
+            Renderer::Rast(ref mut r) => r.render(
+                                        &self.wgpu_context.device,
+                                        &self.wgpu_context.queue,
+                                        &view,
+                                        &self.pc,
+                                        self.camera,
+                                        viewport,
+                                    ),
+            Renderer::Comp(ref mut c) => c.render(
+                                        &self.wgpu_context.device,
+                                        &self.wgpu_context.queue,
+                                        &view,
+                                        &self.pc,
+                                        self.camera,
+                                        viewport,
+                                    ),
+        }
 
         {
             // ui rendering

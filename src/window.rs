@@ -83,6 +83,7 @@ impl WindowContext {
         let pc = PointCloud::load_ply(&device, pc_file, pc::SHDtype::Byte).unwrap();
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
+        println!("render_config has: {window.render_config.renderer}");
         let renderer = match window.render_config.renderer {
             "rast" => GaussianRenderer::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype())
             "comp" => GaussianRendererCompute::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype())

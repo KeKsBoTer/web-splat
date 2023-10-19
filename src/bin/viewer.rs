@@ -23,8 +23,8 @@ struct Opt {
     no_vsync: bool,
     
     /// select renderer, "rast" for rasterizer, "comp" for software rasterization via compute shader
-    #[arg(long, default_value_t = "comp")]
-    renderer: &str,
+    #[arg(long, default_value_t = String::from("comp"))]
+    renderer: String,
 }
 
 #[pollster::main]

@@ -10,12 +10,14 @@ struct Splats2D {
 
 @group(0) @binding(2)
 var<storage, read> points_2d : array<Splats2D>;
-@group(0) @binding(4)
-var<image, read_write> out_alpha : image2d<u32>;
-@group(1) @binding(5)
-var<image, read_write> out_color : image2d<vec3<u32>>;
 @group(1) @binding(4)
 var<storage, read> indices : array<u32>;
+@group(2) @binding(0)
+var<storage, read_write> out_alpha : array<u32>;
+@group(2) @binding(1)
+var<storage, read_write> out_color : array<vec3<u32>>;
+@group(2) @binding(3)
+var<unifrom, read> final_image : texture_2d<Rgba8Unorm>;
 
 const MAX_ALPHA: u32 = 0xFFFFFF;
 const MAX_COL: u32 = 0xFFFF;
@@ -32,7 +34,7 @@ fn draw_splat(@builtin(global_invocation_id) gid: vec3<u32>) {
     // the pixel is already fully opaque
     
     let vertex = points_2d[indices[gid.x]];
-    let w_h = vec2(out_alpha.width, out_alpha.height);
+    let w_h = textureDimensions(final_image);
 
     // scaled eigenvectors in screen space
     let v1 = unpack2x16float(vertex.v.x);
@@ -82,8 +84,19 @@ fn draw_splat(@builtin(global_invocation_id) gid: vec3<u32>) {
             let u_alpha = u32(-log((1 - alpha) * MAX_ALPHA)); // - as the result of log will always be negative (1 - alpha in [0,1 -> log in (-inf,0])
             let last_alpha = atomicAdd(&out_alpha[cur_p], u_alpha);
             if last_alpha > MAX_ALPHA {continue;}
-            let cur_alpha = exp(f32(-last_alpha - u_alpha));
-            
+            let cur_alpha = 1. - exp(f32(-last_alpha - u_alpha));
+            let multiplied_color = vec4<u32>(vec4<f32>(color) * alpha);
+            let linear_idx = y * w_h.x + x;
+            atomicAdd(&out_color[linear_idx], multiplied_color.xyz);
         }
     }
+}
+
+@compute @workgroup_size(16, 16, 1)
+fn resolve_color(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let w_h = textureDimensions(final_image);
+    if(min(gid.xy, w_h - 1) != w_h)
+        return;
+    let linear_idx = gid.y * w_h.x + gid.x;
+    
 }
