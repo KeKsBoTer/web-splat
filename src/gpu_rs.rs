@@ -55,7 +55,7 @@ unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
 impl GPURSSorter {
     // The new call also needs the queue to be able to determine the maximum subgroup size (Does so by running test runs)
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
-        let mut cur_sorter;
+        let mut cur_sorter: GPURSSorter;
         #[cfg(not(target_arch = "wasm32"))]
         {
             println!("Searching for the maximum subgroup size (wgpu currently does not allow to query subgroup sizes)");
@@ -66,17 +66,20 @@ impl GPURSSorter {
                 Increasing,
                 Decreasing,
             }
+            let mut biggest_that_worked = 0;
             let mut s = State::Init;
             loop {
                 if cur_size >= sizes.len() {
-                    panic!("GPURSSorter::new() No workgroup size that works was found. Unable to use sorter");
+                    break;
                 }
                 println!("Checking sorting with subgroupsize {}", sizes[cur_size]);
                 cur_sorter = Self::new_with_sg_size(device, sizes[cur_size]);
                 let sort_success = cur_sorter.test_sort(device, queue);
+                println!("{} worked: {}", sizes[cur_size], sort_success);
                 match s {
                     State::Init => {
                         if sort_success {
+                            biggest_that_worked = sizes[cur_size];
                             s = State::Increasing;
                             cur_size += 1;
                         } else {
@@ -86,14 +89,19 @@ impl GPURSSorter {
                     }
                     State::Increasing => {
                         if sort_success {
+                            if sizes[cur_size] > biggest_that_worked {
+                                biggest_that_worked = sizes[cur_size];
+                            }
                             cur_size += 1;
                         } else {
-                            cur_sorter = Self::new_with_sg_size(device, sizes[cur_size - 1]);
                             break;
                         }
                     }
                     State::Decreasing => {
                         if sort_success {
+                            if sizes[cur_size] > biggest_that_worked {
+                                biggest_that_worked = sizes[cur_size];
+                            }
                             break;
                         } else {
                             cur_size -= 1;
@@ -101,6 +109,10 @@ impl GPURSSorter {
                     }
                 }
             }
+            if biggest_that_worked == 0 {
+                panic!("GPURSSorter::new() No workgroup size that works was found. Unable to use sorter");
+            }
+            cur_sorter = Self::new_with_sg_size(device, biggest_that_worked);
         }
         #[cfg(target_arch = "wasm32")]
         let cur_sorter = Self::new_with_sg_size(device, 32);
@@ -222,7 +234,7 @@ impl GPURSSorter {
     #[cfg(not(target_arch = "wasm32"))]
     fn test_sort(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> bool {
         // smiply runs a small sort and check if the sorting result is correct
-        let n = 512; // means that 2 workgroups are needed for sorting
+        let n = 8192; // means that 2 workgroups are needed for sorting
         let scrambled_data: Vec<f32> = (0..n).rev().map(|x| x as f32).collect();
         let sorted_data: Vec<f32> = (0..n).map(|x| x as f32).collect();
 
