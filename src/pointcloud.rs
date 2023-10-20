@@ -14,10 +14,11 @@ use crate::utils::max_supported_sh_deg;
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GaussianSplat {
-    pub xyz: Point3<f32>,
+    pub xyz: Point3<f16>,
+    // opacity as f16 as we would need padding anyway
+    pub opacity: f16,
     pub sh_idx: u32,
     pub covariance: [f16; 6],
-    pub opacity: f32,
 }
 
 impl Default for GaussianSplat {

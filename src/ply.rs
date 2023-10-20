@@ -1,3 +1,4 @@
+use half::f16;
 #[cfg(target_arch = "wasm32")]
 use instant::Instant;
 #[cfg(not(target_arch = "wasm32"))]
@@ -47,9 +48,10 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
         self.reader.read_f32_into::<B>(&mut pos).unwrap();
 
         // skip normals
-        self.reader
-            .seek(io::SeekFrom::Current(std::mem::size_of::<f32>() as i64 * 3))
-            .unwrap();
+        // for what ever reason it is faster to call read than seek ...
+        // so we just read them and never use them again
+        let mut _normals = [0.; 3];
+        self.reader.read_f32_into::<B>(&mut _normals).unwrap();
 
         let mut sh_coefs_raw = [0.; 16 * 3];
         self.reader.read_f32_into::<B>(&mut sh_coefs_raw).unwrap();
@@ -91,8 +93,8 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
         let rot_q = Quaternion::new(rot_0, rot_1, rot_2, rot_3).normalize();
 
         return GaussianSplat {
-            xyz: Point3::from(pos),
-            opacity,
+            xyz: Point3::from(pos).cast().unwrap(),
+            opacity: f16::from_f32(opacity),
             covariance: build_cov(rot_q, scale),
             sh_idx: idx,
             ..Default::default()
