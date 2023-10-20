@@ -8,7 +8,7 @@ use std::io::{self, BufReader, Read, Seek};
 use std::mem;
 use wgpu::util::DeviceExt;
 
-use crate::gpu_rs::GPURSSorter;
+use crate::gpu_rs::{GPURSSorter, GeneralInfo};
 use crate::utils::max_supported_sh_deg;
 
 #[repr(C)]
@@ -150,7 +150,7 @@ impl PointCloud {
             &sorter_p_a,
             &sorter_p_b,
         );
-        let sorter_render_bg = sorter.create_bind_group_render(device, &sorter_p_a);
+        let sorter_render_bg = sorter.create_bind_group_render(device, &sorter_uni, &sorter_p_a);
         let sorter_bg_pre = sorter.create_bind_group_preprocess(
             device,
             &sorter_uni,
@@ -249,7 +249,7 @@ impl PointCloud {
             label: Some("point cloud rendering bind group layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 2,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,

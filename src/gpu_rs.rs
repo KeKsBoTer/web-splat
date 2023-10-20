@@ -425,6 +425,16 @@ impl GPURSSorter {
         return device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Radix bind group layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
                 binding: 4,
                 visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX,
                 ty: wgpu::BindingType::Buffer {
@@ -641,12 +651,17 @@ impl GPURSSorter {
     pub fn create_bind_group_render(
         &self,
         device: &wgpu::Device,
+        general_infos: &wgpu::Buffer,
         payload_a: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
         let rendering_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Render bind group"),
             layout: &self.render_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: general_infos.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
                 binding: 4,
                 resource: payload_a.as_entire_binding(),
             }],

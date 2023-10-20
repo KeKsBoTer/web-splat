@@ -85,10 +85,10 @@ impl WindowContext {
 
         println!("render_config has: {window.render_config.renderer}");
         let renderer = match window.render_config.renderer {
-            "rast" => GaussianRenderer::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype())
-            "comp" => GaussianRendererCompute::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype())
+            "rast" => GaussianRenderer::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype()),
+            "comp" => GaussianRendererCompute::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype()),
             _ => println!("Renderer {} not supported, using \"comp\" as default", window.render_config.renderer);
-                GaussianRendererCompute::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype())
+                GaussianRendererCompute::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype()),
         }
 
         let aspect = size.width as f32 / size.height as f32;
