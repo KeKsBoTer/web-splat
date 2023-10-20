@@ -109,6 +109,7 @@ async fn main() {
     println!("reading point cloud file '{}'", opt.input.to_string_lossy());
     let mut pc = PointCloud::load(
         &wgpu_context.device,
+        &wgpu_context.queue,
         ply_file,
         opt.sh_dtype,
         Some(opt.max_sh_deg),
