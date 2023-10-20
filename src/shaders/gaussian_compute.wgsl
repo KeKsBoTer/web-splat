@@ -8,14 +8,24 @@ struct Splats2D {
     color: u32,
 };
 
+struct GeneralInfo{
+    keys_size: u32,
+    padded_size: u32,
+    passes: u32,
+    even_pass: u32,
+    odd_pass: u32,
+};
+
 @group(0) @binding(2)
 var<storage, read> points_2d : array<Splats2D>;
+@group(1) @binding(0)
+var<storage, read> infos: GeneralInfo;          // only needed for the keys_size to check if the thread has to do work at all
 @group(1) @binding(4)
 var<storage, read> indices : array<u32>;
 @group(2) @binding(0)
 var<storage, read_write> out_alpha : array<u32>;
 @group(2) @binding(1)
-var<storage, read_write> out_color : array<vec3<u32>>;
+var<storage, read_write> out_color : array<vec4<u32>>;
 @group(2) @binding(3)
 var<unifrom, read> final_image : texture_2d<Rgba8Unorm>;
 
@@ -32,6 +42,8 @@ fn draw_splat(@builtin(global_invocation_id) gid: vec3<u32>) {
     
     // as an optimization one can do a previous lookup of the alpha value, and if (alpha & 1 << 31), then already stop, as
     // the pixel is already fully opaque
+
+    if gid.x >= infos.keys_size {return;}
     
     let vertex = points_2d[indices[gid.x]];
     let w_h = textureDimensions(final_image);
@@ -98,5 +110,9 @@ fn resolve_color(@builtin(global_invocation_id) gid: vec3<u32>) {
     if(min(gid.xy, w_h - 1) != w_h)
         return;
     let linear_idx = gid.y * w_h.x + gid.x;
-    
+    let col = out_color[linear_idx];
+    let float_col = vec4<f32>(col / MAX_COL, 1.);
+    imageStore(final_image, gid.xy, float_col);
+    out_alpha[linear_idx] = 0u;
+    out_color[linear_idx] = vec4<u32>(0u);
 }
