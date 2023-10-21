@@ -7,6 +7,7 @@ use crate::{
 };
 use std::num::NonZeroU64;
 
+use futures_intrusive::buffer;
 #[cfg(target_arch = "wasm32")]
 use instant::Duration;
 #[cfg(not(target_arch = "wasm32"))]
@@ -279,13 +280,16 @@ impl<T: std::default::Default> ImageBuffer<T> {
     pub fn new() -> Self{
         ImageBuffer{w: -1, h: -1, buffer: None, n: T::default()}
     }
-    pub fn get_or_create_buffer(&mut self, w: u32, h: u32, device: &wgpu::Device) -> &wgpu::Buffer {
+    pub fn get_or_create_buffer(&mut self, w: u32, h: u32, device: &wgpu::Device) -> (&wgpu::Buffer, bool) {
+        let mut change = false;
         if w as i32 > self.w || h as i32 > self.h {
+            println!("Recreating image buffer with sizes [{w}, {h}]");
             self.w = w as i32;
             self.h = h as i32;
-            self.buffer.replace(device.create_buffer(&wgpu::BufferDescriptor { label: Some("Image atomic buffer"), size: w as u64 * h as u64 * std::mem::size_of::<T>() as u64, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false }));
+            self.buffer.replace(device.create_buffer(&wgpu::BufferDescriptor { label: Some("Image atomic buffer"), size: w as u64 * h as u64 * std::mem::size_of::<T>() as u64, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
+            change = true;
         }
-        self.buffer.as_ref().unwrap()
+        (self.buffer.as_ref().unwrap(), change)
     }
 }
 #[derive(Default)]
@@ -300,12 +304,14 @@ impl ComputeBindGroup {
                                 bind_group_layout: &wgpu::BindGroupLayout,
                                 color_buffer: &wgpu::Buffer, 
                                 alpha_buffer: &wgpu::Buffer, 
+                                buffer_changed: bool
                                 ) -> &wgpu::BindGroup {
         let color_hash = color_buffer as *const wgpu::Buffer as u64;
         let alpha_hash = alpha_buffer as *const wgpu::Buffer as u64;
         if self.bind_group.is_none() || 
             self.color_hash != color_hash || 
-            self.alpha_hash != alpha_hash
+            self.alpha_hash != alpha_hash ||
+            buffer_changed
         {
             println!("Recreating the bind_group for compute rasterization");
             self.color_hash = color_hash;
@@ -316,11 +322,11 @@ impl ComputeBindGroup {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: color_buffer.as_entire_binding(),
+                        resource: alpha_buffer.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: alpha_buffer.as_entire_binding(),
+                        resource: color_buffer.as_entire_binding(),
                     },
                 ],
             }));
@@ -339,7 +345,7 @@ pub struct GaussianRendererCompute {
     // dispatch_indirect: wgpu::BindGroup,
     draw_indirect_buffer: wgpu::Buffer,
     draw_indirect: wgpu::BindGroup,
-    buffer_color: ImageBuffer::<vec4<u32>>,
+    buffer_color: ImageBuffer::<u32>,
     buffer_alpha: ImageBuffer::<u32>,
     bind_group_layout_render: wgpu::BindGroupLayout,
     bind_group_render: ComputeBindGroup,
@@ -562,12 +568,14 @@ impl GaussianRendererCompute  {
             self.stopwatch.stop(&mut encoder, "sorting").unwrap();
 
             // rasterize splats
-            let buffer_color = self.buffer_color.get_or_create_buffer(viewport.x, viewport.y, device);
-            let buffer_alpha = self.buffer_alpha.get_or_create_buffer(viewport.x, viewport.y, device);
-            let bind_group = self.bind_group_render.get_or_adapt_bind_group(&device, &self.bind_group_layout_render, buffer_color, buffer_alpha);
+            let (buffer_color, buffer_changed) = self.buffer_color.get_or_create_buffer(viewport.x, viewport.y, device);
+            let (buffer_alpha, _) = self.buffer_alpha.get_or_create_buffer(viewport.x, viewport.y, device);
+            let bind_group = self.bind_group_render.get_or_adapt_bind_group(&device, &self.bind_group_layout_render, buffer_color, buffer_alpha, buffer_changed);
             encoder.push_debug_group("render");
             #[cfg(not(target_arch = "wasm32"))]
             self.stopwatch.start(&mut encoder, "rasterization").unwrap();
+            encoder.clear_buffer(buffer_alpha, 0, None);
+            encoder.clear_buffer(buffer_color, 0, None);
             {
                 let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Gaussian Renderer splat atomic rendering"),

@@ -476,7 +476,7 @@ impl GPURSSorter {
         //let (_, _, _, _, _, count_ru_histo) = Self::get_scatter_histogram_sizes(keysize);
         let keys_per_workgroup = HISTOGRAM_WG_SIZE * RS_HISTOGRAM_BLOCK_ROWS;
         let count_ru_histo =
-            ((keysize + keys_per_workgroup) / keys_per_workgroup) * keys_per_workgroup;
+            ((keysize + keys_per_workgroup) / keys_per_workgroup + 1) * keys_per_workgroup;
 
         // creating the two needed buffers for sorting
         let buffer_a = device.create_buffer(&wgpu::BufferDescriptor {
@@ -574,11 +574,11 @@ impl GPURSSorter {
     ) -> (wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup, wgpu::BindGroup) {
         let (_, scatter_blocks_ru, _, _, _, count_ru_histo) =
             Self::get_scatter_histogram_sizes(keysize);
-        if keyval_a.size() as usize != count_ru_histo * std::mem::size_of::<f32>()
-            || keyval_b.size() as usize != count_ru_histo * std::mem::size_of::<f32>()
-        {
-            panic!("Keyval buffers are not padded correctly. Were they created with GPURSSorter::create_keyval_buffers()");
-        }
+        // if keyval_a.size() as usize != count_ru_histo * std::mem::size_of::<f32>()
+        //     || keyval_b.size() as usize != count_ru_histo * std::mem::size_of::<f32>()
+        // {
+        //     panic!("Keyval buffers are not padded correctly. Were they created with GPURSSorter::create_keyval_buffers()");
+        // }
         let dispatch_infos = IndirectDispatch {
             dispatch_x: scatter_blocks_ru as u32,
             dispatch_y: 1,

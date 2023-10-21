@@ -39,9 +39,25 @@ var<storage, read_write> out_alpha : array<atomic<u32>>;
 @group(3) @binding(1)
 var<storage, read_write> out_color : array<atomic<u32>>;
 
-const MAX_ALPHA: u32 = 0xFFFFFFFu; // = 268.435.455
-const MAX_ALPHA_TRESH: f32 = .05;  // means that at alpha = .95 MAX_ALPHA is assumed
-const MAX_COL: u32 = 0xFFFFu;
+const MAX_ALPHA: u32 = 0xFFFFFFu; // = 268.435.455
+const MAX_ALPHA_TRESH: f32 = .01;  // means that at alpha = .95 MAX_ALPHA is assumed
+const MAX_COL: u32 = 0x3FFu;
+const COL_BITS: u32 = 10u;
+
+fn pack_color(c: vec3<f32>) -> u32 {
+    let max_c = (1u << COL_BITS) - 1u ;
+    let max_mult = f32(max_c - 2u);
+    return u32(c.x * max_mult) << (2u * COL_BITS) |
+            u32(c.y * max_mult) << (COL_BITS) |
+            u32(c.z * max_mult);
+}
+fn unpack_color(c: u32) -> vec3<f32> {
+    let max_c = (1u << COL_BITS) - 1u;
+    let max_mult = f32(max_c - 2u);
+    return vec3<f32>(f32(c >> (2u * COL_BITS)) / max_mult,
+                     f32((c >> (COL_BITS)) & max_c) / max_mult,
+                     f32(c & max_c) / max_mult);
+}
 
 @compute @workgroup_size(256, 1, 1)
 fn draw_splat(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -128,7 +144,7 @@ struct SplatsOutput {
 fn vs_splats(@builtin(vertex_index) in_vertex_index: u32, @builtin(instance_index) in_instance_index: u32) -> SplatsOutput{
     var out: SplatsOutput;
     
-    let vertex = points_2d[indices[in_instance_index]];
+    let vertex = points_2d[indices[infos.keys_size - in_instance_index - 1u]];
 
     // scaled eigenvectors in screen space 
     let v1 = unpack2x16float(vertex.v.x);
@@ -153,28 +169,30 @@ fn vs_splats(@builtin(vertex_index) in_vertex_index: u32, @builtin(instance_inde
 }
 @fragment
 fn fs_splats(in: SplatsOutput) -> @location(0) vec4<f32> {
+    let log_norm = f32(MAX_ALPHA) / log(MAX_ALPHA_TRESH);
+    let log_norm_inv = 1. / log_norm;
     let a = -dot(in.screen_pos, in.screen_pos);
     if a < -4.0 {discard;}
     
     let w_h = vec2<u32>(camera.viewport);
     let pixel_pos = vec2<u32>(in.position.xy);
+    //if any(clamp(pixel_pos, vec2<u32>(0u), w_h - 1u) != pixel_pos) {discard;}
     let linear_idx = pixel_pos.y * w_h.x + pixel_pos.x;
 
     // early out test for alpha
-    if out_alpha[linear_idx] > MAX_ALPHA {discard;}
+    let pre_alpha = out_alpha[linear_idx];
+    if pre_alpha > MAX_ALPHA {discard;}
     
-    let alpha = exp(a) * in.color.a;
-    let u_alpha = u32(log(1. - alpha) * (f32(MAX_ALPHA) / log(MAX_ALPHA_TRESH))); // normalizes alpha = .95 to MAX_ALPHA (is a constant linear scaling)
+    let alpha = min(exp(a) * in.color.a, 1. - MAX_ALPHA_TRESH);
+    let u_alpha = u32(log(1. - alpha) * log_norm); // normalizes alpha = .95 to MAX_ALPHA (is a constant linear scaling)
     let last_alpha = atomicAdd(&out_alpha[linear_idx], u_alpha);
 
     // early out if stored alpha is already over .95
     if last_alpha > MAX_ALPHA {discard;}
-    let cur_alpha = 1. - exp(f32(last_alpha + u_alpha) * (log(MAX_ALPHA_TRESH) / f32(MAX_ALPHA)));
-    let multiplied_color = vec3<u32>(in.color.rgb * cur_alpha * f32(MAX_COL));
-    let color_channel_diff = w_h.x * w_h.y;
-    atomicAdd(&out_color[linear_idx], multiplied_color.x);
-    atomicAdd(&out_color[linear_idx + color_channel_diff], multiplied_color.y);
-    atomicAdd(&out_color[linear_idx + 2u * color_channel_diff], multiplied_color. z);
+    let before_alpha = 1. - exp(f32(last_alpha) * log_norm_inv);
+    let cur_alpha = 1. - exp(f32(last_alpha + u_alpha) * log_norm_inv);
+    let multiplied_color = in.color.rgb * (cur_alpha - before_alpha);
+    atomicAdd(&out_color[linear_idx], pack_color(multiplied_color));
     // never output anything to the merger
     discard;
 }
@@ -196,14 +214,9 @@ fn fs_resolve(in: VertexOutput) -> @location(0) vec4<f32> {
     if any(min(gid.xy, w_h - 1u) != gid.xy) {
         return vec4<f32>(0.);
     }
-    let color_channel_diff = w_h.x * w_h.y;
     let linear_idx = gid.y * w_h.x + gid.x;
-    let alpha = out_alpha[linear_idx];
-    out_alpha[linear_idx] = 0u;
-    out_color[linear_idx] = 0u;
-    out_color[linear_idx + color_channel_diff] = 0u;
-    out_color[linear_idx + 2u * color_channel_diff] = 0u;
+    //let alpha = out_alpha[linear_idx];
+    let col = unpack_color(out_color[linear_idx]);//vec4<u32>(out_color[linear_idx], out_color[linear_idx + color_channel_diff], out_color[linear_idx + 2u * color_channel_diff], MAX_COL);
 
-    let col = vec4<u32>(out_color[linear_idx], out_color[linear_idx + color_channel_diff], out_color[linear_idx + 2u * color_channel_diff], MAX_COL);
-    return vec4<f32>(f32(alpha) / f32(MAX_ALPHA));// / f32(MAX_COL / 32u);
+    return vec4<f32>(col, 1.);
 }

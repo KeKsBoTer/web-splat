@@ -19,11 +19,11 @@ struct Opt {
     #[arg(long,value_enum, default_value_t = SHDType::Byte)]
     sh_dtype: SHDType,
 
-    #[arg(long)]
+    #[arg(long, default_value_t = true)]
     no_vsync: bool,
     
     /// select renderer, "rast" for rasterizer, "comp" for software rasterization via compute shader
-    #[arg(long, default_value_t = String::from("comp"))]
+    #[arg(long, default_value_t = String::from("rast"))]
     renderer: String,
 }
 
