@@ -331,12 +331,14 @@ impl ComputeBindGroup {
 #[derive(Default)]
 struct vec4<T> {x: T, y: T, z: T, w: T}
 pub struct GaussianRendererCompute {
-    pipeline: wgpu::ComputePipeline,
+    pipeline: wgpu::RenderPipeline,
     pipeline_resolve: wgpu::RenderPipeline,
     camera:  UniformBuffer<CameraUniform>,
     preprocess: PreprocessPipeline,
-    dispatch_indirect_buffer: wgpu::Buffer,
-    dispatch_indirect: wgpu::BindGroup,
+    // dispatch_indirect_buffer: wgpu::Buffer,  // was exchanged again with draw indirect
+    // dispatch_indirect: wgpu::BindGroup,
+    draw_indirect_buffer: wgpu::Buffer,
+    draw_indirect: wgpu::BindGroup,
     buffer_color: ImageBuffer::<vec4<u32>>,
     buffer_alpha: ImageBuffer::<u32>,
     bind_group_layout_render: wgpu::BindGroupLayout,
@@ -367,15 +369,45 @@ impl GaussianRendererCompute  {
         
         let shader = device.create_shader_module(wgpu::include_wgsl!("shaders/gaussian_compute.wgsl"));
         
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Gaussian renderer compute pipeline"),
+        // let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        //     label: Some("Gaussian renderer compute pipeline"),
+        //     layout: Some(&pipeline_layout),
+        //     module: &shader,
+        //     entry_point: "draw_splat",
+        // });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Gaussian renderer atomic pipeline"),
             layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: "draw_splat",
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_splats",
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs_splats",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
         });
 
         let pipeline_resolve  = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("render pipeline"),
+            label: Some("Gaussian renderer resolve pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -405,20 +437,20 @@ impl GaussianRendererCompute  {
             multiview: None,
         });
         
-        let dispatch_indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let draw_indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("indirect dispatch buffer rendering"),
-            size: 16,   // shoudl be std::mem::size_of::<wgpu::util::DrawIndirect>(), however at least 16 bytes are needed
+            size: std::mem::size_of::<wgpu::util::DrawIndirect>() as u64,
             usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
         
         let indirect_layout = Self::bind_group_layout(device);
-        let dispatch_indirect = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let draw_indirect = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("dispatch indirect buffer"),
             layout: &indirect_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: dispatch_indirect_buffer.as_entire_binding(),
+                resource: draw_indirect_buffer.as_entire_binding(),
             }],
         });
         
@@ -436,8 +468,8 @@ impl GaussianRendererCompute  {
             pipeline_resolve,
             camera,
             preprocess,
-            dispatch_indirect_buffer,
-            dispatch_indirect,
+            draw_indirect_buffer,
+            draw_indirect,
             buffer_color,
             buffer_alpha,
             bind_group_layout_render,
@@ -464,17 +496,18 @@ impl GaussianRendererCompute  {
         self.camera.sync(queue);
         // TODO perform this in vertex buffer after draw call
         queue.write_buffer(
-            &self.dispatch_indirect_buffer,
+            &self.draw_indirect_buffer,
             0,
-            wgpu::util::DispatchIndirect {
-                x: 0,
-                y: 1,
-                z: 1
+            wgpu::util::DrawIndirect {
+                vertex_count: 4,
+                instance_count: 0,
+                base_vertex: 0,
+                base_instance: 0,
             }
             .as_bytes(),
         );
         self.preprocess
-            .run(encoder, pc, &self.camera, &self.dispatch_indirect);
+            .run(encoder, pc, &self.camera, &self.draw_indirect);
     }
     
     pub async fn num_visible_points(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> u32 {
@@ -484,7 +517,7 @@ impl GaussianRendererCompute  {
             wgpu::util::DownloadBuffer::read_buffer(
                 device,
                 queue,
-                &self.dispatch_indirect_buffer.slice(..),
+                &self.draw_indirect_buffer.slice(..),
                 move |b| {
                     let download = b.unwrap();
                     let data = download.as_ref();
@@ -536,30 +569,26 @@ impl GaussianRendererCompute  {
             #[cfg(not(target_arch = "wasm32"))]
             self.stopwatch.start(&mut encoder, "rasterization").unwrap();
             {
-                let mut render_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("Gaussian Renderer Compute"),
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Gaussian Renderer splat atomic rendering"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &target,
+                        resolve_target: None,
+                        ops: wgpu::Operations{load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: true},
+                    })],
+                    depth_stencil_attachment: None,
                 });
 
+                // atomic rendering
                 render_pass.set_bind_group(0, &self.camera.bind_group(), &[]);
                 render_pass.set_bind_group(1, &pc.render_bind_group, &[]);
                 render_pass.set_bind_group(2, &pc.sorter_render_bg, &[]);
                 render_pass.set_bind_group(3, &bind_group, &[]);
                 render_pass.set_pipeline(&self.pipeline);
 
-                render_pass.dispatch_workgroups_indirect(&pc.sorter_dis, 0);// (&self.dispatch_indirect_buffer, 0);
-            }
-            {
-                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Resolve Rasterizer"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &target,
-                        resolve_target: None,
-                        ops: wgpu::Operations{load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: true,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                });
+                render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
                 
+                // resolve pass
                 render_pass.set_bind_group(0, &self.camera.bind_group(), &[]);
                 render_pass.set_bind_group(1, &pc.render_bind_group, &[]);
                 render_pass.set_bind_group(2, &pc.sorter_render_bg, &[]);
@@ -592,7 +621,7 @@ impl GaussianRendererCompute  {
 
     pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("dispatch indirect"),
+            label: Some("Draw indirect"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::COMPUTE,

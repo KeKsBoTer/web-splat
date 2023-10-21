@@ -39,7 +39,8 @@ var<storage, read_write> out_alpha : array<atomic<u32>>;
 @group(3) @binding(1)
 var<storage, read_write> out_color : array<atomic<u32>>;
 
-const MAX_ALPHA: u32 = 0xFFFFFFu;
+const MAX_ALPHA: u32 = 0xFFFFFFFu; // = 268.435.455
+const MAX_ALPHA_TRESH: f32 = .05;  // means that at alpha = .95 MAX_ALPHA is assumed
 const MAX_COL: u32 = 0xFFFFu;
 
 @compute @workgroup_size(256, 1, 1)
@@ -117,6 +118,67 @@ fn draw_splat(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 }
 
+// new approach: use standard rasterization and bypass the output merger with atomics (gets rid of all for loops in the compute version)
+struct SplatsOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) screen_pos: vec2<f32>,
+    @location(1) color: vec4<f32>,
+};
+@vertex
+fn vs_splats(@builtin(vertex_index) in_vertex_index: u32, @builtin(instance_index) in_instance_index: u32) -> SplatsOutput{
+    var out: SplatsOutput;
+    
+    let vertex = points_2d[indices[in_instance_index]];
+
+    // scaled eigenvectors in screen space 
+    let v1 = unpack2x16float(vertex.v.x);
+    let v2 = unpack2x16float(vertex.v.y);
+
+    let v_center = unpack2x16float(vertex.pos.x);
+
+    // splat rectangle with left lower corner at (-2,-2)
+    // and upper right corner at (2,2)
+    let x = f32(in_vertex_index % 2u == 0u) * 4. - (2.);
+    let y = f32(in_vertex_index < 2u) * 4. - (2.);
+
+    let position = vec2<f32>(x, y);
+
+    // let offset = position * 0.01;
+    let offset = position.x * v1 * 2.0 + position.y * v2 * 2.0;
+    out.position = vec4<f32>(v_center + offset, unpack2x16float(vertex.pos.y));
+    out.screen_pos = position;
+    out.color = unpack4x8unorm(vertex.color);
+
+    return out;
+}
+@fragment
+fn fs_splats(in: SplatsOutput) -> @location(0) vec4<f32> {
+    let a = -dot(in.screen_pos, in.screen_pos);
+    if a < -4.0 {discard;}
+    
+    let w_h = vec2<u32>(camera.viewport);
+    let pixel_pos = vec2<u32>(in.position.xy);
+    let linear_idx = pixel_pos.y * w_h.x + pixel_pos.x;
+
+    // early out test for alpha
+    if out_alpha[linear_idx] > MAX_ALPHA {discard;}
+    
+    let alpha = exp(a) * in.color.a;
+    let u_alpha = u32(log(1. - alpha) * (f32(MAX_ALPHA) / log(MAX_ALPHA_TRESH))); // normalizes alpha = .95 to MAX_ALPHA (is a constant linear scaling)
+    let last_alpha = atomicAdd(&out_alpha[linear_idx], u_alpha);
+
+    // early out if stored alpha is already over .95
+    if last_alpha > MAX_ALPHA {discard;}
+    let cur_alpha = 1. - exp(f32(last_alpha + u_alpha) * (log(MAX_ALPHA_TRESH) / f32(MAX_ALPHA)));
+    let multiplied_color = vec3<u32>(in.color.rgb * cur_alpha * f32(MAX_COL));
+    let color_channel_diff = w_h.x * w_h.y;
+    atomicAdd(&out_color[linear_idx], multiplied_color.x);
+    atomicAdd(&out_color[linear_idx + color_channel_diff], multiplied_color.y);
+    atomicAdd(&out_color[linear_idx + 2u * color_channel_diff], multiplied_color. z);
+    // never output anything to the merger
+    discard;
+}
+
 struct VertexOutput{
     @builtin(position) position: vec4<f32>,
 }
@@ -143,5 +205,5 @@ fn fs_resolve(in: VertexOutput) -> @location(0) vec4<f32> {
     out_color[linear_idx + 2u * color_channel_diff] = 0u;
 
     let col = vec4<u32>(out_color[linear_idx], out_color[linear_idx + color_channel_diff], out_color[linear_idx + 2u * color_channel_diff], MAX_COL);
-    return vec4<f32>(f32(alpha));//vec4<f32>(col) / f32(MAX_COL);
+    return vec4<f32>(f32(alpha) / f32(MAX_ALPHA));// / f32(MAX_COL / 32u);
 }
