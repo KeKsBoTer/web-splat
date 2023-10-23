@@ -211,7 +211,7 @@ impl WindowContext {
             Quaternion::one(),
             PerspectiveProjection::new(
                 Vector2::new(size.width, size.height),
-                Vector2::new(Deg(45.), Deg(45. * aspect)),
+                Vector2::new(Deg(45.), Deg(45. / aspect)),
                 0.1,
                 100.,
             ),
@@ -542,6 +542,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(file: R, scene_
     } else {
         PhysicalSize::new(800, 600)
     };
+    log::info!("rendering at resolution {}x{}px",window_size.width,window_size.height);
 
     let window = WindowBuilder::new()
         .with_title("web-splats")

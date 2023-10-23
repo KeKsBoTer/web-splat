@@ -1,3 +1,4 @@
+use half::f16;
 #[cfg(target_arch = "wasm32")]
 use instant::Instant;
 #[cfg(not(target_arch = "wasm32"))]
@@ -48,9 +49,10 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
         self.reader.read_f32_into::<B>(&mut pos).unwrap();
 
         // skip normals
-        self.reader
-            .seek(io::SeekFrom::Current(std::mem::size_of::<f32>() as i64 * 3))
-            .unwrap();
+        // for what ever reason it is faster to call read than seek ...
+        // so we just read them and never use them again
+        let mut _normals = [0.; 3];
+        self.reader.read_f32_into::<B>(&mut _normals).unwrap();
 
         let mut sh_coefs_raw = [0.; 16 * 3];
         self.reader.read_f32_into::<B>(&mut sh_coefs_raw).unwrap();

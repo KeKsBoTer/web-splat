@@ -208,6 +208,12 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let geometric_info = geometries[vertex.geometry_idx];
 
     var camspace = camera.view * vec4<f32>(geometric_info.xyz, 1.);
+    //let p1 = unpack2x16float(vertex.xyz_opacity[0]);
+    //let p2 = unpack2x16float(vertex.xyz_opacity[1]);
+    //let xyz = vec3<f32>(p1.xy,p2.x);
+    //let opacity = p2.y;
+
+    //var camspace = camera.view * vec4<f32>(xyz, 1.);
     let pos2d = camera.proj * camspace;
     let bounds = 1.2 * pos2d.w;
 

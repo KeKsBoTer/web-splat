@@ -31,7 +31,9 @@ struct Opt {
 async fn main() {
     let opt = Opt::parse();
 
-    // TODO this is suboptimal as it is never closed
+    // we dont need to close these
+    // rust is smart enough to close/drop them once they are no longer needed
+    // thank you rust <3
     let ply_file = File::open(opt.input).unwrap();
     let scene_file = opt.scene.map(|p| File::open(p).unwrap());
     
