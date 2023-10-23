@@ -13,7 +13,7 @@ use cgmath::{InnerSpace, Point3, Quaternion, Vector3};
 use log::info;
 
 use crate::{
-    pointcloud::{GaussianSplat, PointCloudReader, Covar},
+    pointcloud::{GaussianSplat, PointCloudReader, GeometricInfo},
     utils::{build_cov, sh_deg_from_num_coefs, sh_num_coefficients, sigmoid},
     SHDType,
 };
@@ -42,7 +42,7 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
         sh_deg: u32,
         sh_dtype: SHDType,
         sh_coefs_buffer: &mut W,
-        covars_buffer: &mut Vec<Covar>,
+        covars_buffer: &mut Vec<GeometricInfo>,
     ) -> GaussianSplat {
         let mut pos = [0.; 3];
         self.reader.read_f32_into::<B>(&mut pos).unwrap();
@@ -92,13 +92,13 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
         let rot_q = Quaternion::new(rot_0, rot_1, rot_2, rot_3).normalize();
         
         let covar_idx = covars_buffer.len() as u32;
-        covars_buffer.push(Covar{xyz: Point3::from(pos), opacity, covariance: build_cov(rot_q, scale), ..Default::default()});
+        covars_buffer.push(GeometricInfo{xyz: Point3::from(pos), opacity, covariance: build_cov(rot_q, scale), ..Default::default()});
 
         return GaussianSplat{
             //xyz: Point3::from(pos),
             //opacity,
             //covariance: build_cov(rot_q, scale),
-            covar_idx,
+            geometry_idx: covar_idx,
             sh_idx: idx,
             ..Default::default()
         };
@@ -110,7 +110,7 @@ impl<R: io::BufRead + io::Seek> PointCloudReader for PlyReader<R> {
         &mut self,
         sh_dtype: SHDType,
         sh_deg: u32,
-    ) -> Result<(Vec<GaussianSplat>, Vec<u8>, Vec<Covar>), anyhow::Error> {
+    ) -> Result<(Vec<GaussianSplat>, Vec<u8>, Vec<GeometricInfo>), anyhow::Error> {
         let start = Instant::now();
         let mut sh_coef_buffer = Vec::new();
         let mut covar_buffer = Vec::new();

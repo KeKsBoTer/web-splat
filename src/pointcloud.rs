@@ -15,7 +15,7 @@ use crate::utils::max_supported_sh_deg;
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GaussianSplat {
     //pub xyz: Point3<f32>,
-    pub covar_idx: u32,
+    pub geometry_idx: u32,
     pub sh_idx: u32,
     //pub covariance: [f16; 6],
     //pub opacity: f32,
@@ -29,15 +29,15 @@ impl Default for GaussianSplat {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Covar {
+pub struct GeometricInfo {
     pub xyz: Point3<f32>,
     pub opacity: f32,
     pub covariance: [f16; 6],
     pub fill: u32,
 }
-impl Default for Covar {
+impl Default for GeometricInfo {
     fn default() -> Self {
-        Covar::zeroed()
+        GeometricInfo::zeroed()
     }
 }
 
@@ -347,7 +347,7 @@ pub trait PointCloudReader {
         &mut self,
         sh_dtype: SHDType,
         sh_deg: u32,
-    ) -> Result<(Vec<GaussianSplat>, Vec<u8>, Vec<Covar>), anyhow::Error>;
+    ) -> Result<(Vec<GaussianSplat>, Vec<u8>, Vec<GeometricInfo>), anyhow::Error>;
 
     fn file_sh_deg(&self) -> Result<u32, anyhow::Error>;
 
