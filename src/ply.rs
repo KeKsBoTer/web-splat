@@ -13,7 +13,7 @@ use cgmath::{InnerSpace, Point3, Quaternion, Vector3};
 use log::info;
 
 use crate::{
-    pointcloud::{GaussianSplat, PointCloudReader},
+    pointcloud::{GaussianSplat, PointCloudReader, Covar},
     utils::{build_cov, sh_deg_from_num_coefs, sh_num_coefficients, sigmoid},
     SHDType,
 };
@@ -42,6 +42,7 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
         sh_deg: u32,
         sh_dtype: SHDType,
         sh_coefs_buffer: &mut W,
+        covars_buffer: &mut Vec<Covar>,
     ) -> GaussianSplat {
         let mut pos = [0.; 3];
         self.reader.read_f32_into::<B>(&mut pos).unwrap();
@@ -89,11 +90,15 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
         let rot_2 = self.reader.read_f32::<B>().unwrap();
         let rot_3 = self.reader.read_f32::<B>().unwrap();
         let rot_q = Quaternion::new(rot_0, rot_1, rot_2, rot_3).normalize();
+        
+        let covar_idx = covars_buffer.len() as u32;
+        covars_buffer.push(Covar{xyz: Point3::from(pos), opacity, covariance: build_cov(rot_q, scale), ..Default::default()});
 
-        return GaussianSplat {
-            xyz: Point3::from(pos),
-            opacity,
-            covariance: build_cov(rot_q, scale),
+        return GaussianSplat{
+            //xyz: Point3::from(pos),
+            //opacity,
+            //covariance: build_cov(rot_q, scale),
+            covar_idx,
             sh_idx: idx,
             ..Default::default()
         };
@@ -105,15 +110,16 @@ impl<R: io::BufRead + io::Seek> PointCloudReader for PlyReader<R> {
         &mut self,
         sh_dtype: SHDType,
         sh_deg: u32,
-    ) -> Result<(Vec<GaussianSplat>, Vec<u8>), anyhow::Error> {
+    ) -> Result<(Vec<GaussianSplat>, Vec<u8>, Vec<Covar>), anyhow::Error> {
         let start = Instant::now();
         let mut sh_coef_buffer = Vec::new();
+        let mut covar_buffer = Vec::new();
         let num_points = self.num_points()?;
         let vertices: Vec<GaussianSplat> = match self.header.encoding {
             ply_rs::ply::Encoding::Ascii => todo!("acsii ply format not supported"),
             ply_rs::ply::Encoding::BinaryBigEndian => (0..num_points)
                 .map(|i| {
-                    self.read_line::<BigEndian, _>(i as u32, sh_deg, sh_dtype, &mut sh_coef_buffer)
+                    self.read_line::<BigEndian, _>(i as u32, sh_deg, sh_dtype, &mut sh_coef_buffer, &mut covar_buffer)
                 })
                 .collect(),
             ply_rs::ply::Encoding::BinaryLittleEndian => (0..num_points)
@@ -123,6 +129,7 @@ impl<R: io::BufRead + io::Seek> PointCloudReader for PlyReader<R> {
                         sh_deg,
                         sh_dtype,
                         &mut sh_coef_buffer,
+                        &mut covar_buffer,
                     )
                 })
                 .collect(),
@@ -131,7 +138,7 @@ impl<R: io::BufRead + io::Seek> PointCloudReader for PlyReader<R> {
             "reading ply file took {:}ms",
             (Instant::now() - start).as_millis()
         );
-        return Ok((vertices, sh_coef_buffer));
+        return Ok((vertices, sh_coef_buffer, covar_buffer));
     }
 
     fn file_sh_deg(&self) -> Result<u32, anyhow::Error> {

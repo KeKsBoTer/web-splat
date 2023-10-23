@@ -334,8 +334,6 @@ impl ComputeBindGroup {
         self.bind_group.as_ref().unwrap()
     }
 }
-#[derive(Default)]
-struct vec4<T> {x: T, y: T, z: T, w: T}
 pub struct GaussianRendererCompute {
     pipeline: wgpu::RenderPipeline,
     pipeline_resolve: wgpu::RenderPipeline,

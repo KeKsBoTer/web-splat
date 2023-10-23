@@ -14,10 +14,11 @@ use crate::utils::max_supported_sh_deg;
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GaussianSplat {
-    pub xyz: Point3<f32>,
+    //pub xyz: Point3<f32>,
+    pub covar_idx: u32,
     pub sh_idx: u32,
-    pub covariance: [f16; 6],
-    pub opacity: f32,
+    //pub covariance: [f16; 6],
+    //pub opacity: f32,
 }
 
 impl Default for GaussianSplat {
@@ -26,11 +27,26 @@ impl Default for GaussianSplat {
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Covar {
+    pub xyz: Point3<f32>,
+    pub opacity: f32,
+    pub covariance: [f16; 6],
+    pub fill: u32,
+}
+impl Default for Covar {
+    fn default() -> Self {
+        Covar::zeroed()
+    }
+}
+
 #[allow(dead_code)]
 pub struct PointCloud {
-    vertex_buffer: wgpu::Buffer,
-    sh_coef_buffer: wgpu::Buffer,
-    splat_2d_buffer: wgpu::Buffer,
+    vertex_buffer: wgpu::Buffer,        // contains only 2 indices: index to the sh and covar entries
+    sh_coef_buffer: wgpu::Buffer,       // contains the spherical harmonics
+    covars_buffer: wgpu::Buffer,        // contains the covariances (includes alpha value and splat center)
+    splat_2d_buffer: wgpu::Buffer,      
     bind_group: wgpu::BindGroup,
     pub render_bind_group: wgpu::BindGroup,
     points: Vec<GaussianSplat>,
@@ -46,10 +62,10 @@ pub struct PointCloud {
     sorter_int: wgpu::Buffer,              // internal memory storage (used for histgoram calcs)
     pub sorter_uni: wgpu::Buffer,          // uniform buffer information
     pub sorter_dis: wgpu::Buffer,          // dispatch buffer
-    pub sorter_dis_bg: wgpu::BindGroup, // sorter dispatch bind group (needed mainly for the preprocess pipeline to set the correct dispatch count in shader)
-    pub sorter_bg: wgpu::BindGroup,     // sorter bind group
+    pub sorter_dis_bg: wgpu::BindGroup,    // sorter dispatch bind group (needed mainly for the preprocess pipeline to set the correct dispatch count in shader)
+    pub sorter_bg: wgpu::BindGroup,        // sorter bind group
     pub sorter_render_bg: wgpu::BindGroup, // bind group only with the sorted indices for rendering
-    pub sorter_bg_pre: wgpu::BindGroup, // bind group for the preprocess (is the sorter_dis and sorter_bg merged as we only have a limited amount of bgs for the preprocessing)
+    pub sorter_bg_pre: wgpu::BindGroup,    // bind group for the preprocess (is the sorter_dis and sorter_bg merged as we only have a limited amount of bgs for the preprocessing)
 }
 
 impl Debug for PointCloud {
@@ -90,11 +106,16 @@ impl PointCloud {
             log::warn!("color sh degree (file: {file_sh_deg}) was decreased to degree {sh_deg} to fit the coefficients into memory")
         }
 
-        let (vertices, sh_coefs) = reader.read(sh_dtype, sh_deg)?;
+        let (vertices, sh_coefs, covars) = reader.read(sh_dtype, sh_deg)?;
 
         let sh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("sh coefs buffer"),
             contents: bytemuck::cast_slice(sh_coefs.as_slice()),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        let covars_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Covariances buffer"),
+            contents: bytemuck::cast_slice(covars.as_slice()),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -124,6 +145,10 @@ impl PointCloud {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
+                    resource: covars_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
                     resource: splat_2d_buffer.as_entire_binding(),
                 },
             ],
@@ -165,6 +190,7 @@ impl PointCloud {
         Ok(Self {
             vertex_buffer,
             sh_coef_buffer: sh_buffer,
+            covars_buffer,
             splat_2d_buffer,
             bind_group,
             render_bind_group,
@@ -232,6 +258,16 @@ impl PointCloud {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: false },
@@ -311,7 +347,7 @@ pub trait PointCloudReader {
         &mut self,
         sh_dtype: SHDType,
         sh_deg: u32,
-    ) -> Result<(Vec<GaussianSplat>, Vec<u8>), anyhow::Error>;
+    ) -> Result<(Vec<GaussianSplat>, Vec<u8>, Vec<Covar>), anyhow::Error>;
 
     fn file_sh_deg(&self) -> Result<u32, anyhow::Error>;
 

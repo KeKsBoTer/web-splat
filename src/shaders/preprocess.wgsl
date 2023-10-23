@@ -41,11 +41,19 @@ struct CameraUniforms {
 
 
 struct GaussianSplat {
-    xyz: vec3<f32>,
+    // xyz: vec3<f32>,
+    covar_idx: u32,
     sh_idx: u32,
     // 6 f16 values
-    cov: array<u32,3>,
-    opacity: f32
+    // cov: array<u32,3>,
+    // opacity: f32
+};
+
+struct Covar {
+    xyz: vec3<f32>,
+    opacity: f32,
+    cov: array<u32, 3>,
+    fill: u32,
 };
 
 struct Splats2D {
@@ -92,8 +100,10 @@ var<storage,read> vertices : array<GaussianSplat>;
 // sh coefs packed as 4x u8 = 1x u32
 @group(1) @binding(1) 
 var<storage,read> sh_coefs : array<u32>;
+@group(1) @binding(2)
+var<storage,read> covars : array<Covar>;
 
-@group(1) @binding(2) 
+@group(1) @binding(3) 
 var<storage,read_write> points_2d : array<Splats2D>;
 @group(2) @binding(0) 
 var<storage,read_write> indirect_draw_call : DrawIndirect;
@@ -194,9 +204,10 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
 
     let focal = camera.focal;
     let viewport = camera.viewport;
-    var vertex = vertices[idx];
+    let vertex = vertices[idx];
+    let covar = covars[vertex.covar_idx];
 
-    var camspace = camera.view * vec4<f32>(vertex.xyz, 1.);
+    var camspace = camera.view * vec4<f32>(covar.xyz, 1.);
     let pos2d = camera.proj * camspace;
     let bounds = 1.2 * pos2d.w;
 
@@ -205,9 +216,9 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
         return;
     }
 
-    let cov1: vec2<f32> = unpack2x16float(vertex.cov[0]);
-    let cov2: vec2<f32> = unpack2x16float(vertex.cov[1]);
-    let cov3: vec2<f32> = unpack2x16float(vertex.cov[2]);
+    let cov1: vec2<f32> = unpack2x16float(covar.cov[0]);
+    let cov2: vec2<f32> = unpack2x16float(covar.cov[1]);
+    let cov3: vec2<f32> = unpack2x16float(covar.cov[2]);
     let covPacked = array<f32,6>(cov1[0], cov1[1], cov2[0], cov2[1], cov3[0], cov3[1]);
     let Vrk = mat3x3<f32>(
         covPacked[0],
@@ -254,10 +265,10 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let v_center = pos2d.xyzw / pos2d.w;
 
     let camera_pos = camera.view_inv[3].xyz;
-    let dir = normalize(vertex.xyz - camera_pos);
+    let dir = normalize(covar.xyz - camera_pos);
     let color = vec4<f32>(
         saturate(evaluate_sh(dir, vertex.sh_idx, MAX_SH_DEG)),
-        vertex.opacity
+        covar.opacity
     );
 
     let store_idx = atomicAdd(&indirect_draw_call.instance_count, 1u);

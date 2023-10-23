@@ -36,6 +36,9 @@ async fn main() {
     let scene_file = opt.scene.map(|p| File::open(p).unwrap());
     
     println!("Using renderer {}", opt.renderer);
+    if opt.no_vsync {
+        println!("V-sync disabled");
+    }
 
     open_window(
         ply_file,

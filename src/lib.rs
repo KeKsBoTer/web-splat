@@ -198,7 +198,6 @@ impl WindowContext {
         .unwrap();
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
-        println!("render_config has: {}", render_config.renderer);
         let renderer = match render_config.renderer.as_str() {
             "rast" => Renderer::Rast(GaussianRenderer::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype())),
             "comp" => Renderer::Comp(GaussianRendererCompute::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype())),
