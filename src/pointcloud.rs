@@ -8,17 +8,16 @@ use std::io::{self, BufReader, Read, Seek};
 use std::mem;
 use wgpu::util::DeviceExt;
 
-use crate::gpu_rs::{GPURSSorter, GeneralInfo};
+use crate::gpu_rs::{GPURSSorter};
 use crate::utils::max_supported_sh_deg;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GaussianSplat {
-    //pub xyz: Point3<f32>,
+    pub xyz: Point3<f16>,
+    pub opacity: f16,
     pub geometry_idx: u32,
     pub sh_idx: u32,
-    //pub covariance: [f16; 6],
-    //pub opacity: f32,
 }
 
 impl Default for GaussianSplat {
@@ -30,10 +29,8 @@ impl Default for GaussianSplat {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GeometricInfo {
-    pub xyz: Point3<f32>,
-    pub opacity: f32,
     pub covariance: [f16; 6],
-    pub fill: u32,
+    pub padding: f32,
 }
 impl Default for GeometricInfo {
     fn default() -> Self {

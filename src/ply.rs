@@ -10,7 +10,7 @@ use std::{
 };
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt};
-use cgmath::{InnerSpace, Point3, Quaternion, Vector3};
+use cgmath::{InnerSpace, Point3, Vector4, Quaternion, Vector3};
 use log::info;
 
 use crate::{
@@ -94,12 +94,11 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
         let rot_q = Quaternion::new(rot_0, rot_1, rot_2, rot_3).normalize();
         
         let covar_idx = covars_buffer.len() as u32;
-        covars_buffer.push(GeometricInfo{xyz: Point3::from(pos), opacity, covariance: build_cov(rot_q, scale), ..Default::default()});
+        covars_buffer.push(GeometricInfo{covariance: build_cov(rot_q, scale), ..Default::default()});
 
         return GaussianSplat{
-            //xyz: Point3::from(pos),
-            //opacity,
-            //covariance: build_cov(rot_q, scale),
+            xyz: Point3::from(pos).cast().unwrap(),
+            opacity: f16::from_f32(opacity),
             geometry_idx: covar_idx,
             sh_idx: idx,
             ..Default::default()
