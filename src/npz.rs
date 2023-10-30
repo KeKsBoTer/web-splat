@@ -2,9 +2,10 @@ use std::io::{Read, Seek};
 
 use cgmath::{InnerSpace, Point3, Quaternion, Vector3};
 use npyz::npz::{self, NpzArchive};
+use half::f16;
 
 use crate::{
-    pointcloud::{GaussianSplat, PointCloudReader},
+    pointcloud::{GaussianSplat, PointCloudReader, GeometricInfo},
     utils::{build_cov, sh_deg_from_num_coefs, sh_num_coefficients},
     SHDType,
 };
@@ -39,18 +40,33 @@ impl<'a, R: Read + Seek> NpzReader<'a, R> {
         })
     }
 }
-
+fn get_npz_const<'a, T: npyz::Deserialize, R: Read + Seek>(npz_file: &mut NpzArchive<&'a mut R>, field_name: &str) -> Result<T, anyhow::Error> {
+    Ok(npz_file.by_name(field_name)
+        .unwrap()
+        .unwrap()
+        .into_vec()?
+        .as_slice()[0])
+}
 impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
     fn read(
         &mut self,
         sh_dtype: SHDType,
         sh_deg: u32,
-    ) -> Result<(Vec<GaussianSplat>, Vec<u8>), anyhow::Error> {
+    ) -> Result<(Vec<GaussianSplat>, Vec<u8>, Vec<GeometricInfo>), anyhow::Error> {
         if sh_dtype != SHDType::Float {
             return Err(anyhow::anyhow!("only Float sh coefs supported"));
         }
+        
+        let opacity_scale: f32 = get_npz_const(&mut self.npz_file, "opacity_scale").unwrap_or(1.0);
+        let opacity_zero_point: f32 = get_npz_const(&mut self.npz_file, "opacity_zero_point").unwrap_or(0.0);
+        let scaling_scale: f32 = get_npz_const(&mut self.npz_file, "scaling_scale").unwrap_or(1.0);
+        let scaling_zero_point: f32 = get_npz_const(&mut self.npz_file, "scaling_zero_point").unwrap_or(0.0);
+        let features_scale: f32 = get_npz_const(&mut self.npz_file, "features_scale").unwrap_or(1.0);
+        let features_zero_point: f32 = get_npz_const(&mut self.npz_file, "features_zero_point").unwrap_or(0.0);
+        let gaussian_scale: f32 = get_npz_const(&mut self.npz_file, "gaussian_scale").unwrap_or(1.0);
+        let gaussian_zero_point: f32 = get_npz_const(&mut self.npz_file, "gaussian_zero_point").unwrap_or(0.0);
 
-        let xyz: Vec<Point3<f32>> = self
+        let xyz: Vec<Point3<f16>> = self
             .npz_file
             .by_name("xyz")
             .unwrap()
@@ -58,7 +74,7 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
             .into_vec()?
             .as_slice()
             .chunks_exact(3)
-            .map(|c| Point3::new(c[0], c[1], c[2]))
+            .map(|c| Point3::new(c[0], c[1], c[2]).cast().unwrap())
             .collect();
 
         let scaling: Vec<Vector3<f32>> = self
@@ -67,10 +83,12 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
             .unwrap()
             .unwrap()
             .into_vec()?
-            .as_slice()
+            .as_slice().iter()
+            .map(|c: &f32| ((c - scaling_zero_point) * scaling_scale).exp()).into_iter()
             .chunks_exact(3)
-            .map(|c: &[f32]| Vector3::new(c[0].exp(), c[1].exp(), c[2].exp()))
+            .map(|c: &[f32]| Vector3::new(c[0], c[1], c[2]))
             .collect();
+        
         let rotation: Vec<Quaternion<f32>> = self
             .npz_file
             .by_name("rotation")
@@ -87,7 +105,10 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
             .by_name("opacity")
             .unwrap()
             .unwrap()
-            .into_vec()?;
+            .into_vec()?
+            .as_slie()
+            .map(|c| (c - opacity_zero_point) * opacity_scale)
+            .collect();
 
         let feature_indices: Option<Vec<i32>> =
             if let Some(idx_array) = self.npz_file.by_name("feature_indices")? {
