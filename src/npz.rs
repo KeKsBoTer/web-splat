@@ -20,11 +20,8 @@ impl<'a, R: Read + Seek> NpzReader<'a, R> {
     pub fn new(reader: &'a mut R) -> Result<Self, anyhow::Error> {
         let mut npz_file = npz::NpzArchive::new(reader)?;
 
-        let mut sh_deg = npz_file
-            .by_name("features_dc")?
-            .map(|_| 1u32)
-            .ok_or(anyhow::anyhow!("missing array 'features_dc'"))?;
-        if let Some(rest) = npz_file.by_name("features_rest")? {
+        let mut sh_deg = 0;
+        if let Some(rest) = npz_file.by_name("features")? {
             sh_deg = sh_deg_from_num_coefs(rest.shape()[1] as u32 + 1)
                 .ok_or(anyhow::anyhow!("num sh coefs not valid"))?;
         }

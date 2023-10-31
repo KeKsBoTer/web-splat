@@ -147,6 +147,7 @@ impl WindowContext {
         window: Window,
         event_loop: &EventLoop<()>,
         pc_file: R,
+        pc_data_type: PCDataType,
         render_config: RenderConfig,
     ) -> Self {
         let size = window.inner_size();
@@ -523,8 +524,12 @@ pub fn smoothstep(x: f32) -> f32 {
     return x * x * (3.0 - 2.0 * x);
 }
 
+pub enum PCDataType {
+    PLY,
+    NPZ,
+}
 
-pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(file: R, scene_file: Option<R>
+pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(file: R, pc_data_type: PCDataType, scene_file: Option<R>
     ,config: RenderConfig) {
         #[cfg(not(target_arch = "wasm32"))]
     env_logger::init();
@@ -567,7 +572,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(file: R, scene_
                 .expect("couldn't append canvas to document body");
         }
 
-    let mut state = WindowContext::new(window, &event_loop, file, config).await;
+    let mut state = WindowContext::new(window, &event_loop, file, pc_data_type, config).await;
 
     if let Some(scene) = scene {
         let init_camera = scene.camera(0);

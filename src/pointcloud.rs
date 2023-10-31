@@ -10,6 +10,7 @@ use wgpu::util::DeviceExt;
 
 use crate::gpu_rs::{GPURSSorter};
 use crate::utils::max_supported_sh_deg;
+use crate::PCDataType;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -73,15 +74,32 @@ impl Debug for PointCloud {
     }
 }
 
+fn ply_header_info<R: io::BufRead + io::Seek>(buf_reader: R) -> (u32, usize){
+    let mut reader = crate::ply::PlyReader::new(&mut buf_reader);
+    (reader.file_sh_deg()?, reader.num_points()?)    
+}
+#[cfg(features="npz")]
+fn npz_header_info<R: io::BufRead + io::Seek>(buf_reader: R) -> (u32, usize){
+    let mut reader = crate::npz::NpzReader::new(&mut buf_reader);
+    (reader.file_sh_deg(), reader.num_points())    
+}
+
 impl PointCloud {
     pub fn load<R: Read + Seek>(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         f: R,
+        pc_data_type: PCDataType,
         sh_dtype: SHDType,
         max_sh_deg: Option<u32>,
     ) -> Result<Self, anyhow::Error> {
         let mut reader = BufReader::new(f);
+        let (file_sh_deg, num_points) = match pc_data_type {
+            PCDataType::PLY => ply_header_info(reader),
+            #[cfg(features="npz")]
+            PCDataType::NPZ => npz_header_info(buf_reader),
+            _ => return Err(anyhow::anyhow!("Cannot parse data from point cloud data type")), 
+        };
         let mut reader = crate::ply::PlyReader::new(&mut reader)?;
 
         let file_sh_deg = reader.file_sh_deg()?;
