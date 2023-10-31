@@ -22,7 +22,7 @@ impl<'a, R: Read + Seek> NpzReader<'a, R> {
 
         let mut sh_deg = 0;
         if let Some(rest) = npz_file.by_name("features")? {
-            sh_deg = sh_deg_from_num_coefs(rest.shape()[1] as u32 + 1)
+            sh_deg = sh_deg_from_num_coefs(rest.shape()[1] as u32)// + 1)
                 .ok_or(anyhow::anyhow!("num sh coefs not valid"))?;
         }
         let num_points = npz_file
@@ -38,9 +38,8 @@ impl<'a, R: Read + Seek> NpzReader<'a, R> {
     }
 }
 fn get_npz_const<'a, T: npyz::Deserialize + Copy, R: Read + Seek>(npz_file: &mut NpzArchive<&'a mut R>, field_name: &str) -> Result<T, anyhow::Error> {
-    Ok(npz_file.by_name(field_name)
-        .unwrap()
-        .unwrap()
+    Ok(npz_file.by_name(field_name)?
+        .ok_or(anyhow::anyhow!("field not present in npz file"))?
         .into_vec::<T>()?
         [0].clone())
 }
@@ -50,10 +49,6 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
         sh_dtype: SHDType,
         sh_deg: u32,
     ) -> Result<(Vec<GaussianSplat>, Vec<u8>, Vec<GeometricInfo>), anyhow::Error> {
-        if sh_dtype != SHDType::Float {
-            return Err(anyhow::anyhow!("only Float sh coefs supported"));
-        }
-        
         let opacity_scale: f32 = get_npz_const(&mut self.npz_file, "opacity_scale").unwrap_or(1.0);
         let opacity_zero_point: f32 = get_npz_const(&mut self.npz_file, "opacity_zero_point").unwrap_or(0.0);
         let scaling_scale: f32 = get_npz_const(&mut self.npz_file, "scaling_scale").unwrap_or(1.0);

@@ -193,6 +193,7 @@ impl WindowContext {
             &device,
             &wgpu_context.queue,
             pc_file,
+            pc_data_type,
             render_config.sh_dtype,
             Some(render_config.max_sh_deg),
         )

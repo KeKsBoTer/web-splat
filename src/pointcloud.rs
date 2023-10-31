@@ -9,6 +9,9 @@ use std::mem;
 use wgpu::util::DeviceExt;
 
 use crate::gpu_rs::{GPURSSorter};
+use crate::ply::PlyReader;
+#[cfg(feature="npz")]
+use crate::npz::NpzReader;
 use crate::utils::max_supported_sh_deg;
 use crate::PCDataType;
 
@@ -74,14 +77,14 @@ impl Debug for PointCloud {
     }
 }
 
-fn ply_header_info<R: io::BufRead + io::Seek>(buf_reader: R) -> (u32, usize){
-    let mut reader = crate::ply::PlyReader::new(&mut buf_reader);
-    (reader.file_sh_deg()?, reader.num_points()?)    
+fn ply_header_info<R: io::BufRead + io::Seek>(buf_reader:&mut R) -> (u32, usize){
+    let mut reader = crate::ply::PlyReader::new(buf_reader).unwrap();
+    (reader.file_sh_deg().unwrap(), reader.num_points().unwrap())    
 }
-#[cfg(features="npz")]
-fn npz_header_info<R: io::BufRead + io::Seek>(buf_reader: R) -> (u32, usize){
-    let mut reader = crate::npz::NpzReader::new(&mut buf_reader);
-    (reader.file_sh_deg(), reader.num_points())    
+#[cfg(feature="npz")]
+fn npz_header_info<R: io::BufRead + io::Seek>(buf_reader:&mut R) -> (u32, usize){
+    let mut reader = crate::npz::NpzReader::new(buf_reader).unwrap();
+    (reader.file_sh_deg().unwrap(), reader.num_points().unwrap())    
 }
 
 impl PointCloud {
@@ -95,16 +98,11 @@ impl PointCloud {
     ) -> Result<Self, anyhow::Error> {
         let mut reader = BufReader::new(f);
         let (file_sh_deg, num_points) = match pc_data_type {
-            PCDataType::PLY => ply_header_info(reader),
-            #[cfg(features="npz")]
-            PCDataType::NPZ => npz_header_info(buf_reader),
+            PCDataType::PLY => ply_header_info(&mut reader),
+            #[cfg(feature="npz")]
+            PCDataType::NPZ => npz_header_info(&mut reader),
             _ => return Err(anyhow::anyhow!("Cannot parse data from point cloud data type")), 
         };
-        let mut reader = crate::ply::PlyReader::new(&mut reader)?;
-
-        let file_sh_deg = reader.file_sh_deg()?;
-        let num_points = reader.num_points()?;
-
         let max_buffer_size = device
             .limits()
             .max_buffer_size
@@ -121,7 +119,13 @@ impl PointCloud {
             log::warn!("color sh degree (file: {file_sh_deg}) was decreased to degree {sh_deg} to fit the coefficients into memory")
         }
 
-        let (vertices, sh_coefs, covars) = reader.read(sh_dtype, sh_deg)?;
+        reader.seek(std::io::SeekFrom::Start(0)); // have to reset reader to start of file
+        let (vertices, sh_coefs, covars) = match pc_data_type {
+            PCDataType::PLY => PlyReader::new(reader).unwrap().read(sh_dtype, sh_deg)?,
+            #[cfg(feature="npz")]
+            PCDataType::NPZ => NpzReader::new(&mut reader).unwrap().read(sh_dtype, sh_deg)?,
+            _ => return Err(anyhow::anyhow!("Unknown point cloud data type")),
+        };
 
         let sh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("sh coefs buffer"),

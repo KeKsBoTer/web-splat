@@ -1,6 +1,6 @@
 use clap::Parser;
 use std::{fs::File, path::PathBuf};
-use web_splats::{open_window, RenderConfig, SHDType};
+use web_splats::{open_window, RenderConfig, SHDType, PCDataType};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -34,7 +34,15 @@ async fn main() {
     // we dont need to close these
     // rust is smart enough to close/drop them once they are no longer needed
     // thank you rust <3
-    let ply_file = File::open(opt.input).unwrap();
+    print!("Hello from downtown {}", opt.input.as_path().extension().unwrap().to_str().unwrap());
+    let test = opt.input.as_path().extension().unwrap().to_str().unwrap();
+    let data_type = match opt.input.as_path().extension().unwrap().to_str().unwrap() {
+        "ply" => PCDataType::PLY,
+        #[cfg(feature="npz")]
+        "npz" => PCDataType::NPZ,
+        _ => panic!("Unknown data type for input file"),
+    };
+    let data_file = File::open(opt.input).unwrap();
     let scene_file = opt.scene.map(|p| File::open(p).unwrap());
     
     println!("Using renderer {}", opt.renderer);
@@ -43,7 +51,8 @@ async fn main() {
     }
 
     open_window(
-        ply_file,
+        data_file,
+        data_type,
         scene_file,
         RenderConfig {
             max_sh_deg: opt.max_sh_deg,
