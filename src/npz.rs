@@ -1,5 +1,6 @@
 use std::io::{Read, Seek};
 
+use byteorder::{ReadBytesExt, LittleEndian};
 use cgmath::{InnerSpace, Point3, Quaternion, Vector3};
 use npyz::npz::{self, NpzArchive};
 use half::f16;
@@ -9,6 +10,29 @@ use crate::{
     utils::{build_cov, sh_deg_from_num_coefs, sh_num_coefficients},
     SHDType,
 };
+#[derive(Debug, PartialEq, Clone)]
+struct f16d(f16);
+struct HalfReader;
+impl npyz::TypeRead for HalfReader {
+    type Value = f16d;
+
+    #[inline]
+    fn read_one<R: Read>(&self, mut reader: R) -> std::io::Result<Self::Value> {
+        Ok(f16d{0: f16::from_bits(reader.read_u16::<LittleEndian>()?)})
+    }
+}
+impl npyz::Deserialize for f16d {
+    type TypeReader = HalfReader;
+
+    fn reader(dtype: &npyz::DType) -> Result<Self::TypeReader, npyz::DTypeError> {
+        if true {
+            Ok(HalfReader)
+        } else {
+            Err(npyz::DTypeError::custom("Vector5 only supports '<i4' format!"))
+        }
+    }
+}
+
 
 pub struct NpzReader<'a, R: Read + Seek> {
     npz_file: NpzArchive<&'a mut R>,
@@ -61,6 +85,7 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
         println!("npz importer: o_s {opacity_scale}, o_zp {opacity_zero_point}, s_s {scaling_scale}, s_zp {scaling_zero_point},
                 f_s: {features_scale}, f_zp {features_zero_point}, g_s {gaussian_scale}, g_zp {gaussian_zero_point}");
 
+        println!("{:?}", self.npz_file.by_name("xyz").unwrap().unwrap().dtype());
         let xyz: Vec<Point3<f16>> = self
             .npz_file
             .by_name("xyz")
@@ -69,8 +94,9 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
             .into_vec()?
             .as_slice()
             .chunks_exact(3)
-            .map(|c: &[u16]| Point3::new(f16::from_bits(c[0]), f16::from_bits(c[1]), f16::from_bits(c[2])).cast().unwrap())
+            .map(|c: &[f16d]| Point3::new(c[0].0, c[1].0, c[2].0).cast().unwrap())
             .collect();
+        println!("parsing position done");
 
         let scaling: Vec<Vector3<f32>> = self
             .npz_file
