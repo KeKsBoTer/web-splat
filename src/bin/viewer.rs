@@ -34,8 +34,6 @@ async fn main() {
     // we dont need to close these
     // rust is smart enough to close/drop them once they are no longer needed
     // thank you rust <3
-    print!("Hello from downtown {}", opt.input.as_path().extension().unwrap().to_str().unwrap());
-    let test = opt.input.as_path().extension().unwrap().to_str().unwrap();
     let data_type = match opt.input.as_path().extension().unwrap().to_str().unwrap() {
         "ply" => PCDataType::PLY,
         #[cfg(feature="npz")]
