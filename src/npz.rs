@@ -184,10 +184,12 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
             }).collect();
 
         let mut sh_buffer = Vec::new();
+        
+        let sh_coeffs_length = num_sh_coeffs as usize * 3;
         for i in 0..features.len() {
-            let f = i / (num_sh_coeffs * 3) as usize;
+            let f = i % sh_coeffs_length;
             let idx = f as u32 / 3;
-            sh_dtype.write_to(&mut sh_buffer, features[i], idx);
+            sh_dtype.write_to(&mut sh_buffer, features[i], idx).unwrap();
         }
         let covar_buffer = (0..scaling.len())
             .map(|i| GeometricInfo{covariance: build_cov(rotation[i], scaling[i]), ..Default::default()}).collect();
