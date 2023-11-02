@@ -527,6 +527,7 @@ pub fn smoothstep(x: f32) -> f32 {
 
 pub enum PCDataType {
     PLY,
+    #[cfg(feature="npz")]
     NPZ,
 }
 
