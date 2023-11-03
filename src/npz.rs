@@ -81,6 +81,8 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
         let rotation_zero_point: f32 = get_npz_const::<i32, _>(&mut self.npz_file, "rotation_zero_point").unwrap_or(0) as f32;
         let features_scale: f32 = get_npz_const(&mut self.npz_file, "features_scale").unwrap_or(1.0);
         let features_zero_point: f32 = get_npz_const::<i32, _>(&mut self.npz_file, "features_zero_point").unwrap_or(0) as f32;
+        let scaling_factor_scale: f32 = get_npz_const::<i32, _>(&mut self.npz_file, "scaling_factor_scale").unwrap_or(0) as f32;
+        let scaling_factor_zero_point: f32 = get_npz_const::<i32, _>(&mut self.npz_file, "scaling_factor_zero_point").unwrap_or(0) as f32;
         //let gaussian_scale: f32 = get_npz_const(&mut self.npz_file, "gaussian_scale").unwrap_or(1.0);
         //let gaussian_zero_point: f32 = get_npz_const::<i32, _>(&mut self.npz_file, "gaussian_zero_point").unwrap_or(0) as f32;
         
@@ -100,7 +102,7 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
             .collect();
         //println!("parsing position done, first eleme: {:?} {:?} {:?}", xyz[0].x, xyz[0].y, xyz[0].z);
 
-        let scaling: Vec<Vector3<f32>> = self
+        let mut scaling: Vec<Vector3<f32>> = self
             .npz_file
             .by_name("scaling")
             .unwrap()
@@ -112,6 +114,11 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
             .map(|c: &[f32]| Vector3::new(c[0], c[1], c[2]))
             .collect();
         //println!("parsing scaling done, {:?}", scaling[0]);
+        
+        if let Some(scaling_factor) = self.npz_file.by_name("scaling_factor")? {
+            scaling_factor.into_vec::<i8>()?.as_slice().iter().enumerate().
+            map(|(i, e)| scaling[i] = scaling[i].normalize() * ((*e as f32 - scaling_factor_zero_point) * scaling_factor_scale).exp());
+        }
         
         let rotation: Vec<Quaternion<f32>> = self
             .npz_file
