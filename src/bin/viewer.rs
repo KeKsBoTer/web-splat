@@ -27,7 +27,7 @@ struct Opt {
     renderer: String,
     
     /// decide if the data should be used in compressed format for rendering
-    #[arg(long, default_value_t = bool(false))]
+    #[arg(long, default_value_t = false)]
     use_compressed_data: bool,
 }
 

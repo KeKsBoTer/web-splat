@@ -3,6 +3,7 @@ use byteorder::{LittleEndian, WriteBytesExt};
 use cgmath::{Point3, Vector4};
 use clap::ValueEnum;
 use half::f16;
+use wgpu::Features;
 use std::fmt::{Debug, Display};
 use std::io::{self, BufReader, Read, Seek};
 use std::mem;
@@ -56,11 +57,11 @@ pub struct PointCloud {
     opacity: Option<wgpu::Buffer>,
     features_indices: Option<wgpu::Buffer>,
     gaussian_indices: Option<wgpu::Buffer>,
-    pc_unform_infos: Option<wgpu::Buffer>,
+    pc_uniform_infos: Option<wgpu::Buffer>,
 
     bind_group: wgpu::BindGroup,
     pub render_bind_group: wgpu::BindGroup,
-    points: Vec<GaussianSplat>,
+    points: Option<Vec<GaussianSplat>>,
     num_points: u32,
     sh_deg: u32,
     sh_dtype: SHDType,
@@ -156,10 +157,9 @@ impl PointCloud {
 
         let mut vertex_buffer;
         let mut sh_buffer;
-        let mut covars_buffer;        
+        let mut covars_buffer = None;        
         let mut bind_group;
-        let mut render_bind_group;
-        let mut vertices;
+        let mut vertices = None;
         let mut sh_coefs;
         let mut covars;
         
@@ -178,7 +178,7 @@ impl PointCloud {
                 PCDataType::NPZ => NpzReader::new(&mut reader).unwrap().read(sh_dtype, sh_deg)?,
                 _ => return Err(anyhow::anyhow!("Unknown point cloud data type")),
             };
-            vertices = vertices_t;
+            vertices = Some(vertices_t);
             sh_coefs = sh_coefs_t;
             covars = covars_t;
 
@@ -187,14 +187,14 @@ impl PointCloud {
                 contents: bytemuck::cast_slice(sh_coefs.as_slice()),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
-            covars_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            covars_buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Covariances buffer"),
                 contents: bytemuck::cast_slice(covars.as_slice()),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            });
+            }));
             vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("3d gaussians buffer"),
-                contents: bytemuck::cast_slice(vertices.as_slice()),
+                contents: bytemuck::cast_slice(vertices.as_ref().expect("missing vertices").as_slice()),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             });
 
@@ -212,7 +212,7 @@ impl PointCloud {
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: covars_buffer.as_entire_binding(),
+                        resource: covars_buffer.as_ref().expect("missing covars buffer").as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
@@ -293,11 +293,11 @@ impl PointCloud {
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: rotation_buffer.expect("missing rotation buffer").as_entire_binding(),
+                        resource: rotation_buffer.as_ref().expect("missing rotation buffer").as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
-                        resource: opacity_buffer.expect("missing opacity buffer").as_entire_binding(),
+                        resource: opacity_buffer.as_ref().expect("missing opacity buffer").as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 4,
@@ -305,11 +305,11 @@ impl PointCloud {
                     },
                     wgpu::BindGroupEntry {
                         binding: 5,
-                        resource: feature_indices_buffer.expect("missing feature indices bufer").as_entire_binding(),
+                        resource: feature_indices_buffer.as_ref().expect("missing feature indices bufer").as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 6,
-                        resource: gaussian_indices_buffer.expect("missing gaussian indices buffer").as_entire_binding(),
+                        resource: gaussian_indices_buffer.as_ref().expect("missing gaussian indices buffer").as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 7,
@@ -317,7 +317,7 @@ impl PointCloud {
                     },
                     wgpu::BindGroupEntry {
                         binding: 8,
-                        resource: pc_uniform_infos_buffer.expect("missing pc uniform infos buffer").as_entire_binding(),
+                        resource: pc_uniform_infos_buffer.as_ref().expect("missing pc uniform infos buffer").as_entire_binding(),
                     },
                 ],
             });
@@ -353,6 +353,15 @@ impl PointCloud {
             sh_coef_buffer: sh_buffer,
             covars_buffer,
             splat_2d_buffer,
+            
+            scaling: scaling_buffer,
+            scaling_factor: scaling_factor_buffer,
+            rotation: rotation_buffer,
+            opacity: opacity_buffer,
+            features_indices: feature_indices_buffer,
+            gaussian_indices: gaussian_indices_buffer,
+            pc_uniform_infos: pc_uniform_infos_buffer,
+            
             bind_group,
             render_bind_group,
             num_points: num_points as u32,
@@ -379,7 +388,7 @@ impl PointCloud {
     }
 
     pub fn points(&self) -> &Vec<GaussianSplat> {
-        &self.points
+        &self.points.as_ref().expect("Points are not available")
     }
     pub fn sh_deg(&self) -> u32 {
         self.sh_deg
@@ -394,7 +403,7 @@ impl PointCloud {
     }
 
     pub fn bind_group_layout(device: &wgpu::Device, data_compressed: bool) -> wgpu::BindGroupLayout {
-        if data_compressed {
+        if !data_compressed {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("point cloud bind group layout"),
                 entries: &[
