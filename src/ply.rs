@@ -14,7 +14,7 @@ use cgmath::{InnerSpace, Point3, Vector4, Quaternion, Vector3};
 use log::info;
 
 use crate::{
-    pointcloud::{GaussianSplat, PointCloudReader, GeometricInfo},
+    pointcloud::{GaussianSplat, PointCloudReader, GeometricInfo, PCCompressed},
     utils::{build_cov, sh_deg_from_num_coefs, sh_num_coefficients, sigmoid},
     SHDType,
 };
@@ -140,6 +140,13 @@ impl<R: io::BufRead + io::Seek> PointCloudReader for PlyReader<R> {
             (Instant::now() - start).as_millis()
         );
         return Ok((vertices, sh_coef_buffer, covar_buffer));
+    }
+    
+    fn read_compressed(
+        &mut self,
+        sh_deg: u32,
+    ) -> Result<PCCompressed, anyhow::Error> {
+        Err(anyhow::anyhow!("PLY compressed read not yet implemented"))
     }
 
     fn file_sh_deg(&self) -> Result<u32, anyhow::Error> {

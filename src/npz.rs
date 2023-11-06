@@ -6,7 +6,7 @@ use npyz::npz::{self, NpzArchive};
 use half::f16;
 
 use crate::{
-    pointcloud::{GaussianSplat, PointCloudReader, GeometricInfo},
+    pointcloud::{GaussianSplat, PointCloudReader, GeometricInfo, PCCompressed, CompressedScaleZeroPoint},
     utils::{build_cov, sh_deg_from_num_coefs, sh_num_coefficients},
     SHDType,
 };
@@ -202,6 +202,114 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
             .map(|i| GeometricInfo{covariance: build_cov(rotation[i], scaling[i]), ..Default::default()}).collect();
 
         return Ok((vertices, sh_buffer, covar_buffer));
+    }
+
+    fn read_compressed(
+        &mut self,
+        sh_deg: u32,
+    ) -> Result<PCCompressed, anyhow::Error> {
+        let opacity_scale: f32 = get_npz_const(&mut self.npz_file, "opacity_scale").unwrap_or(1.0);
+        let opacity_zero_point: i32 = get_npz_const::<i32, _>(&mut self.npz_file, "opacity_zero_point").unwrap_or(0);
+        let scaling_scale: f32 = get_npz_const(&mut self.npz_file, "scaling_scale").unwrap_or(1.0);
+        let scaling_zero_point: i32 = get_npz_const::<i32, _>(&mut self.npz_file, "scaling_zero_point").unwrap_or(0);
+        let rotation_scale: f32 = get_npz_const(&mut self.npz_file, "rotation_scalae").unwrap_or(1.0);
+        let rotation_zero_point: i32 = get_npz_const::<i32, _>(&mut self.npz_file, "rotation_zero_point").unwrap_or(0);
+        let features_scale: f32 = get_npz_const(&mut self.npz_file, "features_scale").unwrap_or(1.0);
+        let features_zero_point: i32 = get_npz_const::<i32, _>(&mut self.npz_file, "features_zero_point").unwrap_or(0);
+        let scaling_factor_scale: f32 = get_npz_const::<i32, _>(&mut self.npz_file, "scaling_factor_scale").unwrap_or(0) as f32;
+        let scaling_factor_zero_point: i32 = get_npz_const::<i32, _>(&mut self.npz_file, "scaling_factor_zero_point").unwrap_or(0);
+
+        let xyz: Vec<f16> = self
+            .npz_file
+            .by_name("xyz")
+            .unwrap()
+            .unwrap()
+            .into_vec()?
+            .as_slice().iter()
+            .map(|c: &f16d| c.0)
+            .collect();
+
+        let mut scaling: Vec<i8> = self
+            .npz_file
+            .by_name("scaling")
+            .unwrap()
+            .unwrap()
+            .into_vec()?;
+        
+        let scaling_factor = 
+            match self.npz_file.by_name("scaling_factor")? {
+                Some(scaling_factor) => Some(scaling_factor.into_vec::<i8>()?),
+                None => None,
+            };
+        
+        let rotation: Vec<i8> = self
+            .npz_file
+            .by_name("rotation")
+            .unwrap()
+            .unwrap()
+            .into_vec()?;
+
+        let opacity: Vec<i8> = self
+            .npz_file
+            .by_name("opacity")
+            .unwrap()
+            .unwrap()
+            .into_vec()?;
+        
+        let feature_indices: Vec<u32> = if let Some(idx_array) = self.npz_file.by_name("feature_indices")? {
+                                            idx_array.into_vec()?.as_slice().iter().map(|c: &i32| *c as u32).collect::<Vec<u32>>()
+                                        } else {
+                                            (0..xyz.len() as u32).collect()
+                                        };
+
+        let gaussian_indices: Vec<u32> = if let Some(idx_array) = self.npz_file.by_name("gaussian_indices")? {
+                                            idx_array.into_vec()?.as_slice().iter().map(|c: &i32| *c as u32).collect::<Vec<u32>>()
+                                        } else {
+                                            (0..xyz.len() as u32).collect()
+                                        };
+
+        let features: Vec<i8> = self
+            .npz_file
+            .by_name("features")
+            .unwrap()
+            .unwrap()
+            .into_vec()?;
+
+        let num_points: usize = xyz.len();
+        let num_sh_coeffs = sh_num_coefficients(sh_deg);
+        if true {
+            // safety checks for the feature indices and gaussian indices
+            assert_eq!(num_points, feature_indices.len());
+            assert_eq!(num_points, gaussian_indices.len());
+            assert_eq!(scaling.len(), rotation.len());
+            let features_len = features.len() / 48;
+            let gaussian_len = scaling.len();
+            assert_eq!(*feature_indices.iter().max().unwrap(), features_len as u32 - 1);
+            assert_eq!(*gaussian_indices.iter().max().unwrap(), gaussian_len as u32 - 1);
+        }
+
+        return Ok(PCCompressed{
+            compressed_s_zp: CompressedScaleZeroPoint {
+                opacity_s: opacity_scale,
+                opacity_zp: opacity_zero_point,
+                scaling_s: scaling_scale,
+                scaling_zp: scaling_zero_point,
+                rotation_s: rotation_scale,
+                rotation_zp: rotation_zero_point,
+                features_s: features_scale,
+                features_zp: features_zero_point,
+                scaling_factor_s: scaling_factor_scale,
+                scaling_factor_zp: scaling_factor_zero_point,
+            },
+            xyz,
+            scaling,
+            scaling_factor,
+            rotation,
+            opacity,
+            features,
+            feature_indices,
+            gaussian_indices,
+        });
     }
 
     fn file_sh_deg(&self) -> Result<u32, anyhow::Error> {

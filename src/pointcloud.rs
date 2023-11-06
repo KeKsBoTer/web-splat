@@ -46,8 +46,18 @@ impl Default for GeometricInfo {
 pub struct PointCloud {
     vertex_buffer: wgpu::Buffer,        // contains only 2 indices: index to the sh and covar entries
     sh_coef_buffer: wgpu::Buffer,       // contains the spherical harmonics
-    covars_buffer: wgpu::Buffer,        // contains the covariances (includes alpha value and splat center)
+    covars_buffer: Option<wgpu::Buffer>,        // contains the covariances (includes alpha value and splat center)
     splat_2d_buffer: wgpu::Buffer,      
+    
+    // extra buffers needed for compressed rendering
+    scaling: Option<wgpu::Buffer>,
+    scaling_factor: Option<wgpu::Buffer>,
+    rotation: Option<wgpu::Buffer>,
+    opacity: Option<wgpu::Buffer>,
+    features_indices: Option<wgpu::Buffer>,
+    gaussian_indices: Option<wgpu::Buffer>,
+    pc_unform_infos: Option<wgpu::Buffer>,
+
     bind_group: wgpu::BindGroup,
     pub render_bind_group: wgpu::BindGroup,
     points: Vec<GaussianSplat>,
@@ -87,12 +97,19 @@ fn npz_header_info<R: io::BufRead + io::Seek>(buf_reader:&mut R) -> (u32, usize)
     (reader.file_sh_deg().unwrap(), reader.num_points().unwrap())    
 }
 
+unsafe fn to_u8_slice<T: Sized>(p: &T) -> &[u8] {
+    ::core::slice::from_raw_parts(
+        (p as *const T) as  *const u8,
+        ::core::mem::size_of::<T>())
+}
+
 impl PointCloud {
     pub fn load<R: Read + Seek>(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         f: R,
         pc_data_type: PCDataType,
+        load_compressed: bool,
         sh_dtype: SHDType,
         max_sh_deg: Option<u32>,
     ) -> Result<Self, anyhow::Error> {
@@ -119,59 +136,15 @@ impl PointCloud {
             log::warn!("color sh degree (file: {file_sh_deg}) was decreased to degree {sh_deg} to fit the coefficients into memory")
         }
 
-        reader.seek(std::io::SeekFrom::Start(0)); // have to reset reader to start of file
-        let (vertices, sh_coefs, covars) = match pc_data_type {
-            PCDataType::PLY => PlyReader::new(reader).unwrap().read(sh_dtype, sh_deg)?,
-            #[cfg(feature="npz")]
-            PCDataType::NPZ => NpzReader::new(&mut reader).unwrap().read(sh_dtype, sh_deg)?,
-            _ => return Err(anyhow::anyhow!("Unknown point cloud data type")),
-        };
-
-        let sh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("sh coefs buffer"),
-            contents: bytemuck::cast_slice(sh_coefs.as_slice()),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
-        let covars_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Covariances buffer"),
-            contents: bytemuck::cast_slice(covars.as_slice()),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("3d gaussians buffer"),
-            contents: bytemuck::cast_slice(vertices.as_slice()),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
+        let bind_group_layout = Self::bind_group_layout(device, load_compressed);
 
         let splat_2d_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("2d gaussians buffer"),
-            size: (vertices.len() * mem::size_of::<Splat2D>()) as u64,
+            size: (num_points * mem::size_of::<Splat2D>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("point cloud bind group"),
-            layout: &Self::bind_group_layout(device),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: vertex_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: sh_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: covars_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: splat_2d_buffer.as_entire_binding(),
-                },
-            ],
-        });
         let render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("point cloud rendering bind group"),
             layout: &Self::bind_group_layout_render(device),
@@ -180,6 +153,175 @@ impl PointCloud {
                 resource: splat_2d_buffer.as_entire_binding(),
             }],
         });
+
+        let mut vertex_buffer;
+        let mut sh_buffer;
+        let mut covars_buffer;        
+        let mut bind_group;
+        let mut render_bind_group;
+        let mut vertices;
+        let mut sh_coefs;
+        let mut covars;
+        
+        let mut scaling_buffer = None;
+        let mut scaling_factor_buffer = None;
+        let mut rotation_buffer = None;
+        let mut opacity_buffer = None;
+        let mut feature_indices_buffer = None;
+        let mut gaussian_indices_buffer = None;
+        let mut pc_uniform_infos_buffer = None;
+        if !load_compressed {
+            reader.seek(std::io::SeekFrom::Start(0)); // have to reset reader to start of file
+            let (vertices_t, sh_coefs_t, covars_t) = match pc_data_type {
+                PCDataType::PLY => PlyReader::new(reader).unwrap().read(sh_dtype, sh_deg)?,
+                #[cfg(feature="npz")]
+                PCDataType::NPZ => NpzReader::new(&mut reader).unwrap().read(sh_dtype, sh_deg)?,
+                _ => return Err(anyhow::anyhow!("Unknown point cloud data type")),
+            };
+            vertices = vertices_t;
+            sh_coefs = sh_coefs_t;
+            covars = covars_t;
+
+            sh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("sh coefs buffer"),
+                contents: bytemuck::cast_slice(sh_coefs.as_slice()),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+            covars_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Covariances buffer"),
+                contents: bytemuck::cast_slice(covars.as_slice()),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+            vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("3d gaussians buffer"),
+                contents: bytemuck::cast_slice(vertices.as_slice()),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+
+            bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("point cloud bind group"),
+                layout: &bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: vertex_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: sh_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: covars_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: splat_2d_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+        }
+        else {
+            reader.seek(std::io::SeekFrom::Start(0)); // have to reset reader to start of file
+            let data = match pc_data_type {
+                PCDataType::PLY => PlyReader::new(reader).unwrap().read_compressed(sh_deg)?,
+                #[cfg(feature="npz")]
+                PCDataType::NPZ => NpzReader::new(&mut reader).unwrap().read_compressed(sh_deg)?,
+                _ => return Err(anyhow::anyhow!("Unknown point cloud data type")),
+            };
+
+            sh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("sh coefs buffer"),
+                contents: bytemuck::cast_slice(data.features.as_slice()),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+            let scaling_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Covariances buffer"),
+                contents: bytemuck::cast_slice(data.scaling.as_slice()),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+            let scaling_factor_buffer = match data.scaling_factor{
+                Some(scale) => Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Scale factor"),
+                    contents: bytemuck::cast_slice(scale.as_slice()),
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                })),
+                None => None
+            };
+            rotation_buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Rotation buffer"),
+                contents: bytemuck::cast_slice(data.rotation.as_slice()),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            }));
+            vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("3d positions buffer"),
+                contents: bytemuck::cast_slice(data.xyz.as_slice()),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+            opacity_buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor{
+                label: Some("opacity buffer"),
+                contents: bytemuck::cast_slice(data.opacity.as_slice()),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            }));
+            feature_indices_buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("feature indices"),
+                contents: bytemuck::cast_slice(data.feature_indices.as_slice()),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            }));
+            gaussian_indices_buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("gaussian indices"),
+                contents: bytemuck::cast_slice(data.feature_indices.as_slice()),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            }));
+            pc_uniform_infos_buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("point cloud uniforms"),
+                contents: unsafe {to_u8_slice(&data.compressed_s_zp)},
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            }));
+
+            bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("point cloud cpmoressed bind group"),
+                layout: &bind_group_layout ,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: vertex_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: scaling_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: rotation_buffer.expect("missing rotation buffer").as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: opacity_buffer.expect("missing opacity buffer").as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: sh_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: feature_indices_buffer.expect("missing feature indices bufer").as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: gaussian_indices_buffer.expect("missing gaussian indices buffer").as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: splat_2d_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: pc_uniform_infos_buffer.expect("missing pc uniform infos buffer").as_entire_binding(),
+                    },
+                ],
+            });
+        }
 
         let sorter = GPURSSorter::new(device, queue);
         let (sorter_b_a, sorter_b_b, sorter_p_a, sorter_p_b) =
@@ -251,52 +393,151 @@ impl PointCloud {
         self.sh_dtype
     }
 
-    pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("point cloud bind group layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+    pub fn bind_group_layout(device: &wgpu::Device, data_compressed: bool) -> wgpu::BindGroupLayout {
+        if data_compressed {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("point cloud bind group layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-            ],
-        })
+                ],
+            })
+        }
+        else {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("point cloud compressed bind group layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 7,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 8,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            })
+        }
     }
 
     pub fn bind_group_layout_render(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -361,12 +602,42 @@ impl SHDType {
     }
 }
 
+pub struct CompressedScaleZeroPoint {
+    pub opacity_s: f32,
+    pub opacity_zp: i32,
+    pub scaling_s: f32,
+    pub scaling_zp: i32,
+    pub rotation_s: f32,
+    pub rotation_zp: i32,
+    pub features_s: f32,
+    pub features_zp: i32,
+    pub scaling_factor_s: f32,
+    pub scaling_factor_zp: i32,
+}
+
+pub struct PCCompressed{
+    pub compressed_s_zp: CompressedScaleZeroPoint,
+
+    pub xyz: Vec<f16>,
+    pub scaling: Vec<i8>,
+    pub scaling_factor: Option<Vec<i8>>,
+    pub rotation: Vec<i8>,
+    pub opacity: Vec<i8>,
+    pub features: Vec<i8>,
+    pub feature_indices: Vec<u32>,
+    pub gaussian_indices: Vec<u32>,
+}
 pub trait PointCloudReader {
     fn read(
         &mut self,
         sh_dtype: SHDType,
         sh_deg: u32,
     ) -> Result<(Vec<GaussianSplat>, Vec<u8>, Vec<GeometricInfo>), anyhow::Error>;
+    
+    fn read_compressed(
+        &mut self,
+        sh_deg: u32,
+    ) -> Result<PCCompressed, anyhow::Error>;
 
     fn file_sh_deg(&self) -> Result<u32, anyhow::Error>;
 

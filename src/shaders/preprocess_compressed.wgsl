@@ -1,6 +1,19 @@
+// injected variables block -------------------------------
 
-//const MAX_SH_DEG:u32 = <injected>u;
-//const SH_DTYPE:u32 = <injected>u;
+// const MAX_SH_DEG:u32;
+// const SH_DTYPE:u32;
+// const OPACITY_S:f32;
+// const OPACITY_ZP:i32;
+// const SCALING_S:f32;
+// const SCALING_ZP:i32;
+// const ROTATION_S:f32;
+// const ROTATION_ZP:i32;
+// const FEATURES_S:f32;
+// const FEATURES_ZP:i32;
+// const SCALING_FACTOR_S:f32;
+// const SCALING_FACTOR_ZP:i32;
+
+// injected variables block end ---------------------------
 
 // which precision/datatype the sh coefficients use
 const SH_DTYPE_FLOAT:u32 = 0u;
@@ -39,6 +52,18 @@ struct CameraUniforms {
     focal: vec2<f32>
 };
 
+struct PointCloudUniforms {
+    opacity_s: f32,
+    opacity_zero_point: i32,
+    scaling_s: f32,
+    scaling_zp: i32,
+    rotation_s: f32,
+    rotation_zp: i32,
+    features_s: f32,
+    features_zp: i32,
+    scaling_factor_s: f32,
+    scaling_factor_zp: i32,
+};
 
 struct GaussianSplat {
     pos_xy: u32,
@@ -90,18 +115,31 @@ struct SortInfos {
 @group(0) @binding(0)
 var<uniform> camera: CameraUniforms;
 
-@group(1) @binding(0) 
-var<storage,read> vertices : array<GaussianSplat>;
-
-// sh coefs packed as 4x u8 = 1x u32
-@group(1) @binding(1) 
-var<storage,read> sh_coefs : array<u32>;
+@group(1) @binding(0)
+var<storage,read> xyz: array<u32>;      // xyz are vec3<half>s, for readout one has to calculate the two u32s by hand and extract half pos
+@group(1) @binding(1)
+var<storage,read> scaling: array<u32>;  // scaling are vec3<i8>s, upon extraction normalize with ((s - scaling_zp) * scaling_s).exp, pos has to be calculated by hand
+@group(1) @binding(1)
+var<storage,read> scaling_factor: array<u32>; // scaling factors are i8s, if SCALING_FACTOR_S != 0 the scaling has to adopted as: scale = scale.normalize() * ((scaling_factor - scaling_factor_zp)*scaling_factor_scale).exp()
 @group(1) @binding(2)
-var<storage,read> geometries : array<GeometricInfo>;
+var<storage,read> rotation: array<u32>; // rotation are vec4<i8>s, have to be extracted and the normalized, extraction by simple normalization with zp and s
+@group(1) @binding(3)
+var<storage,read> opacity: array<u32>;  // scale are i8s, standard normalization via zp and s
+@group(1) @binding(4)
+var<storage,read> features: array<u32>; // sh features (combined average and high frequency) as vec<i8>
+@group(1) @binding(5)
+var<storage,read> feature_indices: array<u32>; // indices which map from gaussian splat index to the feature vec(sh vec)
+@group(1) @binding(6)
+var<storage,read> gaussian_indices: array<u32>;// indices which map from gaussian splat index to the scaling and rotation value
+@group(1) @binding(7) 
+var<storage,read_write> points_2d : array<Splats2D>;
+@group(1) @binding(8)
+var<storage,read_write> pc_uniforms : PointCloudUniforms;
+
 @group(1) @binding(3) 
 var<storage,read_write> points_2d : array<Splats2D>;
 
-@group(2) @binding(0) 
+@group(2) @binding(0)
 var<storage,read_write> indirect_draw_call : DrawIndirect;
 @group(3) @binding(0)
 var<storage, read_write> sort_infos: SortInfos;

@@ -37,6 +37,7 @@ impl GaussianRenderer {
         color_format: wgpu::TextureFormat,
         sh_deg: u32,
         sh_dtype: SHDType,
+        data_compressed: bool,
     ) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render pipeline layout"),
@@ -103,7 +104,7 @@ impl GaussianRenderer {
         let stopwatch = GPUStopwatch::new(device, Some(3));
 
         let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
-        let preprocess = PreprocessPipeline::new(device, sh_deg, sh_dtype);
+        let preprocess = PreprocessPipeline::new(device, sh_deg, sh_dtype, data_compressed);
         GaussianRenderer {
             pipeline,
             camera,
@@ -339,8 +340,6 @@ pub struct GaussianRendererCompute {
     pipeline_resolve: wgpu::RenderPipeline,
     camera:  UniformBuffer<CameraUniform>,
     preprocess: PreprocessPipeline,
-    // dispatch_indirect_buffer: wgpu::Buffer,  // was exchanged again with draw indirect
-    // dispatch_indirect: wgpu::BindGroup,
     draw_indirect_buffer: wgpu::Buffer,
     draw_indirect: wgpu::BindGroup,
     buffer_color: ImageBuffer::<u32>,
@@ -358,6 +357,7 @@ impl GaussianRendererCompute  {
         color_format: wgpu::TextureFormat,
         sh_deg: u32,
         sh_dtype: SHDType,
+        data_compressed: bool,
     ) -> Self {
         let bind_group_layout_render = Self::bind_group_layout_render(device);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
@@ -461,7 +461,7 @@ impl GaussianRendererCompute  {
         let stopwatch = GPUStopwatch::new(device, Some(3));
 
         let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
-        let preprocess = PreprocessPipeline::new(device, sh_deg, sh_dtype);
+        let preprocess = PreprocessPipeline::new(device, sh_deg, sh_dtype, data_compressed);
 
         let buffer_color = ImageBuffer::new();
         let buffer_alpha = ImageBuffer::new();
@@ -728,12 +728,12 @@ impl CameraUniform {
 struct PreprocessPipeline(wgpu::ComputePipeline);
 
 impl PreprocessPipeline {
-    fn new(device: &wgpu::Device, sh_deg: u32, sh_dtype: SHDType) -> Self {
+    fn new(device: &wgpu::Device, sh_deg: u32, sh_dtype: SHDType, data_compressed: bool) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("preprocess pipeline layout"),
             bind_group_layouts: &[
                 &UniformBuffer::<CameraUniform>::bind_group_layout(device),
-                &PointCloud::bind_group_layout(device),
+                &PointCloud::bind_group_layout(device, data_compressed),
                 &GaussianRenderer::bind_group_layout(device),
                 &GPURSSorter::bind_group_layout_preprocess(device),
             ],

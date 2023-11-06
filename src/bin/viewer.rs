@@ -25,6 +25,10 @@ struct Opt {
     /// select renderer, "rast" for rasterizer, "comp" for software rasterization via compute shader
     #[arg(long, default_value_t = String::from("rast"))]
     renderer: String,
+    
+    /// decide if the data should be used in compressed format for rendering
+    #[arg(long, default_value_t = bool(false))]
+    use_compressed_data: bool,
 }
 
 #[pollster::main]
@@ -57,6 +61,7 @@ async fn main() {
             sh_dtype: opt.sh_dtype,
             no_vsync: opt.no_vsync,
             renderer: opt.renderer,
+            use_compressed_data: opt.use_compressed_data,
         },
     )
     .await;
