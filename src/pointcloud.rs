@@ -293,30 +293,34 @@ impl PointCloud {
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: rotation_buffer.as_ref().expect("missing rotation buffer").as_entire_binding(),
+                        resource: scaling_factor_buffer.as_ref().unwrap_or(&scaling_buffer).as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
-                        resource: opacity_buffer.as_ref().expect("missing opacity buffer").as_entire_binding(),
+                        resource: rotation_buffer.as_ref().expect("missing rotation buffer").as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 4,
-                        resource: sh_buffer.as_entire_binding(),
+                        resource: opacity_buffer.as_ref().expect("missing opacity buffer").as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 5,
-                        resource: feature_indices_buffer.as_ref().expect("missing feature indices bufer").as_entire_binding(),
+                        resource: sh_buffer.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 6,
-                        resource: gaussian_indices_buffer.as_ref().expect("missing gaussian indices buffer").as_entire_binding(),
+                        resource: feature_indices_buffer.as_ref().expect("missing feature indices bufer").as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 7,
-                        resource: splat_2d_buffer.as_entire_binding(),
+                        resource: gaussian_indices_buffer.as_ref().expect("missing gaussian indices buffer").as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 8,
+                        resource: splat_2d_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 9,
                         resource: pc_uniform_infos_buffer.as_ref().expect("missing pc uniform infos buffer").as_entire_binding(),
                     },
                 ],
@@ -536,6 +540,16 @@ impl PointCloud {
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 8,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 9,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,

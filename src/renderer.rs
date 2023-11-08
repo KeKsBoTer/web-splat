@@ -742,7 +742,7 @@ impl PreprocessPipeline {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("preprocess shader"),
-            source: wgpu::ShaderSource::Wgsl(Self::build_shader(sh_deg, sh_dtype).into()),
+            source: wgpu::ShaderSource::Wgsl(Self::build_shader(sh_deg, sh_dtype, data_compressed).into()),
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("preprocess pipeline"),
@@ -753,8 +753,11 @@ impl PreprocessPipeline {
         Self(pipeline)
     }
 
-    fn build_shader(sh_deg: u32, sh_dtype: SHDType) -> String {
-        const SHADER_SRC: &str = include_str!("shaders/preprocess.wgsl");
+    fn build_shader(sh_deg: u32, sh_dtype: SHDType, data_compressed: bool) -> String {
+        let SHADER_SRC: &str = match data_compressed {
+            false => include_str!("shaders/preprocess.wgsl"),
+            true => include_str!("shaders/preprocess_compressed.wgsl"),
+        } ;
         let shader_src = format!(
             "
         const MAX_SH_DEG:u32 = {:}u;

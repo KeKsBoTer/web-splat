@@ -275,15 +275,15 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
             .unwrap()
             .into_vec()?;
 
-        let num_points: usize = xyz.len();
+        let num_points: usize = xyz.len() / 3usize;
         let num_sh_coeffs = sh_num_coefficients(sh_deg);
         if true {
             // safety checks for the feature indices and gaussian indices
             assert_eq!(num_points, feature_indices.len());
             assert_eq!(num_points, gaussian_indices.len());
-            assert_eq!(scaling.len(), rotation.len());
-            let features_len = features.len() / 48;
-            let gaussian_len = scaling.len();
+            assert_eq!(scaling.len() / 3usize, rotation.len() / 4usize);
+            let features_len = features.len() / num_sh_coeffs as usize / 3usize;
+            let gaussian_len = scaling.len() / 3usize;
             assert_eq!(*feature_indices.iter().max().unwrap(), features_len as u32 - 1);
             assert_eq!(*gaussian_indices.iter().max().unwrap(), gaussian_len as u32 - 1);
         }

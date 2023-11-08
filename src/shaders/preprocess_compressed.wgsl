@@ -1,24 +1,24 @@
 // injected variables block -------------------------------
 
-// const MAX_SH_DEG:u32;
-// const SH_DTYPE:u32;
-// const OPACITY_S:f32;
-// const OPACITY_ZP:i32;
-// const SCALING_S:f32;
-// const SCALING_ZP:i32;
-// const ROTATION_S:f32;
-// const ROTATION_ZP:i32;
-// const FEATURES_S:f32;
-// const FEATURES_ZP:i32;
-// const SCALING_FACTOR_S:f32;
-// const SCALING_FACTOR_ZP:i32;
+// const max_sh_deg:u32;
+// const sh_dtype:u32;
+// const opacity_s:f32;
+// const opacity_zp:i32;
+// const scaling_s:f32;
+// const scaling_zp:i32;
+// const rotation_s:f32;
+// const rotation_zp:i32;
+// const features_s:f32;
+// const features_zp:i32;
+// const scaling_factor_s:f32;
+// const scaling_factor_zp:i32;
 
 // injected variables block end ---------------------------
 
 // which precision/datatype the sh coefficients use
-const SH_DTYPE_FLOAT:u32 = 0u;
-const SH_DTYPE_HALF:u32 = 1u;
-const SH_DTYPE_BYTE:u32 = 2u;
+const sh_dtype_float:u32 = 0u;
+const sh_dtype_half:u32 = 1u;
+const sh_dtype_byte:u32 = 2u;
 
 const SH_C0:f32 = 0.28209479177387814;
 
@@ -42,7 +42,7 @@ const SH_C3 = array<f32,7>(
 );
 
 
-struct CameraUniforms {
+struct camerauniforms {
     view: mat4x4<f32>,
     view_inv: mat4x4<f32>,
     proj: mat4x4<f32>,
@@ -52,9 +52,9 @@ struct CameraUniforms {
     focal: vec2<f32>
 };
 
-struct PointCloudUniforms {
+struct PointcloudUniforms {
     opacity_s: f32,
-    opacity_zero_point: i32,
+    opacity_zp: i32,
     scaling_s: f32,
     scaling_zp: i32,
     rotation_s: f32,
@@ -65,14 +65,14 @@ struct PointCloudUniforms {
     scaling_factor_zp: i32,
 };
 
-struct GaussianSplat {
+struct gaussiansplat {
     pos_xy: u32,
     pos_zw: u32,
     geometry_idx: u32,
     sh_idx: u32,
 };
 
-struct GeometricInfo {
+struct geometricinfo {
     cov: array<u32, 3>,
     padding: u32,
 };
@@ -87,14 +87,14 @@ struct Splats2D {
 };
 
 struct DrawIndirect {
-    /// The number of vertices to draw.
+    /// the number of vertices to draw.
     vertex_count: u32,
-    /// The number of instances to draw.
+    /// the number of instances to draw.
     instance_count: atomic<u32>,
-    /// The Index of the first vertex to draw.
+    /// the index of the first vertex to draw.
     base_vertex: u32,
-    /// The instance ID of the first instance to draw.
-    /// Has to be 0, unless [`Features::INDIRECT_FIRST_INSTANCE`](crate::Features::INDIRECT_FIRST_INSTANCE) is enabled.
+    /// the instance id of the first instance to draw.
+    /// has to be 0, unless [`features::indirect_first_instance`](crate::features::indirect_first_instance) is enabled.
     base_instance: u32,
 }
 
@@ -105,7 +105,7 @@ struct DispatchIndirect {
 }
 
 struct SortInfos {
-    keys_size: atomic<u32>,     // essentially contains the same info as instance_count in DrawIndirect
+    keys_size: atomic<u32>,     // essentially contains the same info as instance_count in drawindirect
     padded_size: u32,
     passes: u32,
     even_pass: u32,
@@ -113,34 +113,32 @@ struct SortInfos {
 }
 
 @group(0) @binding(0)
-var<uniform> camera: CameraUniforms;
+var<uniform> camera: camerauniforms;
 
 @group(1) @binding(0)
 var<storage,read> xyz: array<u32>;      // xyz are vec3<half>s, for readout one has to calculate the two u32s by hand and extract half pos
 @group(1) @binding(1)
 var<storage,read> scaling: array<u32>;  // scaling are vec3<i8>s, upon extraction normalize with ((s - scaling_zp) * scaling_s).exp, pos has to be calculated by hand
-@group(1) @binding(1)
-var<storage,read> scaling_factor: array<u32>; // scaling factors are i8s, if SCALING_FACTOR_S != 0 the scaling has to adopted as: scale = scale.normalize() * ((scaling_factor - scaling_factor_zp)*scaling_factor_scale).exp()
 @group(1) @binding(2)
-var<storage,read> rotation: array<u32>; // rotation are vec4<i8>s, have to be extracted and the normalized, extraction by simple normalization with zp and s
+var<storage,read> scaling_factor: array<u32>; // scaling factors are i8s, if scaling_factor_s != 0 the scaling has to adopted as: scale = scale.normalize() * ((scaling_factor - scaling_factor_zp)*scaling_factor_scale).exp()
 @group(1) @binding(3)
-var<storage,read> opacity: array<u32>;  // scale are i8s, standard normalization via zp and s
+var<storage,read> rotation: array<u32>; // rotation are vec4<i8>s, have to be extracted and the normalized, extraction by simple normalization with zp and s
 @group(1) @binding(4)
-var<storage,read> features: array<u32>; // sh features (combined average and high frequency) as vec<i8>
+var<storage,read> opacity: array<u32>;  // scale are i8s, standard normalization via zp and s
 @group(1) @binding(5)
-var<storage,read> feature_indices: array<u32>; // indices which map from gaussian splat index to the feature vec(sh vec)
+var<storage,read> features: array<u32>; // sh features (combined average and high frequency) as vec<i8>
 @group(1) @binding(6)
+var<storage,read> feature_indices: array<u32>; // indices which map from gaussian splat index to the feature vec(sh vec)
+@group(1) @binding(7)
 var<storage,read> gaussian_indices: array<u32>;// indices which map from gaussian splat index to the scaling and rotation value
-@group(1) @binding(7) 
+@group(1) @binding(8) 
 var<storage,read_write> points_2d : array<Splats2D>;
-@group(1) @binding(8)
-var<storage,read_write> pc_uniforms : PointCloudUniforms;
-
-@group(1) @binding(3) 
-var<storage,read_write> points_2d : array<Splats2D>;
+@group(1) @binding(9)
+var<uniform> pc_uniforms : PointcloudUniforms;
 
 @group(2) @binding(0)
 var<storage,read_write> indirect_draw_call : DrawIndirect;
+
 @group(3) @binding(0)
 var<storage, read_write> sort_infos: SortInfos;
 @group(3) @binding(2)
@@ -150,46 +148,102 @@ var<storage, read_write> sort_indices : array<u32>;
 @group(3) @binding(6)
 var<storage, read_write> sort_dispatch: DispatchIndirect;
 
+fn get_pos(splat_idx: u32) -> vec4<f32> {
+    let base_pos = splat_idx * 3u / 2u;
+    let a = xyz[base_pos];
+    let b = xyz[base_pos + 1u];
+    
+    var v: vec4<f32>;
+    if (splat_idx & 1u) == 0u {
+        v = vec4<f32>(unpack2x16float(a),
+                        unpack2x16float(b));
+    }
+    else {
+        v = vec4<f32>(unpack2x16float(a).y,
+                        unpack2x16float(b), 1.0);
+    }
+    v.w = 1.0;
+    return v;
+}
+
+fn get_covar(geometry_idx: u32) -> mat3x3<f32> {
+    let base_pos = geometry_idx * 3u / 4u;
+    var scale: vec3<f32>;
+    switch (geometry_idx & 3u) {
+        case 0u: {scale = unpack4x8snorm(scaling[base_pos]).xyz;}
+        case 1u: {scale = unpack4x8snorm(scaling[base_pos]).yzw;}
+        case 2u: {scale = vec3<f32>(unpack4x8snorm(scaling[base_pos]).zw, unpack4x8snorm(scaling[base_pos]).x);}
+        case 3u: {scale = vec3<f32>(unpack4x8snorm(scaling[base_pos]).w, unpack4x8snorm(scaling[base_pos]).xy);}
+        default: {}
+    }
+    scale = (scale * 127.0 - f32(pc_uniforms.scaling_zp)) * pc_uniforms.scaling_s;
+    scale = exp(scale);
+    
+    if pc_uniforms.scaling_factor_s > 0.0 {
+        let s = unpack4x8snorm(scaling_factor[geometry_idx / 4u])[geometry_idx & 3u] * 127.0;
+        scale *= (s - f32(pc_uniforms.scaling_factor_zp)) * pc_uniforms.scaling_factor_s;
+    }
+    
+    // note that the x component is the scalar in this case...
+    var rotation = unpack4x8snorm(rotation[base_pos]) * 127.0;
+    rotation = (rotation - f32(pc_uniforms.rotation_zp)) * pc_uniforms.rotation_s;
+    
+    let x2 = 2.0 * rotation.y;
+    let y2 = 2.0 * rotation.z;
+    let z2 = 2.0 * rotation.w;
+
+    let xx2 = x2 * rotation.y;
+    let xy2 = x2 * rotation.z;
+    let xz2 = x2 * rotation.w;
+    
+    let yy2 = y2 * rotation.z;
+    let yz2 = y2 * rotation.w;
+    let zz2 = z2 * rotation.w;
+
+    let sx2 = x2 * rotation.x;
+    let sy2 = y2 * rotation.x;
+    let sz2 = z2 * rotation.x;
+    let r = mat3x3<f32>(
+        1.0 - yy2 - zz2, xy2 + sz2, xz2 - sy2,
+        xy2 - sz2, 1.0 - xx2 - zz2, yz2 + sx2,
+        xz2 + sy2, yz2 - sx2, 1.0 - xx2 - yy2,
+    );
+    let s = mat3x3<f32>(scale.x, 0.0, 0.0, 0.0, scale.y, 0.0, 0.0, 0.0, scale.z);
+    let l = r * s;
+    return l * transpose(l);
+}
+
+fn get_opacity(geometry_idx: u32) -> f32 {
+    let v = unpack4x8snorm(opacity[geometry_idx / 4u])[geometry_idx & 3u] * 127.0;
+    return (v - f32(pc_uniforms.opacity_zp)) * pc_uniforms.opacity_s;
+}
 
 /// reads the ith sh coef from the vertex buffer
 fn sh_coef(splat_idx: u32, c_idx: u32) -> vec3<f32> {
     let n = (MAX_SH_DEG + 1u) * (MAX_SH_DEG + 1u);
     let coef_idx = 3u * (splat_idx * n + c_idx);
-    if SH_DTYPE == SH_DTYPE_BYTE {
-        // coefs are packed as  bytes (4x per u32)
-        let buff_idx = coef_idx / 4u;
-        var v1 = unpack4x8snorm(sh_coefs[buff_idx]);
-        var v2 = unpack4x8snorm(sh_coefs[buff_idx + 1u]);
-        if c_idx == 0u {
-            v1 *= 4.;
-            v2 *= 4.;
-        } else {
-            v1 *= 0.5;
-            v2 *= 0.5;
-        }
-        let r = coef_idx % 4u;
-        if r == 0u {
-            return vec3<f32>(v1.xyz);
-        } else if r == 1u {
-            return vec3<f32>(v1.yzw);
-        } else if r == 2u {
-            return vec3<f32>(v1.zw, v2.x);
-        } else if r == 3u {
-            return vec3<f32>(v1.w, v2.xy);
-        }
-    } else if SH_DTYPE == SH_DTYPE_HALF {
-        // coefs are packed as half (2x per u32)
-        let buff_idx = coef_idx / 2u;
-        let v = vec4<f32>(unpack2x16float(sh_coefs[buff_idx]), unpack2x16float(sh_coefs[buff_idx + 1u]));
-        let r = coef_idx % 2u;
-        if r == 0u {
-            return v.rgb;
-        } else if r == 1u {
-            return v.gba;
-        }
-    } else if SH_DTYPE == SH_DTYPE_FLOAT {
-        // coefs are packed as float (1x per u32)
-        return bitcast<vec3<f32>>(vec3<u32>(sh_coefs[coef_idx], sh_coefs[coef_idx + 1u], sh_coefs[coef_idx + 2u]));
+    // coefs are packed as  bytes (4x per u32)
+    let buff_idx = coef_idx / 4u;
+    var v1 = unpack4x8snorm(features[buff_idx]) * 127.0;
+    var v2 = unpack4x8snorm(features[buff_idx + 1u]) * 127.0;
+    v1 = (v1 - f32(pc_uniforms.features_zp)) * pc_uniforms.features_s;
+    v2 = (v2 - f32(pc_uniforms.features_zp)) * pc_uniforms.features_s;
+    //if c_idx == 0u {
+    //    v1 *= 4.;
+    //    v2 *= 4.;
+    //} else {
+    //    v1 *= 0.5;
+    //    v2 *= 0.5;
+    //}
+    let r = coef_idx % 4u;
+    if r == 0u {
+        return vec3<f32>(v1.xyz);
+    } else if r == 1u {
+        return vec3<f32>(v1.yzw);
+    } else if r == 2u {
+        return vec3<f32>(v1.zw, v2.x);
+    } else if r == 3u {
+        return vec3<f32>(v1.w, v2.xy);
     }
     
     // unreachable
@@ -229,21 +283,20 @@ fn evaluate_sh(dir: vec3<f32>, v_idx: u32, sh_deg: u32) -> vec3<f32> {
     return result;
 }
 
-@compute @workgroup_size(16,16,1)
+@compute @workgroup_size(256,1,1)
 fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) wgs: vec3<u32>) {
-    let idx = gid.x * wgs.y * 16u + gid.y;
-    if idx > arrayLength(&vertices) {
+    let idx = gid.x;
+    if idx * 3u > arrayLength(&xyz) {
         return;
     }
 
     let focal = camera.focal;
     let viewport = camera.viewport;
-    let vertex = vertices[idx];
-    let geometric_info = geometries[vertex.geometry_idx];
-    let xyz = vec3(unpack2x16float(vertex.pos_xy), unpack2x16float(vertex.pos_zw).x);
-    let opacity = unpack2x16float(vertex.pos_zw).y;
+    let geometry_idx = gaussian_indices[idx];
+    let xyz = get_pos(idx);
+    let opacity = get_opacity(idx);
 
-    var camspace = camera.view * vec4<f32>(xyz, 1.);
+    var camspace = camera.view * xyz;
     let pos2d = camera.proj * camspace;
     let bounds = 1.2 * pos2d.w;
 
@@ -252,21 +305,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
         return;
     }
 
-    let cov1: vec2<f32> = unpack2x16float(geometric_info.cov[0]);
-    let cov2: vec2<f32> = unpack2x16float(geometric_info.cov[1]);
-    let cov3: vec2<f32> = unpack2x16float(geometric_info.cov[2]);
-    let covPacked = array<f32,6>(cov1[0], cov1[1], cov2[0], cov2[1], cov3[0], cov3[1]);
-    let Vrk = mat3x3<f32>(
-        covPacked[0],
-        covPacked[1],
-        covPacked[2],
-        covPacked[1],
-        covPacked[3],
-        covPacked[4],
-        covPacked[2],
-        covPacked[4],
-        covPacked[5]
-    );
+    let Vrk = get_covar(geometry_idx);
     let J = mat3x3<f32>(
         focal.x / camspace.z,
         0.,
@@ -301,9 +340,10 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let v_center = pos2d.xyzw / pos2d.w;
 
     let camera_pos = camera.view_inv[3].xyz;
-    let dir = normalize(xyz - camera_pos);
+    let dir = normalize(xyz.xyz - camera_pos);
+    let sh_idx = feature_indices[idx];
     let color = vec4<f32>(
-        saturate(evaluate_sh(dir, vertex.sh_idx, MAX_SH_DEG)),
+        saturate(evaluate_sh(dir, sh_idx, MAX_SH_DEG)),
         opacity
     );
 
