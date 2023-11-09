@@ -148,6 +148,17 @@ var<storage, read_write> sort_indices : array<u32>;
 @group(3) @binding(6)
 var<storage, read_write> sort_dispatch: DispatchIndirect;
 
+fn i8tof32(v: u32) -> f32{
+    var o = f32(v);
+    if o > 127.0 {
+        o -= 256.0;
+    }
+    return o;    
+}
+fn unpack4xi8(v: u32) -> vec4<f32> {
+    return vec4<f32>(i8tof32(v & 0xffu), i8tof32((v >> 8u) & 0xffu), i8tof32((v>>16u) & 0xffu), i8tof32(v >> 24u)).wzyx;
+}
+
 fn get_pos(splat_idx: u32) -> vec4<f32> {
     let base_pos = splat_idx * 3u / 2u;
     let a = xyz[base_pos];
@@ -170,23 +181,24 @@ fn get_covar(geometry_idx: u32) -> mat3x3<f32> {
     let base_pos = geometry_idx * 3u / 4u;
     var scale: vec3<f32>;
     switch (geometry_idx & 3u) {
-        case 0u: {scale = unpack4x8snorm(scaling[base_pos]).xyz;}
-        case 1u: {scale = unpack4x8snorm(scaling[base_pos]).yzw;}
-        case 2u: {scale = vec3<f32>(unpack4x8snorm(scaling[base_pos]).zw, unpack4x8snorm(scaling[base_pos]).x);}
-        case 3u: {scale = vec3<f32>(unpack4x8snorm(scaling[base_pos]).w, unpack4x8snorm(scaling[base_pos]).xy);}
+        case 0u: {scale = unpack4xi8(scaling[base_pos]).xyz;}
+        case 1u: {scale = unpack4xi8(scaling[base_pos]).yzw;}
+        case 2u: {scale = vec3<f32>(unpack4xi8(scaling[base_pos]).zw, unpack4xi8(scaling[base_pos]).x);}
+        case 3u: {scale = vec3<f32>(unpack4xi8(scaling[base_pos]).w, unpack4xi8(scaling[base_pos]).xy);}
         default: {}
     }
-    scale = (scale * 127.0 - f32(pc_uniforms.scaling_zp)) * pc_uniforms.scaling_s;
+    scale = (-scale - f32(pc_uniforms.scaling_zp)) * pc_uniforms.scaling_s;
     scale = exp(scale);
     
-    if pc_uniforms.scaling_factor_s > 0.0 {
+    if false && pc_uniforms.scaling_factor_s > 0.0 {
         let s = unpack4x8snorm(scaling_factor[geometry_idx / 4u])[geometry_idx & 3u] * 127.0;
         scale *= (s - f32(pc_uniforms.scaling_factor_zp)) * pc_uniforms.scaling_factor_s;
     }
     
     // note that the x component is the scalar in this case...
-    var rotation = unpack4x8snorm(rotation[base_pos]) * 127.0;
+    var rotation = unpack4xi8(rotation[base_pos]);
     rotation = (rotation - f32(pc_uniforms.rotation_zp)) * pc_uniforms.rotation_s;
+    rotation = normalize(rotation);
     
     let x2 = 2.0 * rotation.y;
     let y2 = 2.0 * rotation.z;
@@ -214,7 +226,7 @@ fn get_covar(geometry_idx: u32) -> mat3x3<f32> {
 }
 
 fn get_opacity(geometry_idx: u32) -> f32 {
-    let v = unpack4x8snorm(opacity[geometry_idx / 4u])[geometry_idx & 3u] * 127.0;
+    let v = unpack4xi8(opacity[geometry_idx / 4u])[geometry_idx & 3u];
     return (v - f32(pc_uniforms.opacity_zp)) * pc_uniforms.opacity_s;
 }
 
@@ -279,6 +291,10 @@ fn evaluate_sh(dir: vec3<f32>, v_idx: u32, sh_deg: u32) -> vec3<f32> {
         }
     }
     result += 0.5;
+    
+    if false {
+        return vec3<f32>(1.0);
+    }
 
     return result;
 }
@@ -292,9 +308,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
 
     let focal = camera.focal;
     let viewport = camera.viewport;
-    let geometry_idx = gaussian_indices[idx];
     let xyz = get_pos(idx);
-    let opacity = get_opacity(idx);
 
     var camspace = camera.view * xyz;
     let pos2d = camera.proj * camspace;
@@ -305,7 +319,9 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
         return;
     }
 
+    let geometry_idx = gaussian_indices[idx];
     let Vrk = get_covar(geometry_idx);
+    let opacity = get_opacity(idx);
     let J = mat3x3<f32>(
         focal.x / camspace.z,
         0.,

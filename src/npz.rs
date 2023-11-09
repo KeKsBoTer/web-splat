@@ -216,7 +216,7 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
         let rotation_zero_point: i32 = get_npz_const::<i32, _>(&mut self.npz_file, "rotation_zero_point").unwrap_or(0);
         let features_scale: f32 = get_npz_const(&mut self.npz_file, "features_scale").unwrap_or(1.0);
         let features_zero_point: i32 = get_npz_const::<i32, _>(&mut self.npz_file, "features_zero_point").unwrap_or(0);
-        let scaling_factor_scale: f32 = get_npz_const::<i32, _>(&mut self.npz_file, "scaling_factor_scale").unwrap_or(0) as f32;
+        let mut scaling_factor_scale: f32 = get_npz_const::<i32, _>(&mut self.npz_file, "scaling_factor_scale").unwrap_or(0) as f32;
         let scaling_factor_zero_point: i32 = get_npz_const::<i32, _>(&mut self.npz_file, "scaling_factor_zero_point").unwrap_or(0);
 
         let xyz: Vec<f16> = self
@@ -239,7 +239,7 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
         let scaling_factor = 
             match self.npz_file.by_name("scaling_factor")? {
                 Some(scaling_factor) => Some(scaling_factor.into_vec::<i8>()?),
-                None => None,
+                None => {scaling_factor_scale = 0.0; None},
             };
         
         let rotation: Vec<i8> = self
@@ -259,13 +259,13 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
         let feature_indices: Vec<u32> = if let Some(idx_array) = self.npz_file.by_name("feature_indices")? {
                                             idx_array.into_vec()?.as_slice().iter().map(|c: &i32| *c as u32).collect::<Vec<u32>>()
                                         } else {
-                                            (0..xyz.len() as u32).collect()
+                                            (0..xyz.len() as u32 / 3).collect()
                                         };
 
         let gaussian_indices: Vec<u32> = if let Some(idx_array) = self.npz_file.by_name("gaussian_indices")? {
                                             idx_array.into_vec()?.as_slice().iter().map(|c: &i32| *c as u32).collect::<Vec<u32>>()
                                         } else {
-                                            (0..xyz.len() as u32).collect()
+                                            (0..xyz.len() as u32 / 3).collect()
                                         };
 
         let features: Vec<i8> = self

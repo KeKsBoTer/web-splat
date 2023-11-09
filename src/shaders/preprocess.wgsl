@@ -191,9 +191,9 @@ fn evaluate_sh(dir: vec3<f32>, v_idx: u32, sh_deg: u32) -> vec3<f32> {
     return result;
 }
 
-@compute @workgroup_size(16,16,1)
+@compute @workgroup_size(256,1,1)
 fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) wgs: vec3<u32>) {
-    let idx = gid.x * wgs.y * 16u + gid.y;
+    let idx = gid.x;
     if idx > arrayLength(&vertices) {
         return;
     }

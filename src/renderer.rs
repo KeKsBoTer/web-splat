@@ -784,10 +784,8 @@ impl PreprocessPipeline {
         pass.set_bind_group(2, draw_indirect, &[]);
         pass.set_bind_group(3, &pc.sorter_bg_pre, &[]);
 
-        let per_dim = (pc.num_points() as f32).sqrt().ceil() as u32;
-        let wgs_x = (per_dim + 15) / 16;
-        let wgs_y = (per_dim + 15) / 16;
-        pass.dispatch_workgroups(wgs_x, wgs_y, 1);
+        let wgs_x = (pc.num_points() as f32 / 256.0).ceil() as u32;
+        pass.dispatch_workgroups(wgs_x, 1, 1);
     }
 }
 
