@@ -10,11 +10,11 @@ use std::{
 };
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt};
-use cgmath::{InnerSpace, Point3, Vector4, Quaternion, Vector3};
+use cgmath::{InnerSpace, Point3, Quaternion, Vector3};
 use log::info;
 
 use crate::{
-    pointcloud::{GaussianSplat, PointCloudReader, GeometricInfo, PCCompressed},
+    pointcloud::{GaussianSplat, GeometricInfo, PointCloudReader},
     utils::{build_cov, sh_deg_from_num_coefs, sh_num_coefficients, sigmoid},
     SHDType,
 };
@@ -92,11 +92,14 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
         let rot_2 = self.reader.read_f32::<B>().unwrap();
         let rot_3 = self.reader.read_f32::<B>().unwrap();
         let rot_q = Quaternion::new(rot_0, rot_1, rot_2, rot_3).normalize();
-        
-        let covar_idx = covars_buffer.len() as u32;
-        covars_buffer.push(GeometricInfo{covariance: build_cov(rot_q, scale), ..Default::default()});
 
-        return GaussianSplat{
+        let covar_idx = covars_buffer.len() as u32;
+        covars_buffer.push(GeometricInfo {
+            covariance: build_cov(rot_q, scale),
+            ..Default::default()
+        });
+
+        return GaussianSplat {
             xyz: Point3::from(pos).cast().unwrap(),
             opacity: f16::from_f32(opacity),
             geometry_idx: covar_idx,
@@ -120,7 +123,13 @@ impl<R: io::BufRead + io::Seek> PointCloudReader for PlyReader<R> {
             ply_rs::ply::Encoding::Ascii => todo!("acsii ply format not supported"),
             ply_rs::ply::Encoding::BinaryBigEndian => (0..num_points)
                 .map(|i| {
-                    self.read_line::<BigEndian, _>(i as u32, sh_deg, sh_dtype, &mut sh_coef_buffer, &mut covar_buffer)
+                    self.read_line::<BigEndian, _>(
+                        i as u32,
+                        sh_deg,
+                        sh_dtype,
+                        &mut sh_coef_buffer,
+                        &mut covar_buffer,
+                    )
                 })
                 .collect(),
             ply_rs::ply::Encoding::BinaryLittleEndian => (0..num_points)
@@ -140,13 +149,6 @@ impl<R: io::BufRead + io::Seek> PointCloudReader for PlyReader<R> {
             (Instant::now() - start).as_millis()
         );
         return Ok((vertices, sh_coef_buffer, covar_buffer));
-    }
-    
-    fn read_compressed(
-        &mut self,
-        sh_deg: u32,
-    ) -> Result<PCCompressed, anyhow::Error> {
-        Err(anyhow::anyhow!("PLY compressed read not yet implemented"))
     }
 
     fn file_sh_deg(&self) -> Result<u32, anyhow::Error> {

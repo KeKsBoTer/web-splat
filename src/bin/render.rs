@@ -3,7 +3,9 @@ use clap::Parser;
 use image::{ImageBuffer, Rgba};
 use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
 use std::{fs::File, path::PathBuf};
-use web_splats::{GaussianRenderer, PointCloud, SHDType, Scene, SceneCamera, Split, WGPUContext};
+use web_splats::{
+    GaussianRenderer, PCDataType, PointCloud, SHDType, Scene, SceneCamera, Split, WGPUContext,
+};
 
 #[derive(Debug, Parser)]
 #[command(author, version)]
@@ -107,10 +109,23 @@ async fn main() {
     let queue = &wgpu_context.queue;
 
     println!("reading point cloud file '{}'", opt.input.to_string_lossy());
+    let pc_data_type = match opt
+        .input
+        .extension()
+        .expect("file has no extension!")
+        .to_str()
+        .unwrap()
+    {
+        "ply" => PCDataType::PLY,
+        #[cfg(feature = "npz")]
+        "npz" => PCDataType::NPZ,
+        ext => panic!("unsupported file type '{ext}"),
+    };
     let mut pc = PointCloud::load(
         &wgpu_context.device,
         &wgpu_context.queue,
         ply_file,
+        pc_data_type,
         opt.sh_dtype,
         Some(opt.max_sh_deg),
     )

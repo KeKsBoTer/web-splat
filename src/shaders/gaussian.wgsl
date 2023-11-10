@@ -31,7 +31,7 @@ fn vs_main(
     @builtin(instance_index) in_instance_index: u32
 ) -> VertexOutput {
     var out: VertexOutput;
-    
+
     let vertex = points_2d[indices[in_instance_index]];
 
     // scaled eigenvectors in screen space 

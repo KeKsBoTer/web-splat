@@ -7,7 +7,6 @@ use crate::{
 };
 use std::num::NonZeroU64;
 
-use futures_intrusive::buffer;
 #[cfg(target_arch = "wasm32")]
 use instant::Duration;
 #[cfg(not(target_arch = "wasm32"))]
@@ -15,7 +14,7 @@ use std::time::Duration;
 
 use cgmath::{Matrix4, SquareMatrix, Vector2};
 
-pub enum Renderer{
+pub enum Renderer {
     Rast(GaussianRenderer),
     Comp(GaussianRendererCompute),
 }
@@ -37,7 +36,6 @@ impl GaussianRenderer {
         color_format: wgpu::TextureFormat,
         sh_deg: u32,
         sh_dtype: SHDType,
-        data_compressed: bool,
     ) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render pipeline layout"),
@@ -104,7 +102,7 @@ impl GaussianRenderer {
         let stopwatch = GPUStopwatch::new(device, Some(3));
 
         let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
-        let preprocess = PreprocessPipeline::new(device, sh_deg, sh_dtype, data_compressed);
+        let preprocess = PreprocessPipeline::new(device, sh_deg, sh_dtype);
         GaussianRenderer {
             pipeline,
             camera,
@@ -278,16 +276,32 @@ struct ImageBuffer<T: std::default::Default> {
     n: T,
 }
 impl<T: std::default::Default> ImageBuffer<T> {
-    pub fn new() -> Self{
-        ImageBuffer{w: -1, h: -1, buffer: None, n: T::default()}
+    pub fn new() -> Self {
+        ImageBuffer {
+            w: -1,
+            h: -1,
+            buffer: None,
+            n: T::default(),
+        }
     }
-    pub fn get_or_create_buffer(&mut self, w: u32, h: u32, device: &wgpu::Device) -> (&wgpu::Buffer, bool) {
+    pub fn get_or_create_buffer(
+        &mut self,
+        w: u32,
+        h: u32,
+        device: &wgpu::Device,
+    ) -> (&wgpu::Buffer, bool) {
         let mut change = false;
         if w as i32 > self.w || h as i32 > self.h {
             println!("Recreating image buffer with sizes [{w}, {h}]");
             self.w = w as i32;
             self.h = h as i32;
-            self.buffer.replace(device.create_buffer(&wgpu::BufferDescriptor { label: Some("Image atomic buffer"), size: w as u64 * h as u64 * std::mem::size_of::<T>() as u64, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
+            self.buffer
+                .replace(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Image atomic buffer"),
+                    size: w as u64 * h as u64 * std::mem::size_of::<T>() as u64,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
             change = true;
         }
         (self.buffer.as_ref().unwrap(), change)
@@ -300,37 +314,39 @@ struct ComputeBindGroup {
     bind_group: Option<wgpu::BindGroup>,
 }
 impl ComputeBindGroup {
-    fn get_or_adapt_bind_group(&mut self, 
-                                device: &wgpu::Device, 
-                                bind_group_layout: &wgpu::BindGroupLayout,
-                                color_buffer: &wgpu::Buffer, 
-                                alpha_buffer: &wgpu::Buffer, 
-                                buffer_changed: bool
-                                ) -> &wgpu::BindGroup {
+    fn get_or_adapt_bind_group(
+        &mut self,
+        device: &wgpu::Device,
+        bind_group_layout: &wgpu::BindGroupLayout,
+        color_buffer: &wgpu::Buffer,
+        alpha_buffer: &wgpu::Buffer,
+        buffer_changed: bool,
+    ) -> &wgpu::BindGroup {
         let color_hash = color_buffer as *const wgpu::Buffer as u64;
         let alpha_hash = alpha_buffer as *const wgpu::Buffer as u64;
-        if self.bind_group.is_none() || 
-            self.color_hash != color_hash || 
-            self.alpha_hash != alpha_hash ||
-            buffer_changed
+        if self.bind_group.is_none()
+            || self.color_hash != color_hash
+            || self.alpha_hash != alpha_hash
+            || buffer_changed
         {
             println!("Recreating the bind_group for compute rasterization");
             self.color_hash = color_hash;
             self.alpha_hash = alpha_hash;
-            self.bind_group.replace(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Compute Gaussian bind group"),
-                layout: &bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: alpha_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: color_buffer.as_entire_binding(),
-                    },
-                ],
-            }));
+            self.bind_group
+                .replace(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Compute Gaussian bind group"),
+                    layout: &bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: alpha_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: color_buffer.as_entire_binding(),
+                        },
+                    ],
+                }));
         }
         self.bind_group.as_ref().unwrap()
     }
@@ -338,41 +354,41 @@ impl ComputeBindGroup {
 pub struct GaussianRendererCompute {
     pipeline: wgpu::RenderPipeline,
     pipeline_resolve: wgpu::RenderPipeline,
-    camera:  UniformBuffer<CameraUniform>,
+    camera: UniformBuffer<CameraUniform>,
     preprocess: PreprocessPipeline,
     draw_indirect_buffer: wgpu::Buffer,
     draw_indirect: wgpu::BindGroup,
-    buffer_color: ImageBuffer::<u32>,
-    buffer_alpha: ImageBuffer::<u32>,
+    buffer_color: ImageBuffer<u32>,
+    buffer_alpha: ImageBuffer<u32>,
     bind_group_layout_render: wgpu::BindGroupLayout,
     bind_group_render: ComputeBindGroup,
-    
+
     color_format: wgpu::TextureFormat,
     stopwatch: GPUStopwatch,
 }
 
-impl GaussianRendererCompute  {
+impl GaussianRendererCompute {
     pub fn new(
         device: &wgpu::Device,
         color_format: wgpu::TextureFormat,
         sh_deg: u32,
         sh_dtype: SHDType,
-        data_compressed: bool,
     ) -> Self {
         let bind_group_layout_render = Self::bind_group_layout_render(device);
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Compute renderer pipeline layout"),
             bind_group_layouts: &[
                 &UniformBuffer::<CameraUniform>::bind_group_layout(device),
-                &PointCloud::bind_group_layout_render(device),             // needed for points_2d (on binding 2)
-                &GPURSSorter::bind_group_layout_rendering(device),  // needed for sorted indices (on binding 4)
+                &PointCloud::bind_group_layout_render(device), // needed for points_2d (on binding 2)
+                &GPURSSorter::bind_group_layout_rendering(device), // needed for sorted indices (on binding 4)
                 &bind_group_layout_render,
             ],
             push_constant_ranges: &[],
         });
-        
-        let shader = device.create_shader_module(wgpu::include_wgsl!("shaders/gaussian_compute.wgsl"));
-        
+
+        let shader =
+            device.create_shader_module(wgpu::include_wgsl!("shaders/gaussian_compute.wgsl"));
+
         // let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         //     label: Some("Gaussian renderer compute pipeline"),
         //     layout: Some(&pipeline_layout),
@@ -410,7 +426,7 @@ impl GaussianRendererCompute  {
             multiview: None,
         });
 
-        let pipeline_resolve  = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline_resolve = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Gaussian renderer resolve pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -440,14 +456,17 @@ impl GaussianRendererCompute  {
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
         });
-        
+
         let draw_indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("indirect dispatch buffer rendering"),
             size: std::mem::size_of::<wgpu::util::DrawIndirect>() as u64,
-            usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            usage: wgpu::BufferUsages::INDIRECT
+                | wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        
+
         let indirect_layout = Self::bind_group_layout(device);
         let draw_indirect = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("dispatch indirect buffer"),
@@ -457,16 +476,16 @@ impl GaussianRendererCompute  {
                 resource: draw_indirect_buffer.as_entire_binding(),
             }],
         });
-        
+
         let stopwatch = GPUStopwatch::new(device, Some(3));
 
         let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
-        let preprocess = PreprocessPipeline::new(device, sh_deg, sh_dtype, data_compressed);
+        let preprocess = PreprocessPipeline::new(device, sh_deg, sh_dtype);
 
         let buffer_color = ImageBuffer::new();
         let buffer_alpha = ImageBuffer::new();
         let bind_group_render = ComputeBindGroup::default();
-        
+
         GaussianRendererCompute {
             pipeline,
             pipeline_resolve,
@@ -482,7 +501,7 @@ impl GaussianRendererCompute  {
             stopwatch,
         }
     }
-    
+
     pub fn preprocess<'a>(
         &'a mut self,
         encoder: &'a mut wgpu::CommandEncoder,
@@ -513,7 +532,7 @@ impl GaussianRendererCompute  {
         self.preprocess
             .run(encoder, pc, &self.camera, &self.draw_indirect);
     }
-    
+
     pub async fn num_visible_points(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> u32 {
         let n = {
             let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
@@ -566,9 +585,19 @@ impl GaussianRendererCompute  {
             self.stopwatch.stop(&mut encoder, "sorting").unwrap();
 
             // rasterize splats
-            let (buffer_color, buffer_changed) = self.buffer_color.get_or_create_buffer(viewport.x, viewport.y, device);
-            let (buffer_alpha, _) = self.buffer_alpha.get_or_create_buffer(viewport.x, viewport.y, device);
-            let bind_group = self.bind_group_render.get_or_adapt_bind_group(&device, &self.bind_group_layout_render, buffer_color, buffer_alpha, buffer_changed);
+            let (buffer_color, buffer_changed) = self
+                .buffer_color
+                .get_or_create_buffer(viewport.x, viewport.y, device);
+            let (buffer_alpha, _) = self
+                .buffer_alpha
+                .get_or_create_buffer(viewport.x, viewport.y, device);
+            let bind_group = self.bind_group_render.get_or_adapt_bind_group(
+                &device,
+                &self.bind_group_layout_render,
+                buffer_color,
+                buffer_alpha,
+                buffer_changed,
+            );
             encoder.push_debug_group("render");
             #[cfg(not(target_arch = "wasm32"))]
             self.stopwatch.start(&mut encoder, "rasterization").unwrap();
@@ -580,7 +609,10 @@ impl GaussianRendererCompute  {
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &target,
                         resolve_target: None,
-                        ops: wgpu::Operations{load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: true},
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: true,
+                        },
                     })],
                     depth_stencil_attachment: None,
                 });
@@ -593,7 +625,7 @@ impl GaussianRendererCompute  {
                 render_pass.set_pipeline(&self.pipeline);
 
                 render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
-                
+
                 // resolve pass
                 render_pass.set_bind_group(0, &self.camera.bind_group(), &[]);
                 render_pass.set_bind_group(1, &pc.render_bind_group, &[]);
@@ -643,28 +675,31 @@ impl GaussianRendererCompute  {
             }],
         })
     }
-    
+
     pub fn bind_group_layout_render(device: &wgpu::Device) -> wgpu::BindGroupLayout {
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("bind group layout resolve images"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer { 
-                    ty: wgpu::BufferBindingType::Storage { read_only: false }, 
-                    has_dynamic_offset: false, 
-                    min_binding_size: None },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer { 
-                    ty: wgpu::BufferBindingType::Storage { read_only: false }, 
-                    has_dynamic_offset: false, 
-                    min_binding_size: None },
-                count: None,
-            },
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         })
     }
@@ -728,12 +763,12 @@ impl CameraUniform {
 struct PreprocessPipeline(wgpu::ComputePipeline);
 
 impl PreprocessPipeline {
-    fn new(device: &wgpu::Device, sh_deg: u32, sh_dtype: SHDType, data_compressed: bool) -> Self {
+    fn new(device: &wgpu::Device, sh_deg: u32, sh_dtype: SHDType) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("preprocess pipeline layout"),
             bind_group_layouts: &[
                 &UniformBuffer::<CameraUniform>::bind_group_layout(device),
-                &PointCloud::bind_group_layout(device, data_compressed),
+                &PointCloud::bind_group_layout(device),
                 &GaussianRenderer::bind_group_layout(device),
                 &GPURSSorter::bind_group_layout_preprocess(device),
             ],
@@ -742,7 +777,7 @@ impl PreprocessPipeline {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("preprocess shader"),
-            source: wgpu::ShaderSource::Wgsl(Self::build_shader(sh_deg, sh_dtype, data_compressed).into()),
+            source: wgpu::ShaderSource::Wgsl(Self::build_shader(sh_deg, sh_dtype).into()),
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("preprocess pipeline"),
@@ -753,19 +788,16 @@ impl PreprocessPipeline {
         Self(pipeline)
     }
 
-    fn build_shader(sh_deg: u32, sh_dtype: SHDType, data_compressed: bool) -> String {
-        let SHADER_SRC: &str = match data_compressed {
-            false => include_str!("shaders/preprocess.wgsl"),
-            true => include_str!("shaders/preprocess_compressed.wgsl"),
-        } ;
-        let shader_src = format!(
+    fn build_shader(sh_deg: u32, sh_dtype: SHDType) -> String {
+        let shader_src: &str = include_str!("shaders/preprocess.wgsl");
+        let shader = format!(
             "
         const MAX_SH_DEG:u32 = {:}u;
         const SH_DTYPE:u32 = {:}u;
         {:}",
-            sh_deg, sh_dtype as u32, SHADER_SRC
+            sh_deg, sh_dtype as u32, shader_src
         );
-        return shader_src;
+        return shader;
     }
 
     fn run<'a>(

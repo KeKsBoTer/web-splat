@@ -45,6 +45,7 @@ struct GaussianSplat {
     pos_zw: u32,
     geometry_idx: u32,
     sh_idx: u32,
+    scaling_factor: u32
 };
 
 struct GeometricInfo {
@@ -123,11 +124,11 @@ fn sh_coef(splat_idx: u32, c_idx: u32) -> vec3<f32> {
         var v1 = unpack4x8snorm(sh_coefs[buff_idx]);
         var v2 = unpack4x8snorm(sh_coefs[buff_idx + 1u]);
         if c_idx == 0u {
-            v1 *= 4.;
-            v2 *= 4.;
+            v1 = (v1 * 127. + 36.) * 0.02732;
+            v2 = (v2 * 127. + 36.) * 0.02732;
         } else {
-            v1 *= 0.5;
-            v2 *= 0.5;
+            v1 = (v1 * 127. + 13.) * 0.0076399;
+            v2 = (v2 * 127. + 13.) * 0.0076399;
         }
         let r = coef_idx % 4u;
         if r == 0u {
@@ -168,7 +169,7 @@ fn evaluate_sh(dir: vec3<f32>, v_idx: u32, sh_deg: u32) -> vec3<f32> {
         let y = dir.y;
         let z = dir.z;
 
-       result += - SH_C1 * y * sh_coef(v_idx, 1u) + SH_C1 * z * sh_coef(v_idx, 2u) - SH_C1 * x * sh_coef(v_idx, 3u);
+        result += - SH_C1 * y * sh_coef(v_idx, 1u) + SH_C1 * z * sh_coef(v_idx, 2u) - SH_C1 * x * sh_coef(v_idx, 3u);
 
         if sh_deg > 1u {
 
@@ -204,19 +205,22 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let geometric_info = geometries[vertex.geometry_idx];
     let xyz = vec3(unpack2x16float(vertex.pos_xy), unpack2x16float(vertex.pos_zw).x);
     let opacity = unpack2x16float(vertex.pos_zw).y;
+    let scaling_factor = unpack2x16float(vertex.scaling_factor).x;
 
     var camspace = camera.view * vec4<f32>(xyz, 1.);
     let pos2d = camera.proj * camspace;
     let bounds = 1.2 * pos2d.w;
+    let z = pos2d.z / pos2d.w;
 
     // frustum culling hack
-    if pos2d.z < -pos2d.w || pos2d.x < -bounds || pos2d.x > bounds || pos2d.y < -bounds || pos2d.y > bounds {
+    if z < 0. || z > 1. || pos2d.x < -bounds || pos2d.x > bounds || pos2d.y < -bounds || pos2d.y > bounds {
         return;
     }
 
-    let cov1: vec2<f32> = unpack2x16float(geometric_info.cov[0]);
-    let cov2: vec2<f32> = unpack2x16float(geometric_info.cov[1]);
-    let cov3: vec2<f32> = unpack2x16float(geometric_info.cov[2]);
+    let s2 = scaling_factor * scaling_factor;
+    let cov1: vec2<f32> = unpack2x16float(geometric_info.cov[0]) * s2;
+    let cov2: vec2<f32> = unpack2x16float(geometric_info.cov[1]) * s2;
+    let cov3: vec2<f32> = unpack2x16float(geometric_info.cov[2]) * s2;
     let covPacked = array<f32,6>(cov1[0], cov1[1], cov2[0], cov2[1], cov3[0], cov3[1]);
     let Vrk = mat3x3<f32>(
         covPacked[0],

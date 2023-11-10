@@ -195,7 +195,6 @@ impl WindowContext {
             &wgpu_context.queue,
             pc_file,
             pc_data_type,
-            render_config.use_compressed_data,
             render_config.sh_dtype,
             Some(render_config.max_sh_deg),
         )
@@ -203,10 +202,10 @@ impl WindowContext {
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
         let renderer = match render_config.renderer.as_str() {
-            "rast" => Renderer::Rast(GaussianRenderer::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype(), render_config.use_compressed_data)),
-            "comp" => Renderer::Comp(GaussianRendererCompute::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype(), render_config.use_compressed_data)),
+            "rast" => Renderer::Rast(GaussianRenderer::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype())),
+            "comp" => Renderer::Comp(GaussianRendererCompute::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype())),
             _ => {println!("Renderer {} not supported, using \"comp\" as default", render_config.renderer);
-                Renderer::Comp(GaussianRendererCompute::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype(), render_config.use_compressed_data))}
+                Renderer::Comp(GaussianRendererCompute::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype()))}
         };
 
         let aspect = size.width as f32 / size.height as f32;
