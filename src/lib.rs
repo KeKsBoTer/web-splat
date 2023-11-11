@@ -124,7 +124,7 @@ struct WindowContext {
     wgpu_context: WGPUContext,
     surface: wgpu::Surface,
     config: wgpu::SurfaceConfiguration,
-    pub render_config: RenderConfig,
+    render_config: RenderConfig,
     window: Window,
     scale_factor: f32,
 

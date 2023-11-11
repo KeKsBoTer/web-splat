@@ -39,25 +39,36 @@ struct CameraUniforms {
     focal: vec2<f32>
 };
 
+struct Quantization {
+    zero_point: i32,
+    scaling: f32
+}
+
+struct QuantizationUniforms {
+    @align(16) color_dc: Quantization,
+    @align(16) color_rest: Quantization,
+    @align(16) opacity: Quantization,
+    @align(16) scaling_factor: Quantization,
+}
 
 struct GaussianSplat {
+    // 2x f16 xy
     pos_xy: u32,
+    // 1x f16 z, int8 opacity, int8 scale_factor, 
     pos_zw: u32,
     geometry_idx: u32,
     sh_idx: u32,
-    scaling_factor: u32
 };
 
 struct GeometricInfo {
     cov: array<u32, 3>,
-    padding: u32,
 };
 
 struct Splats2D {
     // 4x f16 packed as u32
-    v: vec2<u32>,
-    // 4x f16 packed as u32
-    pos: vec2<u32>,
+    v_0: u32, v_1: u32,
+    // 2x f16 packed as u32
+    pos: u32,
     // rgba packed as u8
     color: u32,
 };
@@ -101,6 +112,8 @@ var<storage,read> sh_coefs : array<u32>;
 var<storage,read> geometries : array<GeometricInfo>;
 @group(1) @binding(3) 
 var<storage,read_write> points_2d : array<Splats2D>;
+@group(1) @binding(4) 
+var<uniform> quantization : QuantizationUniforms;
 
 @group(2) @binding(0) 
 var<storage,read_write> indirect_draw_call : DrawIndirect;
@@ -114,6 +127,15 @@ var<storage, read_write> sort_indices : array<u32>;
 var<storage, read_write> sort_dispatch: DispatchIndirect;
 
 
+fn dequantize(value: i32, quantization: Quantization) -> f32 {
+    return (f32(value) - f32(quantization.zero_point)) * quantization.scaling;
+}
+
+fn dequantizef4(value: vec4<f32>, quantization: Quantization) -> vec4<f32> {
+    return (value - f32(quantization.zero_point)) * quantization.scaling;
+}
+
+
 /// reads the ith sh coef from the vertex buffer
 fn sh_coef(splat_idx: u32, c_idx: u32) -> vec3<f32> {
     let n = (MAX_SH_DEG + 1u) * (MAX_SH_DEG + 1u);
@@ -124,11 +146,11 @@ fn sh_coef(splat_idx: u32, c_idx: u32) -> vec3<f32> {
         var v1 = unpack4x8snorm(sh_coefs[buff_idx]);
         var v2 = unpack4x8snorm(sh_coefs[buff_idx + 1u]);
         if c_idx == 0u {
-            v1 = (v1 * 127. + 36.) * 0.02732;
-            v2 = (v2 * 127. + 36.) * 0.02732;
+            v1 = dequantizef4(v1 * 127., quantization.color_dc);
+            v2 = dequantizef4(v2 * 127., quantization.color_dc);
         } else {
-            v1 = (v1 * 127. + 13.) * 0.0076399;
-            v2 = (v2 * 127. + 13.) * 0.0076399;
+            v1 = dequantizef4(v1 * 127., quantization.color_rest);
+            v2 = dequantizef4(v2 * 127., quantization.color_rest);
         }
         let r = coef_idx % 4u;
         if r == 0u {
@@ -203,9 +225,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let viewport = camera.viewport;
     let vertex = vertices[idx];
     let geometric_info = geometries[vertex.geometry_idx];
-    let xyz = vec3(unpack2x16float(vertex.pos_xy), unpack2x16float(vertex.pos_zw).x);
-    let opacity = unpack2x16float(vertex.pos_zw).y;
-    let scaling_factor = unpack2x16float(vertex.scaling_factor).x;
+    let xyz = vec3<f32>(unpack2x16float(vertex.pos_xy), unpack2x16float(vertex.pos_zw).x);
 
     var camspace = camera.view * vec4<f32>(xyz, 1.);
     let pos2d = camera.proj * camspace;
@@ -217,21 +237,18 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
         return;
     }
 
+    // let opacity = unpack2x16float(vertex.pos_zw).y;
+    let opacity = dequantize(extractBits(i32(vertex.pos_zw), 2u * 8u, 8u), quantization.opacity);
+    let scaling_factor = exp(dequantize(extractBits(i32(vertex.pos_zw), 3u * 8u, 8u), quantization.scaling_factor));
+
     let s2 = scaling_factor * scaling_factor;
     let cov1: vec2<f32> = unpack2x16float(geometric_info.cov[0]) * s2;
     let cov2: vec2<f32> = unpack2x16float(geometric_info.cov[1]) * s2;
     let cov3: vec2<f32> = unpack2x16float(geometric_info.cov[2]) * s2;
-    let covPacked = array<f32,6>(cov1[0], cov1[1], cov2[0], cov2[1], cov3[0], cov3[1]);
     let Vrk = mat3x3<f32>(
-        covPacked[0],
-        covPacked[1],
-        covPacked[2],
-        covPacked[1],
-        covPacked[3],
-        covPacked[4],
-        covPacked[2],
-        covPacked[4],
-        covPacked[5]
+        cov1[0], cov1[1], cov2[0],
+        cov1[1], cov2[1], cov3[0],
+        cov2[0], cov3[0], cov3[1]
     );
     let J = mat3x3<f32>(
         focal.x / camspace.z,
@@ -276,8 +293,8 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let store_idx = atomicAdd(&indirect_draw_call.instance_count, 1u);
     let v = vec4<f32>(v1 / viewport, v2 / viewport);
     points_2d[store_idx] = Splats2D(
-        vec2<u32>(pack2x16float(v.xy), pack2x16float(v.zw)),
-        vec2<u32>(pack2x16float(v_center.xy), pack2x16float(v_center.zw)),
+        pack2x16float(v.xy), pack2x16float(v.zw),
+        pack2x16float(v_center.xy),
         pack4x8unorm(color),
     );
     

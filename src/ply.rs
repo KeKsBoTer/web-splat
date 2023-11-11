@@ -14,7 +14,7 @@ use cgmath::{InnerSpace, Point3, Quaternion, Vector3};
 use log::info;
 
 use crate::{
-    pointcloud::{GaussianSplat, GeometricInfo, PointCloudReader},
+    pointcloud::{GaussianSplat, GeometricInfo, PointCloudReader, QuantizationUniform},
     utils::{build_cov, sh_deg_from_num_coefs, sh_num_coefficients, sigmoid},
     SHDType,
 };
@@ -101,9 +101,11 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
 
         return GaussianSplat {
             xyz: Point3::from(pos).cast().unwrap(),
-            opacity: f16::from_f32(opacity),
+            // opacity: f16::from_f32(opacity),
+            opacity: 1, // TOOD fix
             geometry_idx: covar_idx,
             sh_idx: idx,
+            scale_factor: 1,
             ..Default::default()
         };
     }
@@ -114,7 +116,15 @@ impl<R: io::BufRead + io::Seek> PointCloudReader for PlyReader<R> {
         &mut self,
         sh_dtype: SHDType,
         sh_deg: u32,
-    ) -> Result<(Vec<GaussianSplat>, Vec<u8>, Vec<GeometricInfo>), anyhow::Error> {
+    ) -> Result<
+        (
+            Vec<GaussianSplat>,
+            Vec<u8>,
+            Vec<GeometricInfo>,
+            QuantizationUniform,
+        ),
+        anyhow::Error,
+    > {
         let start = Instant::now();
         let mut sh_coef_buffer = Vec::new();
         let mut covar_buffer = Vec::new();
@@ -148,7 +158,12 @@ impl<R: io::BufRead + io::Seek> PointCloudReader for PlyReader<R> {
             "reading ply file took {:}ms",
             (Instant::now() - start).as_millis()
         );
-        return Ok((vertices, sh_coef_buffer, covar_buffer));
+        return Ok((
+            vertices,
+            sh_coef_buffer,
+            covar_buffer,
+            QuantizationUniform::default(),
+        ));
     }
 
     fn file_sh_deg(&self) -> Result<u32, anyhow::Error> {

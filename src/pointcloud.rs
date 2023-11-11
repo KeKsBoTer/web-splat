@@ -1,6 +1,6 @@
 use bytemuck::Zeroable;
 use byteorder::{LittleEndian, WriteBytesExt};
-use cgmath::{Point3, Vector4};
+use cgmath::{Point3, Vector2, Vector4};
 use clap::ValueEnum;
 use half::f16;
 use std::fmt::{Debug, Display};
@@ -12,6 +12,7 @@ use crate::gpu_rs::GPURSSorter;
 #[cfg(feature = "npz")]
 use crate::npz::NpzReader;
 use crate::ply::PlyReader;
+use crate::uniform::UniformBuffer;
 use crate::utils::max_supported_sh_deg;
 use crate::PCDataType;
 
@@ -19,11 +20,10 @@ use crate::PCDataType;
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GaussianSplat {
     pub xyz: Point3<f16>,
-    pub opacity: f16,
+    pub opacity: i8,
+    pub scale_factor: i8,
     pub geometry_idx: u32,
     pub sh_idx: u32,
-    pub scale_factor: f16,
-    pub _pad: f16,
 }
 
 impl Default for GaussianSplat {
@@ -36,7 +36,6 @@ impl Default for GaussianSplat {
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GeometricInfo {
     pub covariance: [f16; 6],
-    pub padding: f32,
 }
 impl Default for GeometricInfo {
     fn default() -> Self {
@@ -48,24 +47,18 @@ impl Default for GeometricInfo {
 pub struct PointCloud {
     vertex_buffer: wgpu::Buffer, // contains only 2 indices: index to the sh and covar entries
     sh_coef_buffer: wgpu::Buffer, // contains the spherical harmonics
-    covars_buffer: Option<wgpu::Buffer>, // contains the covariances (includes alpha value and splat center)
+    covars_buffer: wgpu::Buffer, // contains the covariances (includes alpha value and splat center)
     splat_2d_buffer: wgpu::Buffer,
-
-    // extra buffers needed for compressed rendering
-    scaling: Option<wgpu::Buffer>,
-    scaling_factor: Option<wgpu::Buffer>,
-    rotation: Option<wgpu::Buffer>,
-    opacity: Option<wgpu::Buffer>,
-    features_indices: Option<wgpu::Buffer>,
-    gaussian_indices: Option<wgpu::Buffer>,
-    pc_uniform_infos: Option<wgpu::Buffer>,
 
     bind_group: wgpu::BindGroup,
     pub render_bind_group: wgpu::BindGroup,
-    points: Option<Vec<GaussianSplat>>,
+    points: Vec<GaussianSplat>,
     num_points: u32,
     sh_deg: u32,
     sh_dtype: SHDType,
+
+    quantization: UniformBuffer<QuantizationUniform>,
+
     // Fields needed for data sorting
     pub sorter: GPURSSorter,
     sorter_b_a: wgpu::Buffer,              // buffer a for keyval
@@ -113,11 +106,6 @@ impl PointCloud {
             PCDataType::PLY => ply_header_info(&mut reader),
             #[cfg(feature = "npz")]
             PCDataType::NPZ => npz_header_info(&mut reader),
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "Cannot parse data from point cloud data type"
-                ))
-            }
         };
         let max_buffer_size = device
             .limits()
@@ -153,54 +141,35 @@ impl PointCloud {
             }],
         });
 
-        let mut vertex_buffer;
-        let mut sh_buffer;
-        let mut covars_buffer = None;
-        let mut bind_group;
-        let mut vertices = None;
-        let mut sh_coefs;
-        let mut covars;
-
-        let mut scaling_buffer = None;
-        let mut scaling_factor_buffer = None;
-        let mut rotation_buffer = None;
-        let mut opacity_buffer = None;
-        let mut feature_indices_buffer = None;
-        let mut gaussian_indices_buffer = None;
-        let mut pc_uniform_infos_buffer = None;
-
-        reader.seek(std::io::SeekFrom::Start(0)); // have to reset reader to start of file
-        let (vertices_t, sh_coefs_t, covars_t) = match pc_data_type {
+        reader.seek(std::io::SeekFrom::Start(0)).unwrap(); // have to reset reader to start of file
+        let (vertices, sh_coefs, covars, quantization) = match pc_data_type {
             PCDataType::PLY => PlyReader::new(reader).unwrap().read(sh_dtype, sh_deg)?,
             #[cfg(feature = "npz")]
             PCDataType::NPZ => NpzReader::new(&mut reader)
                 .unwrap()
                 .read(sh_dtype, sh_deg)?,
-            _ => return Err(anyhow::anyhow!("Unknown point cloud data type")),
         };
-        vertices = Some(vertices_t);
-        sh_coefs = sh_coefs_t;
-        covars = covars_t;
 
-        sh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let sh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("sh coefs buffer"),
             contents: bytemuck::cast_slice(sh_coefs.as_slice()),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
-        covars_buffer = Some(
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Covariances buffer"),
-                contents: bytemuck::cast_slice(covars.as_slice()),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            }),
-        );
-        vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let covars_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Covariances buffer"),
+            contents: bytemuck::cast_slice(covars.as_slice()),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("3d gaussians buffer"),
-            contents: bytemuck::cast_slice(vertices.as_ref().expect("missing vertices").as_slice()),
+            contents: bytemuck::cast_slice(vertices.as_slice()),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
-        bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let quantization_uniform =
+            UniformBuffer::new(device, quantization, Some("quantization uniform buffer"));
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("point cloud bind group"),
             layout: &bind_group_layout,
             entries: &[
@@ -214,14 +183,15 @@ impl PointCloud {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: covars_buffer
-                        .as_ref()
-                        .expect("missing covars buffer")
-                        .as_entire_binding(),
+                    resource: covars_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: splat_2d_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: quantization_uniform.buffer().as_entire_binding(),
                 },
             ],
         });
@@ -256,14 +226,7 @@ impl PointCloud {
             sh_coef_buffer: sh_buffer,
             covars_buffer,
             splat_2d_buffer,
-
-            scaling: scaling_buffer,
-            scaling_factor: scaling_factor_buffer,
-            rotation: rotation_buffer,
-            opacity: opacity_buffer,
-            features_indices: feature_indices_buffer,
-            gaussian_indices: gaussian_indices_buffer,
-            pc_uniform_infos: pc_uniform_infos_buffer,
+            quantization: quantization_uniform,
 
             bind_group,
             render_bind_group,
@@ -291,7 +254,7 @@ impl PointCloud {
     }
 
     pub fn points(&self) -> &Vec<GaussianSplat> {
-        &self.points.as_ref().expect("Points are not available")
+        &self.points
     }
     pub fn sh_deg(&self) -> u32 {
         self.sh_deg
@@ -349,6 +312,16 @@ impl PointCloud {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         })
     }
@@ -374,9 +347,8 @@ impl PointCloud {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Splat2D {
     v: Vector4<f16>,
-    pos: Vector4<f16>,
+    pos: Vector2<f16>,
     color: Vector4<u8>,
-    _pad: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
@@ -420,9 +392,54 @@ pub trait PointCloudReader {
         &mut self,
         sh_dtype: SHDType,
         sh_deg: u32,
-    ) -> Result<(Vec<GaussianSplat>, Vec<u8>, Vec<GeometricInfo>), anyhow::Error>;
+    ) -> Result<
+        (
+            Vec<GaussianSplat>,
+            Vec<u8>,
+            Vec<GeometricInfo>,
+            QuantizationUniform,
+        ),
+        anyhow::Error,
+    >;
 
     fn file_sh_deg(&self) -> Result<u32, anyhow::Error>;
 
     fn num_points(&self) -> Result<usize, anyhow::Error>;
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Quantization {
+    pub zero_point: i32,
+    pub scale: f32,
+    _pad: [u32; 2],
+}
+
+impl Quantization {
+    pub fn new(zero_point: i32, scale: f32) -> Self {
+        Quantization {
+            zero_point,
+            scale,
+            ..Default::default()
+        }
+    }
+}
+
+impl Default for Quantization {
+    fn default() -> Self {
+        Self {
+            zero_point: 0,
+            scale: 1.,
+            _pad: [0, 0],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable, Default)]
+pub struct QuantizationUniform {
+    pub color_dc: Quantization,
+    pub color_rest: Quantization,
+    pub opacity: Quantization,
+    pub scaling_factor: Quantization,
 }

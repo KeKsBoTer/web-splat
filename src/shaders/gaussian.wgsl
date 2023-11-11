@@ -13,9 +13,9 @@ struct VertexInput {
 
 struct Splats2D {
     // 4x f16 packed as u32
-    v: vec2<u32>,
-    // 4x f16 packed as u32
-    pos: vec2<u32>,
+    v_0: u32, v_1: u32,
+    // 2x f16 packed as u32
+    pos: u32,
     // rgba packed as u8
     color: u32,
 };
@@ -35,10 +35,10 @@ fn vs_main(
     let vertex = points_2d[indices[in_instance_index]];
 
     // scaled eigenvectors in screen space 
-    let v1 = unpack2x16float(vertex.v.x);
-    let v2 = unpack2x16float(vertex.v.y);
+    let v1 = unpack2x16float(vertex.v_0);
+    let v2 = unpack2x16float(vertex.v_1);
 
-    let v_center = unpack2x16float(vertex.pos.x);
+    let v_center = unpack2x16float(vertex.pos);
 
     // splat rectangle with left lower corner at (-2,-2)
     // and upper right corner at (2,2)
@@ -49,7 +49,7 @@ fn vs_main(
 
     // let offset = position * 0.01;
     let offset = position.x * v1 * 2.0 + position.y * v2 * 2.0;
-    out.position = vec4<f32>(v_center + offset, unpack2x16float(vertex.pos.y));
+    out.position = vec4<f32>(v_center + offset, 0., 1.);
     out.screen_pos = position;
     out.color = unpack4x8unorm(vertex.color);
 
