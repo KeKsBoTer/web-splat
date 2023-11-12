@@ -4,7 +4,7 @@ use image::{ImageBuffer, Rgba};
 use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
 use std::{fs::File, path::PathBuf};
 use web_splats::{
-    GaussianRenderer, PCDataType, PointCloud, SHDType, Scene, SceneCamera, Split, WGPUContext,
+    GaussianRenderer, PCDataType, PointCloud, Scene, SceneCamera, Split, WGPUContext,
 };
 
 #[derive(Debug, Parser)]
@@ -23,10 +23,6 @@ struct Opt {
     /// maximum allowed Spherical Harmonics (SH) degree
     #[arg(long, default_value_t = 3)]
     max_sh_deg: u32,
-
-    /// datatype used for SH coefficients
-    #[arg(long,value_enum, default_value_t = SHDType::Byte)]
-    sh_dtype: SHDType,
 }
 
 async fn render_views(
@@ -121,22 +117,24 @@ async fn main() {
         "npz" => PCDataType::NPZ,
         ext => panic!("unsupported file type '{ext}"),
     };
-    let mut pc = PointCloud::load(
-        &wgpu_context.device,
-        &wgpu_context.queue,
-        ply_file,
-        pc_data_type,
-        opt.sh_dtype,
-        Some(opt.max_sh_deg),
-    )
-    .unwrap();
+    let mut pc = match pc_data_type {
+        PCDataType::PLY => PointCloud::load_ply(
+            &wgpu_context.device,
+            &wgpu_context.queue,
+            ply_file,
+            Some(opt.max_sh_deg),
+        )
+        .unwrap(),
+        PCDataType::NPZ => PointCloud::load_npz(
+            &wgpu_context.device,
+            &wgpu_context.queue,
+            ply_file,
+            Some(opt.max_sh_deg),
+        )
+        .unwrap(),
+    };
 
-    let mut renderer = GaussianRenderer::new(
-        device,
-        wgpu::TextureFormat::Rgba8Unorm,
-        pc.sh_deg(),
-        pc.sh_dtype(),
-    );
+    let mut renderer = GaussianRenderer::new(device, wgpu::TextureFormat::Rgba8Unorm, pc.sh_deg());
 
     render_views(
         device,

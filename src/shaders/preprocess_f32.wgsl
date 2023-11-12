@@ -1,6 +1,7 @@
 
 //const MAX_SH_DEG:u32 = <injected>u;
 
+
 const SH_C0:f32 = 0.28209479177387814;
 
 const SH_C1 = 0.4886025119029199;
@@ -33,33 +34,15 @@ struct CameraUniforms {
     focal: vec2<f32>
 };
 
-struct Quantization {
-    zero_point: i32,
-    scaling: f32
-}
-
-struct QuantizationUniforms {
-    @align(16) color_dc: Quantization,
-    @align(16) color_rest: Quantization,
-    @align(16) opacity: Quantization,
-    @align(16) scaling_factor: Quantization,
-}
-
 struct GaussianSplat {
-    // 2x f16 xy
-    pos_xy: u32,
-    // 1x f16 z, int8 opacity, int8 scale_factor, 
-    pos_zw: u32,
-    geometry_idx: u32,
-    sh_idx: u32,
-};
-
-struct GeometricInfo {
-    cov: array<u32, 3>,
-};
+    pos: vec3<f32>,
+    opacity: f32,
+    cov: array<f32,6>,
+    sh: array<f32,48>
+}
 
 struct Splats2D {
-    // 4x f16 packed as u32
+     // 4x f16 packed as u32
     v_0: u32, v_1: u32,
     // 2x f16 packed as u32
     pos: u32,
@@ -99,15 +82,8 @@ var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) 
 var<storage,read> vertices : array<GaussianSplat>;
 
-// sh coefs packed as 4x u8 = 1x u32
 @group(1) @binding(1) 
-var<storage,read> sh_coefs : array<u32>;
-@group(1) @binding(2)
-var<storage,read> geometries : array<GeometricInfo>;
-@group(1) @binding(3) 
 var<storage,read_write> points_2d : array<Splats2D>;
-@group(1) @binding(4) 
-var<uniform> quantization : QuantizationUniforms;
 
 @group(2) @binding(0) 
 var<storage,read_write> indirect_draw_call : DrawIndirect;
@@ -121,40 +97,12 @@ var<storage, read_write> sort_indices : array<u32>;
 var<storage, read_write> sort_dispatch: DispatchIndirect;
 
 
-fn dequantize(value: i32, quantization: Quantization) -> f32 {
-    return (f32(value) - f32(quantization.zero_point)) * quantization.scaling;
-}
-
-fn dequantizef4(value: vec4<f32>, quantization: Quantization) -> vec4<f32> {
-    return (value - f32(quantization.zero_point)) * quantization.scaling;
-}
-
 
 /// reads the ith sh coef from the vertex buffer
 fn sh_coef(splat_idx: u32, c_idx: u32) -> vec3<f32> {
-    let n = (MAX_SH_DEG + 1u) * (MAX_SH_DEG + 1u);
-    let coef_idx = 3u * (splat_idx * n + c_idx);
-    // coefs are packed as  bytes (4x per u32)
-    let buff_idx = coef_idx / 4u;
-    var v1 = unpack4x8snorm(sh_coefs[buff_idx]);
-    var v2 = unpack4x8snorm(sh_coefs[buff_idx + 1u]);
-    if c_idx == 0u {
-        v1 = dequantizef4(v1 * 127., quantization.color_dc);
-        v2 = dequantizef4(v2 * 127., quantization.color_dc);
-    } else {
-        v1 = dequantizef4(v1 * 127., quantization.color_rest);
-        v2 = dequantizef4(v2 * 127., quantization.color_rest);
-    }
-    let r = coef_idx % 4u;
-    if r == 0u {
-        return vec3<f32>(v1.xyz);
-    } else if r == 1u {
-        return vec3<f32>(v1.yzw);
-    } else if r == 2u {
-        return vec3<f32>(v1.zw, v2.x);
-    } else { // r == 3u
-        return vec3<f32>(v1.w, v2.xy);
-    }
+    return vec3<f32>(
+        vertices[splat_idx].sh[c_idx * 3u + 0u], vertices[splat_idx].sh[c_idx * 3u + 1u], vertices[splat_idx].sh[c_idx * 3u + 2u]
+    );
 }
 
 // spherical harmonics evaluation with Condon–Shortley phase
@@ -200,8 +148,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let focal = camera.focal;
     let viewport = camera.viewport;
     let vertex = vertices[idx];
-    let geometric_info = geometries[vertex.geometry_idx];
-    let xyz = vec3<f32>(unpack2x16float(vertex.pos_xy), unpack2x16float(vertex.pos_zw).x);
+    let xyz = vertex.pos;
 
     var camspace = camera.view * vec4<f32>(xyz, 1.);
     let pos2d = camera.proj * camspace;
@@ -213,18 +160,13 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
         return;
     }
 
-    // let opacity = unpack2x16float(vertex.pos_zw).y;
-    let opacity = dequantize(extractBits(i32(vertex.pos_zw), 2u * 8u, 8u), quantization.opacity);
-    let scaling_factor = exp(dequantize(extractBits(i32(vertex.pos_zw), 3u * 8u, 8u), quantization.scaling_factor));
+    let opacity = vertex.opacity;
+    let cov_sparse = vertex.cov;
 
-    let s2 = scaling_factor * scaling_factor;
-    let cov1: vec2<f32> = unpack2x16float(geometric_info.cov[0]) * s2;
-    let cov2: vec2<f32> = unpack2x16float(geometric_info.cov[1]) * s2;
-    let cov3: vec2<f32> = unpack2x16float(geometric_info.cov[2]) * s2;
     let Vrk = mat3x3<f32>(
-        cov1[0], cov1[1], cov2[0],
-        cov1[1], cov2[1], cov3[0],
-        cov2[0], cov3[0], cov3[1]
+        cov_sparse[0], cov_sparse[1], cov_sparse[2],
+        cov_sparse[1], cov_sparse[3], cov_sparse[4],
+        cov_sparse[2], cov_sparse[4], cov_sparse[5]
     );
     let J = mat3x3<f32>(
         focal.x / camspace.z,
@@ -262,7 +204,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let camera_pos = camera.view_inv[3].xyz;
     let dir = normalize(xyz - camera_pos);
     let color = vec4<f32>(
-        saturate(evaluate_sh(dir, vertex.sh_idx, MAX_SH_DEG)),
+        saturate(evaluate_sh(dir, idx, MAX_SH_DEG)),
         opacity
     );
 

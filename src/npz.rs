@@ -4,29 +4,27 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use cgmath::{InnerSpace, Point3, Quaternion, Vector3};
 use half::f16;
 use npyz::npz::{self, NpzArchive};
-use num_traits::Zero;
 
 use crate::{
     pointcloud::{
         GaussianSplat, GeometricInfo, PointCloudReader, Quantization, QuantizationUniform,
     },
     utils::{build_cov, sh_deg_from_num_coefs, sh_num_coefficients},
-    SHDType,
 };
 #[derive(Debug, PartialEq, Clone)]
-struct f16d(f16);
+struct Half(f16);
 struct HalfReader;
 impl npyz::TypeRead for HalfReader {
-    type Value = f16d;
+    type Value = Half;
 
     #[inline]
     fn read_one<R: Read>(&self, mut reader: R) -> std::io::Result<Self::Value> {
-        Ok(f16d {
+        Ok(Half {
             0: f16::from_bits(reader.read_u16::<LittleEndian>()?),
         })
     }
 }
-impl npyz::Deserialize for f16d {
+impl npyz::Deserialize for Half {
     type TypeReader = HalfReader;
 
     fn reader(dtype: &npyz::DType) -> Result<Self::TypeReader, npyz::DTypeError> {
@@ -80,7 +78,6 @@ fn get_npz_const<'a, T: npyz::Deserialize + Copy, R: Read + Seek>(
 impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
     fn read(
         &mut self,
-        sh_dtype: SHDType,
         sh_deg: u32,
     ) -> Result<
         (
@@ -127,7 +124,7 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
             .into_vec()?
             .as_slice()
             .chunks_exact(3)
-            .map(|c: &[f16d]| Point3::new(c[0].0, c[1].0, c[2].0).cast().unwrap())
+            .map(|c: &[Half]| Point3::new(c[0].0, c[1].0, c[2].0).cast().unwrap())
             .collect();
 
         let scaling: Vec<Vector3<f32>> = self
@@ -149,9 +146,6 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
             .by_name("scaling_factor")?
             .unwrap()
             .into_vec()?;
-
-        println!("{features_dc_scale} {features_dc_zero_point}");
-        println!("{features_rest_scale} {features_rest_zero_point}");
 
         let rotation: Vec<Quaternion<f32>> = self
             .npz_file
@@ -235,9 +229,12 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
             }
         }
         let covar_buffer = (0..rotation.len())
-            .map(|i| GeometricInfo {
-                covariance: build_cov(rotation[i], scaling[i]),
-                ..Default::default()
+            .map(|i| {
+                let cov = build_cov(rotation[i], scaling[i]);
+                GeometricInfo {
+                    covariance: cov.map(|v| f16::from_f32(v)),
+                    ..Default::default()
+                }
             })
             .collect();
 

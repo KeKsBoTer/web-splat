@@ -1,9 +1,7 @@
 use bytemuck::Zeroable;
-use byteorder::{LittleEndian, WriteBytesExt};
 use cgmath::{Point3, Vector2, Vector4};
-use clap::ValueEnum;
 use half::f16;
-use std::fmt::{Debug, Display};
+use std::fmt::Debug;
 use std::io::{self, BufReader, Read, Seek};
 use std::mem;
 use wgpu::util::DeviceExt;
@@ -14,7 +12,6 @@ use crate::npz::NpzReader;
 use crate::ply::PlyReader;
 use crate::uniform::UniformBuffer;
 use crate::utils::max_supported_sh_deg;
-use crate::PCDataType;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -45,19 +42,12 @@ impl Default for GeometricInfo {
 
 #[allow(dead_code)]
 pub struct PointCloud {
-    vertex_buffer: wgpu::Buffer, // contains only 2 indices: index to the sh and covar entries
-    sh_coef_buffer: wgpu::Buffer, // contains the spherical harmonics
-    covars_buffer: wgpu::Buffer, // contains the covariances (includes alpha value and splat center)
     splat_2d_buffer: wgpu::Buffer,
 
     bind_group: wgpu::BindGroup,
     pub render_bind_group: wgpu::BindGroup,
-    points: Vec<GaussianSplat>,
     num_points: u32,
     sh_deg: u32,
-    sh_dtype: SHDType,
-
-    quantization: UniformBuffer<QuantizationUniform>,
 
     // Fields needed for data sorting
     pub sorter: GPURSSorter,
@@ -93,32 +83,26 @@ fn npz_header_info<R: io::BufRead + io::Seek>(buf_reader: &mut R) -> (u32, usize
 }
 
 impl PointCloud {
-    pub fn load<R: Read + Seek>(
+    #[cfg(feature = "npz")]
+    pub fn load_npz<R: Read + Seek>(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         f: R,
-        pc_data_type: PCDataType,
-        sh_dtype: SHDType,
         max_sh_deg: Option<u32>,
     ) -> Result<Self, anyhow::Error> {
         let mut reader = BufReader::new(f);
-        let (file_sh_deg, num_points) = match pc_data_type {
-            PCDataType::PLY => ply_header_info(&mut reader),
-            #[cfg(feature = "npz")]
-            PCDataType::NPZ => npz_header_info(&mut reader),
-        };
+        let (file_sh_deg, num_points) = npz_header_info(&mut reader);
         let max_buffer_size = device
             .limits()
             .max_buffer_size
             .max(device.limits().max_storage_buffer_binding_size as u64);
 
         let target_sh_deg = max_sh_deg.unwrap_or(file_sh_deg);
-        let sh_deg =
-            max_supported_sh_deg(max_buffer_size, num_points as u64, sh_dtype, target_sh_deg)
-                .ok_or(anyhow::anyhow!(
-                    "cannot fit sh coefs into a buffer (exceeds WebGPU's max_buffer_size)"
-                ))?;
-        log::info!("num_points: {num_points}, sh_deg: {sh_deg}, sh_dtype: {sh_dtype}");
+        let sh_deg = max_supported_sh_deg(max_buffer_size, num_points as u64, target_sh_deg)
+            .ok_or(anyhow::anyhow!(
+                "cannot fit sh coefs into a buffer (exceeds WebGPU's max_buffer_size)"
+            ))?;
+        log::info!("num_points: {num_points}, sh_deg: {sh_deg}");
         if sh_deg < target_sh_deg {
             log::warn!("color sh degree (file: {file_sh_deg}) was decreased to degree {sh_deg} to fit the coefficients into memory")
         }
@@ -142,13 +126,8 @@ impl PointCloud {
         });
 
         reader.seek(std::io::SeekFrom::Start(0)).unwrap(); // have to reset reader to start of file
-        let (vertices, sh_coefs, covars, quantization) = match pc_data_type {
-            PCDataType::PLY => PlyReader::new(reader).unwrap().read(sh_dtype, sh_deg)?,
-            #[cfg(feature = "npz")]
-            PCDataType::NPZ => NpzReader::new(&mut reader)
-                .unwrap()
-                .read(sh_dtype, sh_deg)?,
-        };
+        let (vertices, sh_coefs, covars, quantization) =
+            NpzReader::new(&mut reader).unwrap().read(sh_deg)?;
 
         let sh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("sh coefs buffer"),
@@ -222,18 +201,124 @@ impl PointCloud {
         );
 
         Ok(Self {
-            vertex_buffer,
-            sh_coef_buffer: sh_buffer,
-            covars_buffer,
             splat_2d_buffer,
-            quantization: quantization_uniform,
 
             bind_group,
             render_bind_group,
             num_points: num_points as u32,
-            points: vertices,
             sh_deg,
-            sh_dtype,
+            sorter,
+            sorter_b_a,
+            sorter_b_b,
+            sorter_p_a,
+            sorter_p_b,
+            sorter_int,
+            sorter_uni,
+            sorter_dis,
+            sorter_dis_bg,
+            sorter_bg,
+            sorter_render_bg,
+            sorter_bg_pre,
+        })
+    }
+
+    pub fn load_ply<R: Read + Seek>(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        f: R,
+        max_sh_deg: Option<u32>,
+    ) -> Result<Self, anyhow::Error> {
+        let mut reader = BufReader::new(f);
+        let (file_sh_deg, num_points) = ply_header_info(&mut reader);
+        let max_buffer_size = device
+            .limits()
+            .max_buffer_size
+            .max(device.limits().max_storage_buffer_binding_size as u64);
+
+        let target_sh_deg = max_sh_deg.unwrap_or(file_sh_deg);
+        let sh_deg = max_supported_sh_deg(max_buffer_size, num_points as u64, target_sh_deg)
+            .ok_or(anyhow::anyhow!(
+                "cannot fit sh coefs into a buffer (exceeds WebGPU's max_buffer_size)"
+            ))?;
+        log::info!("num_points: {num_points}, sh_deg: {sh_deg}");
+        if sh_deg < target_sh_deg {
+            log::warn!("color sh degree (file: {file_sh_deg}) was decreased to degree {sh_deg} to fit the coefficients into memory")
+        }
+
+        let bind_group_layout = Self::bind_group_layout_float(device);
+
+        let splat_2d_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("2d gaussians buffer"),
+            size: (num_points * mem::size_of::<Splat2D>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+
+        let render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("point cloud rendering bind group"),
+            layout: &Self::bind_group_layout_render(device),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 2,
+                resource: splat_2d_buffer.as_entire_binding(),
+            }],
+        });
+
+        reader.seek(std::io::SeekFrom::Start(0)).unwrap(); // have to reset reader to start of file
+        let vertices = PlyReader::new(reader).unwrap().read(sh_deg)?;
+
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("3d gaussians buffer"),
+            contents: bytemuck::cast_slice(vertices.as_slice()),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("point cloud bind group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: vertex_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: splat_2d_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let sorter = GPURSSorter::new(device, queue);
+        let (sorter_b_a, sorter_b_b, sorter_p_a, sorter_p_b) =
+            GPURSSorter::create_keyval_buffers(device, num_points, 4);
+        let sorter_int = sorter.create_internal_mem_buffer(device, num_points);
+        let (sorter_uni, sorter_dis, sorter_bg, sorter_dis_bg) = sorter.create_bind_group(
+            device,
+            num_points,
+            &sorter_int,
+            &sorter_b_a,
+            &sorter_b_b,
+            &sorter_p_a,
+            &sorter_p_b,
+        );
+        let sorter_render_bg = sorter.create_bind_group_render(device, &sorter_uni, &sorter_p_a);
+        let sorter_bg_pre = sorter.create_bind_group_preprocess(
+            device,
+            &sorter_uni,
+            &sorter_dis,
+            &sorter_int,
+            &sorter_b_a,
+            &sorter_b_b,
+            &sorter_p_a,
+            &sorter_p_b,
+        );
+
+        Ok(Self {
+            splat_2d_buffer,
+
+            bind_group,
+            render_bind_group,
+            num_points: num_points as u32,
+            sh_deg,
             sorter,
             sorter_b_a,
             sorter_b_b,
@@ -253,19 +338,12 @@ impl PointCloud {
         self.num_points
     }
 
-    pub fn points(&self) -> &Vec<GaussianSplat> {
-        &self.points
-    }
     pub fn sh_deg(&self) -> u32 {
         self.sh_deg
     }
 
     pub(crate) fn bind_group(&self) -> &wgpu::BindGroup {
         &self.bind_group
-    }
-
-    pub fn sh_dtype(&self) -> SHDType {
-        self.sh_dtype
     }
 
     pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -326,6 +404,34 @@ impl PointCloud {
         })
     }
 
+    pub fn bind_group_layout_float(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("point cloud float bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        })
+    }
+
     pub fn bind_group_layout_render(device: &wgpu::Device) -> wgpu::BindGroupLayout {
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("point cloud rendering bind group layout"),
@@ -351,46 +457,9 @@ pub struct Splat2D {
     color: Vector4<u8>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
-pub enum SHDType {
-    Float = 0,
-    Half = 1,
-    Byte = 2,
-}
-
-impl Display for SHDType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SHDType::Float => f.write_str("f32"),
-            SHDType::Half => f.write_str("f16"),
-            SHDType::Byte => f.write_str("i8"),
-        }
-    }
-}
-
-impl SHDType {
-    pub fn write_to<W: io::Write>(&self, writer: &mut W, v: f32, idx: u32) -> io::Result<()> {
-        let scale = if idx == 0 { 4. } else { 0.5 };
-        match self {
-            SHDType::Float => writer.write_f32::<LittleEndian>(v),
-            SHDType::Half => writer.write_u16::<LittleEndian>(f16::from_f32(v).to_bits()),
-            SHDType::Byte => writer.write_i8((v * 127. / scale) as i8),
-        }
-    }
-
-    pub fn packed_size(&self) -> usize {
-        match self {
-            SHDType::Float => mem::size_of::<f32>(),
-            SHDType::Half => mem::size_of::<f16>(),
-            SHDType::Byte => mem::size_of::<i8>(),
-        }
-    }
-}
-
 pub trait PointCloudReader {
     fn read(
         &mut self,
-        sh_dtype: SHDType,
         sh_deg: u32,
     ) -> Result<
         (
@@ -442,4 +511,14 @@ pub struct QuantizationUniform {
     pub color_rest: Quantization,
     pub opacity: Quantization,
     pub scaling_factor: Quantization,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GaussianSplatFloat {
+    pub xyz: Point3<f32>,
+    pub opacity: f32,
+    pub cov: [f32; 6],
+    pub sh: [[f32; 3]; 16],
+    pub _pad: [u32; 2],
 }

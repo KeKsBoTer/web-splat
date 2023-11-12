@@ -28,7 +28,7 @@ pub use camera::{Camera, PerspectiveCamera, PerspectiveProjection};
 mod controller;
 pub use controller::CameraController;
 mod pointcloud;
-pub use pointcloud::{PointCloud, SHDType};
+pub use pointcloud::PointCloud;
 
 #[cfg(feature="npz")]
 mod npz;
@@ -36,8 +36,6 @@ mod ply;
 
 mod renderer;
 pub use renderer::GaussianRenderer;
-pub use renderer::GaussianRendererCompute;
-pub use renderer::Renderer;
 
 mod scene;
 pub use self::scene::{Scene, SceneCamera, Split};
@@ -50,10 +48,6 @@ pub mod gpu_rs;
 #[cfg(not(target_arch = "wasm32"))]
 pub use utils::download_buffer;
 
-// #[cfg(target_arch="wasm32")]
-// mod web;
-// #[cfg(target_arch="wasm32")]
-// pub use web::run_wasm;
 
 pub struct WGPUContext {
     pub device: wgpu::Device,
@@ -91,8 +85,8 @@ impl WGPUContext {
                 &wgpu::DeviceDescriptor {
                     features,
                     limits: wgpu::Limits {
-                        max_storage_buffer_binding_size: 1 << 30,
-                        max_buffer_size: 1 << 30,
+                        max_storage_buffer_binding_size: (1 << 31) -1,
+                        max_buffer_size: (1 << 31) -1,
                         max_storage_buffers_per_shader_stage: 12,
                         max_compute_workgroup_storage_size:1<<15,
                         ..Default::default()
@@ -114,22 +108,18 @@ impl WGPUContext {
 
 pub struct RenderConfig {
     pub max_sh_deg: u32,
-    pub sh_dtype: SHDType,
     pub no_vsync: bool,
-    pub renderer: String,
-    pub use_compressed_data: bool,
 }
 
 struct WindowContext {
     wgpu_context: WGPUContext,
     surface: wgpu::Surface,
     config: wgpu::SurfaceConfiguration,
-    render_config: RenderConfig,
     window: Window,
     scale_factor: f32,
 
     pc: PointCloud,
-    renderer: Renderer,
+    renderer: GaussianRenderer,
     camera: PerspectiveCamera,
     animation: Option<Box<dyn Animation<Animatable = PerspectiveCamera>>>,
     controller: CameraController,
@@ -190,23 +180,26 @@ impl WindowContext {
             view_formats: vec![],
         };
         surface.configure(&device, &config);
-        let pc = PointCloud::load(
-            &device,
-            &wgpu_context.queue,
-            pc_file,
-            pc_data_type,
-            render_config.sh_dtype,
-            Some(render_config.max_sh_deg),
-        )
-        .unwrap();
+        let pc = match pc_data_type {
+            PCDataType::PLY => PointCloud::load_ply(
+                &device,
+                &wgpu_context.queue,
+                pc_file,
+                Some(render_config.max_sh_deg),
+            )
+            .unwrap(),
+            #[cfg(feature="npz")]
+            PCDataType::NPZ => PointCloud::load_npz(
+                &device,
+                &wgpu_context.queue,
+                pc_file,
+                Some(render_config.max_sh_deg),
+            )
+            .unwrap(),
+        }; 
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
-        let renderer = match render_config.renderer.as_str() {
-            "rast" => Renderer::Rast(GaussianRenderer::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype())),
-            "comp" => Renderer::Comp(GaussianRendererCompute::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype())),
-            _ => {println!("Renderer {} not supported, using \"comp\" as default", render_config.renderer);
-                Renderer::Comp(GaussianRendererCompute::new(&device, surface_format, pc.sh_deg(), pc.sh_dtype()))}
-        };
+        let renderer = GaussianRenderer::new(&device, surface_format, pc.sh_deg(),pc_data_type==PCDataType::PLY);
 
         let aspect = size.width as f32 / size.height as f32;
         let view_camera = PerspectiveCamera::new(
@@ -228,7 +221,6 @@ impl WindowContext {
             window,
             surface,
             config,
-            render_config,
             renderer,
             pc,
             camera: view_camera,
@@ -274,15 +266,9 @@ impl WindowContext {
     fn ui(&mut self) {
         let ctx = &self.ui_renderer.ctx;
         #[cfg(not(target_arch="wasm32"))]
-        let stats = match &mut self.renderer{
-            Renderer::Rast(ref mut r) => pollster::block_on(r.render_stats(&self.wgpu_context.device, &self.wgpu_context.queue)),
-            Renderer::Comp(ref mut c) => pollster::block_on(c.render_stats(&self.wgpu_context.device, &self.wgpu_context.queue)),
-        };
+        let stats =pollster::block_on(self.renderer.render_stats(&self.wgpu_context.device, &self.wgpu_context.queue));
         #[cfg(not(target_arch="wasm32"))]
-        let num_drawn = match &self.renderer {
-            Renderer::Rast(ref r) => pollster::block_on(r.num_visible_points(&self.wgpu_context.device, &self.wgpu_context.queue)),
-            Renderer::Comp(ref c) => pollster::block_on(c.num_visible_points(&self.wgpu_context.device, &self.wgpu_context.queue)),
-        };
+        let num_drawn = pollster::block_on(self.renderer.num_visible_points(&self.wgpu_context.device, &self.wgpu_context.queue));
         
         #[cfg(not(target_arch="wasm32"))]
         self.history.push((
@@ -443,44 +429,35 @@ impl WindowContext {
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         let viewport = Vector2::new(self.config.width, self.config.height);
-        match &mut self.renderer {
-            Renderer::Rast(ref mut r) => r.render(
-                                        &self.wgpu_context.device,
-                                        &self.wgpu_context.queue,
-                                        &view,
-                                        &self.pc,
-                                        self.camera,
-                                        viewport,
-                                    ),
-            Renderer::Comp(ref mut c) => c.render(
-                                        &self.wgpu_context.device,
-                                        &self.wgpu_context.queue,
-                                        &view,
-                                        &self.pc,
-                                        self.camera,
-                                        viewport,
-                                    ),
-        }
+        self.renderer.render(
+            &self.wgpu_context.device,
+            &self.wgpu_context.queue,
+            &view,
+            &self.pc,
+            self.camera,
+            viewport,
+        );
 
-        {
-            // ui rendering
-            self.ui_renderer.begin_frame(&self.window);
-            self.ui();
+        // {
+        //     // ui rendering
+        //     self.ui_renderer.begin_frame(&self.window);
+        //     // self.ui();
 
-            let shapes = self.ui_renderer.end_frame(&self.window);
+        //     let shapes = self.ui_renderer.end_frame(&self.window);
 
-            self.ui_renderer.paint(
-                PhysicalSize {
-                    width: output.texture.size().width,
-                    height: output.texture.size().height,
-                },
-                self.scale_factor,
-                &self.wgpu_context.device,
-                &self.wgpu_context.queue,
-                &view,
-                shapes,
-            );
-        }
+        //     self.ui_renderer.paint(
+        //         PhysicalSize {
+        //             width: output.texture.size().width,
+        //             height: output.texture.size().height,
+        //         },
+        //         self.scale_factor,
+        //         &self.wgpu_context.device,
+        //         &self.wgpu_context.queue,
+        //         &view,
+        //         shapes,
+        //     );
+        // }
+        self.renderer.stopwatch.reset();
         output.present();
         Ok(())
     }
@@ -526,6 +503,7 @@ pub fn smoothstep(x: f32) -> f32 {
     return x * x * (3.0 - 2.0 * x);
 }
 
+#[derive(PartialEq)]
 pub enum PCDataType {
     PLY,
     #[cfg(feature="npz")]

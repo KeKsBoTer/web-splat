@@ -1,4 +1,3 @@
-use half::f16;
 #[cfg(target_arch = "wasm32")]
 use instant::Instant;
 #[cfg(not(target_arch = "wasm32"))]
@@ -14,9 +13,8 @@ use cgmath::{InnerSpace, Point3, Quaternion, Vector3};
 use log::info;
 
 use crate::{
-    pointcloud::{GaussianSplat, GeometricInfo, PointCloudReader, QuantizationUniform},
-    utils::{build_cov, sh_deg_from_num_coefs, sh_num_coefficients, sigmoid},
-    SHDType,
+    pointcloud::GaussianSplatFloat,
+    utils::{build_cov, sh_deg_from_num_coefs, sigmoid},
 };
 
 pub struct PlyReader<R> {
@@ -37,14 +35,7 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
         })
     }
 
-    fn read_line<B: ByteOrder, W: io::Write>(
-        &mut self,
-        idx: u32,
-        sh_deg: u32,
-        sh_dtype: SHDType,
-        sh_coefs_buffer: &mut W,
-        covars_buffer: &mut Vec<GeometricInfo>,
-    ) -> GaussianSplat {
+    fn read_line<B: ByteOrder>(&mut self, idx: usize, sh_deg: u32) -> GaussianSplatFloat {
         let mut pos = [0.; 3];
         self.reader.read_f32_into::<B>(&mut pos).unwrap();
 
@@ -54,29 +45,15 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
         let mut _normals = [0.; 3];
         self.reader.read_f32_into::<B>(&mut _normals).unwrap();
 
-        let mut sh_coefs_raw = [0.; 16 * 3];
-        self.reader.read_f32_into::<B>(&mut sh_coefs_raw).unwrap();
-
-        sh_dtype
-            .write_to(sh_coefs_buffer, sh_coefs_raw[0], 0)
-            .unwrap();
-        sh_dtype
-            .write_to(sh_coefs_buffer, sh_coefs_raw[1], 0)
-            .unwrap();
-        sh_dtype
-            .write_to(sh_coefs_buffer, sh_coefs_raw[2], 0)
-            .unwrap();
+        let mut sh = [[0.; 3]; 16];
+        self.reader.read_f32_into::<B>(&mut sh[0]).unwrap();
+        let mut sh_rest = [0.; 15 * 3];
+        self.reader.read_f32_into::<B>(&mut sh_rest).unwrap();
 
         // higher order coefficients are stored with channel first (shape:[N,3,C])
-        for i in 1..sh_num_coefficients(sh_deg) {
+        for i in 0..15 {
             for j in 0..3 {
-                sh_dtype
-                    .write_to(
-                        sh_coefs_buffer,
-                        sh_coefs_raw[(2 + j * 15 + i) as usize],
-                        i as u32,
-                    )
-                    .unwrap();
+                sh[i + 1][j] = sh_rest[j * 15 + i];
             }
         }
 
@@ -91,82 +68,39 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
         let rot_1 = self.reader.read_f32::<B>().unwrap();
         let rot_2 = self.reader.read_f32::<B>().unwrap();
         let rot_3 = self.reader.read_f32::<B>().unwrap();
-        let rot_q = Quaternion::new(rot_0, rot_1, rot_2, rot_3).normalize();
+        let rot = Quaternion::new(rot_0, rot_1, rot_2, rot_3).normalize();
 
-        let covar_idx = covars_buffer.len() as u32;
-        covars_buffer.push(GeometricInfo {
-            covariance: build_cov(rot_q, scale),
-            ..Default::default()
-        });
+        let cov = build_cov(rot, scale);
 
-        return GaussianSplat {
+        return GaussianSplatFloat {
             xyz: Point3::from(pos).cast().unwrap(),
-            // opacity: f16::from_f32(opacity),
-            opacity: 1, // TOOD fix
-            geometry_idx: covar_idx,
-            sh_idx: idx,
-            scale_factor: 1,
-            ..Default::default()
+            opacity,
+            cov,
+            sh,
+            _pad: [0; 2],
         };
     }
-}
 
-impl<R: io::BufRead + io::Seek> PointCloudReader for PlyReader<R> {
-    fn read(
-        &mut self,
-        sh_dtype: SHDType,
-        sh_deg: u32,
-    ) -> Result<
-        (
-            Vec<GaussianSplat>,
-            Vec<u8>,
-            Vec<GeometricInfo>,
-            QuantizationUniform,
-        ),
-        anyhow::Error,
-    > {
+    pub fn read(&mut self, sh_deg: u32) -> Result<Vec<GaussianSplatFloat>, anyhow::Error> {
         let start = Instant::now();
-        let mut sh_coef_buffer = Vec::new();
-        let mut covar_buffer = Vec::new();
         let num_points = self.num_points()?;
-        let vertices: Vec<GaussianSplat> = match self.header.encoding {
+        let vertices: Vec<GaussianSplatFloat> = match self.header.encoding {
             ply_rs::ply::Encoding::Ascii => todo!("acsii ply format not supported"),
             ply_rs::ply::Encoding::BinaryBigEndian => (0..num_points)
-                .map(|i| {
-                    self.read_line::<BigEndian, _>(
-                        i as u32,
-                        sh_deg,
-                        sh_dtype,
-                        &mut sh_coef_buffer,
-                        &mut covar_buffer,
-                    )
-                })
+                .map(|i| self.read_line::<BigEndian>(i, sh_deg))
                 .collect(),
             ply_rs::ply::Encoding::BinaryLittleEndian => (0..num_points)
-                .map(|i| {
-                    self.read_line::<LittleEndian, _>(
-                        i as u32,
-                        sh_deg,
-                        sh_dtype,
-                        &mut sh_coef_buffer,
-                        &mut covar_buffer,
-                    )
-                })
+                .map(|i| self.read_line::<LittleEndian>(i, sh_deg))
                 .collect(),
         };
         info!(
             "reading ply file took {:}ms",
             (Instant::now() - start).as_millis()
         );
-        return Ok((
-            vertices,
-            sh_coef_buffer,
-            covar_buffer,
-            QuantizationUniform::default(),
-        ));
+        return Ok(vertices);
     }
 
-    fn file_sh_deg(&self) -> Result<u32, anyhow::Error> {
+    pub fn file_sh_deg(&self) -> Result<u32, anyhow::Error> {
         let num_sh_coefs = self.header.elements["vertex"]
             .properties
             .keys()
@@ -179,7 +113,7 @@ impl<R: io::BufRead + io::Seek> PointCloudReader for PlyReader<R> {
         Ok(file_sh_deg)
     }
 
-    fn num_points(&self) -> Result<usize, anyhow::Error> {
+    pub fn num_points(&self) -> Result<usize, anyhow::Error> {
         Ok(self
             .header
             .elements
