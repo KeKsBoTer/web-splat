@@ -149,14 +149,14 @@ var<storage, read_write> sort_indices : array<u32>;
 var<storage, read_write> sort_dispatch: DispatchIndirect;
 
 fn i8tof32(v: u32) -> f32{
-    var o = f32(v);
-    if o > 127.0 {
-        o -= 256.0;
+    var o = i32(v);
+    if o > 127 {
+        o -= 256;
     }
-    return o;    
+    return f32(o);    
 }
 fn unpack4xi8(v: u32) -> vec4<f32> {
-    return vec4<f32>(i8tof32(v & 0xffu), i8tof32((v >> 8u) & 0xffu), i8tof32((v>>16u) & 0xffu), i8tof32(v >> 24u)).wzyx;
+    return vec4<f32>(i8tof32(v & 0xffu), i8tof32((v >> 8u) & 0xffu), i8tof32((v>>16u) & 0xffu), i8tof32(v >> 24u));
 }
 
 fn get_pos(splat_idx: u32) -> vec4<f32> {
@@ -182,12 +182,12 @@ fn get_covar(geometry_idx: u32) -> mat3x3<f32> {
     var scale: vec3<f32>;
     switch (geometry_idx & 3u) {
         case 0u: {scale = unpack4xi8(scaling[base_pos]).xyz;}
-        case 1u: {scale = unpack4xi8(scaling[base_pos]).yzw;}
-        case 2u: {scale = vec3<f32>(unpack4xi8(scaling[base_pos]).zw, unpack4xi8(scaling[base_pos]).x);}
-        case 3u: {scale = vec3<f32>(unpack4xi8(scaling[base_pos]).w, unpack4xi8(scaling[base_pos]).xy);}
+        case 3u: {scale = unpack4xi8(scaling[base_pos]).yzw;}
+        case 2u: {scale = vec3<f32>(unpack4xi8(scaling[base_pos]).zw, unpack4xi8(scaling[base_pos + 1u]).x);}
+        case 1u: {scale = vec3<f32>(unpack4xi8(scaling[base_pos]).w, unpack4xi8(scaling[base_pos + 1u]).xy);}
         default: {}
     }
-    scale = (-scale - f32(pc_uniforms.scaling_zp)) * pc_uniforms.scaling_s;
+    scale = (scale - f32(pc_uniforms.scaling_zp)) * pc_uniforms.scaling_s;
     scale = exp(scale);
     
     if false && pc_uniforms.scaling_factor_s > 0.0 {
@@ -196,7 +196,7 @@ fn get_covar(geometry_idx: u32) -> mat3x3<f32> {
     }
     
     // note that the x component is the scalar in this case...
-    var rotation = unpack4xi8(rotation[base_pos]);
+    var rotation = unpack4xi8(rotation[geometry_idx]);
     rotation = (rotation - f32(pc_uniforms.rotation_zp)) * pc_uniforms.rotation_s;
     rotation = normalize(rotation);
     
@@ -302,7 +302,7 @@ fn evaluate_sh(dir: vec3<f32>, v_idx: u32, sh_deg: u32) -> vec3<f32> {
 @compute @workgroup_size(256,1,1)
 fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) wgs: vec3<u32>) {
     let idx = gid.x;
-    if idx * 3u > arrayLength(&xyz) {
+    if idx * 3u / 4u > arrayLength(&xyz) {
         return;
     }
 

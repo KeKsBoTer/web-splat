@@ -270,7 +270,7 @@ impl PointCloud {
             }));
             gaussian_indices_buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("gaussian indices"),
-                contents: bytemuck::cast_slice(data.feature_indices.as_slice()),
+                contents: bytemuck::cast_slice(data.gaussian_indices.as_slice()),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             }));
             pc_uniform_infos_buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

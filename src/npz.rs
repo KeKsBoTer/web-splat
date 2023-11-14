@@ -110,6 +110,7 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
             .into_vec()?
             .as_slice().iter()
             .map(|c: &i8| ((*c as f32 - scaling_zero_point) * scaling_scale).exp()).collect::<Vec::<f32>>()
+            //.map(|c: &i8| {let mut a = *unsafe{std::mem::transmute::<&i8, &u8>(c)} as f32; if a > 127.0 {a -= 256.0}; ((a - scaling_zero_point) * scaling_scale).exp()}).collect::<Vec::<f32>>()
             .chunks_exact(3)
             .map(|c: &[f32]| Vector3::new(c[0], c[1], c[2]))
             .collect();
@@ -229,7 +230,7 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
             .map(|c: &f16d| c.0)
             .collect();
 
-        let mut scaling: Vec<i8> = self
+        let scaling: Vec<i8> = self
             .npz_file
             .by_name("scaling")
             .unwrap()
