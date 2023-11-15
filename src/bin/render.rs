@@ -1,6 +1,6 @@
 use cgmath::Vector2;
 use clap::Parser;
-use image::{ImageBuffer, Rgba};
+use image::{codecs::png::PngEncoder, ImageBuffer, Rgba};
 use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
 use std::{fs::File, path::PathBuf};
 use web_splats::{
@@ -48,13 +48,14 @@ async fn render_views(
     pb.set_message(format!("rendering {split}"));
 
     for (i, s) in cameras.iter().enumerate().progress_with(pb) {
-        let mut resolution: Vector2<u32> = Vector2::new(s.width, s.height);
+        // let mut resolution: Vector2<u32> = Vector2::new(s.width, s.height);
+        let mut resolution: Vector2<u32> = Vector2::new(1237, 822);
 
-        if resolution.x > 1600 {
-            let s = resolution.x as f32 / 1600.;
-            resolution.x = 1600;
-            resolution.y = (resolution.y as f32 / s) as u32;
-        }
+        // if resolution.x > 1600 {
+        //     let s = resolution.x as f32 / 1600.;
+        //     resolution.x = 1600;
+        //     resolution.y = (resolution.y as f32 / s) as u32;
+        // }
 
         let target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("render texture"),
@@ -81,8 +82,15 @@ async fn render_views(
             s.clone().into(),
             resolution,
         );
+        renderer.stopwatch.reset();
         let img = download_texture(&target, device, queue).await;
-        img.save(img_out.join(format!("{i:0>5}.png"))).unwrap();
+        let mut out_file = File::create(img_out.join(format!("{i:0>5}.png"))).unwrap();
+        let encoder = PngEncoder::new_with_quality(
+            &mut out_file,
+            image::codecs::png::CompressionType::Fast,
+            image::codecs::png::FilterType::NoFilter,
+        );
+        img.write_with_encoder(encoder).unwrap();
     }
 }
 
@@ -125,6 +133,7 @@ async fn main() {
             Some(opt.max_sh_deg),
         )
         .unwrap(),
+        #[cfg(feature = "npz")]
         PCDataType::NPZ => PointCloud::load_npz(
             &wgpu_context.device,
             &wgpu_context.queue,
@@ -134,7 +143,8 @@ async fn main() {
         .unwrap(),
     };
 
-    let mut renderer = GaussianRenderer::new(device, wgpu::TextureFormat::Rgba8Unorm, pc.sh_deg());
+    let mut renderer =
+        GaussianRenderer::new(device, wgpu::TextureFormat::Rgba8Unorm, pc.sh_deg(), false);
 
     render_views(
         device,
@@ -146,16 +156,16 @@ async fn main() {
         "test",
     )
     .await;
-    render_views(
-        device,
-        queue,
-        &mut renderer,
-        &mut pc,
-        scene.cameras(Some(Split::Train)),
-        &opt.img_out,
-        "train",
-    )
-    .await;
+    // render_views(
+    //     device,
+    //     queue,
+    //     &mut renderer,
+    //     &mut pc,
+    //     scene.cameras(Some(Split::Train)),
+    //     &opt.img_out,
+    //     "train",
+    // )
+    // .await;
 
     println!("done!");
 }
