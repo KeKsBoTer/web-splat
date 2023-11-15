@@ -118,6 +118,7 @@ pub struct RenderConfig {
     pub no_vsync: bool,
     pub renderer: String,
     pub use_compressed_data: bool,
+    pub render_ui: bool,
 }
 
 struct WindowContext {
@@ -222,7 +223,7 @@ impl WindowContext {
         );
 
         let controller = CameraController::new(3., 0.25);
-        let ui_renderer = ui_renderer::EguiWGPU::new(event_loop, device, surface_format);
+        let ui_renderer = ui_renderer::EguiWGPU::new(event_loop, device, surface_format, render_config.render_ui);
         Self {
             wgpu_context,
             scale_factor: window.scale_factor() as f32,
@@ -463,7 +464,7 @@ impl WindowContext {
                                     ),
         }
 
-        {
+        if self.ui_renderer.active {
             // ui rendering
             self.ui_renderer.begin_frame(&self.window);
             self.ui();
@@ -610,6 +611,8 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(file: R, pc_dat
                         if key == VirtualKeyCode::T{
                             state.start_tracking_shot(Some(Split::Test));
                             
+                        }else if key == VirtualKeyCode::I{
+                            state.ui_renderer.active = !state.ui_renderer.active;
                         }else
                         if let Some(scene) = &state.scene{
 

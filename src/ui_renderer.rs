@@ -6,6 +6,7 @@ pub struct EguiWGPU {
     pub ctx: egui::Context,
     pub winit: egui_winit::State,
     pub renderer: egui_wgpu::Renderer,
+    pub active: bool,
 }
 
 impl EguiWGPU {
@@ -13,11 +14,13 @@ impl EguiWGPU {
         event_loop: &EventLoop<()>,
         device: &wgpu::Device,
         output_format: wgpu::TextureFormat,
+        active: bool,
     ) -> Self {
         Self {
             ctx: Default::default(),
             winit: egui_winit::State::new(event_loop),
             renderer: egui_wgpu::Renderer::new(device, output_format, None, 1),
+            active,
         }
     }
 

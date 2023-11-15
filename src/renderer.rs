@@ -187,23 +187,23 @@ impl GaussianRenderer {
 
             // convert 3D gaussian splats to 2D gaussian splats
             #[cfg(not(target_arch = "wasm32"))]
-            self.stopwatch.start(&mut encoder, "preprocess").unwrap();
+            self.stopwatch.start(&mut encoder, "preprocess").unwrap_or_default();
             self.preprocess(&mut encoder, queue, &pc, camera, viewport);
             #[cfg(not(target_arch = "wasm32"))]
-            self.stopwatch.stop(&mut encoder, "preprocess").unwrap();
+            self.stopwatch.stop(&mut encoder, "preprocess").unwrap_or_default();
 
             // sort 2d splats
             #[cfg(not(target_arch = "wasm32"))]
-            self.stopwatch.start(&mut encoder, "sorting").unwrap();
+            self.stopwatch.start(&mut encoder, "sorting").unwrap_or_default();
             pc.sorter
                 .record_sort_indirect(&pc.sorter_bg, &pc.sorter_dis, &mut encoder);
             #[cfg(not(target_arch = "wasm32"))]
-            self.stopwatch.stop(&mut encoder, "sorting").unwrap();
+            self.stopwatch.stop(&mut encoder, "sorting").unwrap_or_default();
 
             // rasterize splats
             encoder.push_debug_group("render");
             #[cfg(not(target_arch = "wasm32"))]
-            self.stopwatch.start(&mut encoder, "rasterization").unwrap();
+            self.stopwatch.start(&mut encoder, "rasterization").unwrap_or_default();
             {
                 let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("render pass"),

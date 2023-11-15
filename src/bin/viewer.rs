@@ -29,6 +29,10 @@ struct Opt {
     /// decide if the data should be used in compressed format for rendering
     #[arg(long, default_value_t = false)]
     use_compressed_data: bool,
+    
+    /// activate ui (ui slows rendering down for 50%)
+    #[arg(long, default_value_t = true)]
+    render_ui: bool,
 }
 
 #[pollster::main]
@@ -62,6 +66,7 @@ async fn main() {
             no_vsync: opt.no_vsync,
             renderer: opt.renderer,
             use_compressed_data: opt.use_compressed_data,
+            render_ui: opt.render_ui,
         },
     )
     .await;
