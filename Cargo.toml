@@ -47,6 +47,9 @@ name = "viewer"
 [[bin]]
 name = "render"
 
+[[bin]]
+name = "measure"
+
 
 [features]
 npz = ["dep:npyz"]
