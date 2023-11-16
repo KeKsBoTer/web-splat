@@ -215,8 +215,18 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
         let scaling_zero_point: i32 = get_npz_const::<i32, _>(&mut self.npz_file, "scaling_zero_point").unwrap_or(0);
         let rotation_scale: f32 = get_npz_const(&mut self.npz_file, "rotation_scalae").unwrap_or(1.0);
         let rotation_zero_point: i32 = get_npz_const::<i32, _>(&mut self.npz_file, "rotation_zero_point").unwrap_or(0);
-        let features_scale: f32 = get_npz_const(&mut self.npz_file, "features_scale").unwrap_or(1.0);
-        let features_zero_point: i32 = get_npz_const::<i32, _>(&mut self.npz_file, "features_zero_point").unwrap_or(0);
+        let features_scale: f32 = if self.npz_file.array_names().find(|x| *x == "features_scale").is_some() {
+            get_npz_const(&mut self.npz_file, "features_scale").unwrap_or(1.0)}
+            else { get_npz_const(&mut self.npz_file, "features_dc_scale").unwrap_or(1.0)};
+        let features_zero_point: i32 = if self.npz_file.array_names().find(|x| *x == "features_zero_point").is_some() {
+            get_npz_const(&mut self.npz_file, "features_zero_point").unwrap_or(1)}
+            else { get_npz_const(&mut self.npz_file, "features_dc_zero_point").unwrap_or(1)};
+        let features_rest_scale: f32 = if self.npz_file.array_names().find(|x| *x == "features_scale").is_some() {
+            get_npz_const(&mut self.npz_file, "features_scale").unwrap_or(1.0)}
+            else { get_npz_const(&mut self.npz_file, "features_rest_scale").unwrap_or(1.0)};
+        let features_rest_zero_point: i32 = if self.npz_file.array_names().find(|x| *x == "features_zero_point").is_some() {
+            get_npz_const(&mut self.npz_file, "features_zero_point").unwrap_or(1)}
+            else { get_npz_const(&mut self.npz_file, "features_rest_zero_point").unwrap_or(1)};
         let mut scaling_factor_scale: f32 = get_npz_const::<i32, _>(&mut self.npz_file, "scaling_factor_scale").unwrap_or(0) as f32;
         let scaling_factor_zero_point: i32 = get_npz_const::<i32, _>(&mut self.npz_file, "scaling_factor_zero_point").unwrap_or(0);
 
@@ -269,15 +279,30 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
                                             (0..xyz.len() as u32 / 3).collect()
                                         };
 
-        let features: Vec<i8> = self
-            .npz_file
-            .by_name("features")
-            .unwrap()
-            .unwrap()
-            .into_vec()?;
+        let num_sh_coeffs = sh_num_coefficients(sh_deg) as usize;
+        let num_sh_coeffs_rest = num_sh_coeffs - 3;
+        let features: Vec<i8> = if let Ok(features) = self.npz_file.by_name("features").unwrap().unwrap().into_vec() {
+            features
+        } else {
+            // reading the low and high frequency coefficients separately and combining them
+            let features_dc = self.npz_file.by_name("features_dc").unwrap().unwrap().into_vec()?;
+            let features_rest = self.npz_file.by_name("features_rest").unwrap().unwrap().into_vec()?;
+            
+            let mut ret = vec![0i8; features_dc.len() + features_rest.len()];
+            
+            for i in 0..(features_dc.len() / 3) {
+                ret[i * num_sh_coeffs] = features_dc[i * 3];
+                ret[i * num_sh_coeffs + 1] = features_dc[i * 3 + 1];
+                ret[i * num_sh_coeffs + 2] = features_dc[i * 3 + 2];
+                for j in 0..num_sh_coeffs_rest {
+                    ret[i * num_sh_coeffs + 3 + j] = features_rest[j * num_sh_coeffs_rest + j];
+                }
+            }
+            
+            ret
+        };
 
         let num_points: usize = xyz.len() / 3usize;
-        let num_sh_coeffs = sh_num_coefficients(sh_deg);
         if true {
             // safety checks for the feature indices and gaussian indices
             assert_eq!(num_points, feature_indices.len());
@@ -299,6 +324,8 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
                 rotation_zp: rotation_zero_point,
                 features_s: features_scale,
                 features_zp: features_zero_point,
+                features_rest_s: features_rest_scale,
+                features_rest_zp: features_rest_zero_point,
                 scaling_factor_s: scaling_factor_scale,
                 scaling_factor_zp: scaling_factor_zero_point,
             },

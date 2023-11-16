@@ -634,6 +634,8 @@ pub struct CompressedScaleZeroPoint {
     pub rotation_zp: i32,
     pub features_s: f32,
     pub features_zp: i32,
+    pub features_rest_s: f32,
+    pub features_rest_zp: i32,
     pub scaling_factor_s: f32,
     pub scaling_factor_zp: i32,
 }
