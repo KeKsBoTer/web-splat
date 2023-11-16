@@ -74,7 +74,7 @@ impl WGPUContext {
     pub async fn new(instance: &wgpu::Instance, surface: Option<&wgpu::Surface>) -> Self {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
+                power_preference: wgpu::PowerPreference::LowPower,//wgpu::PowerPreference::HighPerformance,
                 compatible_surface: surface,
                 force_fallback_adapter: false,
             })
@@ -463,7 +463,8 @@ impl WindowContext {
                                         viewport,
                                     ),
         }
-
+        
+       
         if self.ui_renderer.active {
             // ui rendering
             self.ui_renderer.begin_frame(&self.window);
@@ -551,7 +552,8 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(file: R, pc_dat
         )
     } else {
         PhysicalSize::new(800, 600)
-    };
+    }; 
+    println!("rendering at resolution {}x{}px",window_size.width,window_size.height);
     log::info!("rendering at resolution {}x{}px",window_size.width,window_size.height);
 
     let window = WindowBuilder::new()

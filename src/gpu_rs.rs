@@ -118,7 +118,7 @@ impl GPURSSorter {
         //     cur_sorter = Self::new_with_sg_size(device, biggest_that_worked);
         // }
         // #[cfg(target_arch = "wasm32")]
-        let cur_sorter = Self::new_with_sg_size(device, 32);
+        let cur_sorter = Self::new_with_sg_size(device, 16);
         log::info!(
             "Created a sorter with subgroup size {}\n",
             cur_sorter.subgroup_size
