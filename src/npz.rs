@@ -227,8 +227,9 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
         let features_rest_zero_point: i32 = if self.npz_file.array_names().find(|x| *x == "features_zero_point").is_some() {
             get_npz_const(&mut self.npz_file, "features_zero_point").unwrap_or(1)}
             else { get_npz_const(&mut self.npz_file, "features_rest_zero_point").unwrap_or(1)};
-        let mut scaling_factor_scale: f32 = get_npz_const::<i32, _>(&mut self.npz_file, "scaling_factor_scale").unwrap_or(0) as f32;
+        let mut scaling_factor_scale: f32 = get_npz_const(&mut self.npz_file, "scaling_factor_scale").unwrap_or(0.0);
         let scaling_factor_zero_point: i32 = get_npz_const::<i32, _>(&mut self.npz_file, "scaling_factor_zero_point").unwrap_or(0);
+        println!("Scaling factor: {scaling_factor_scale}, {scaling_factor_zero_point}");
 
         let xyz: Vec<f16> = self
             .npz_file
@@ -281,8 +282,8 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
 
         let num_sh_coeffs = sh_num_coefficients(sh_deg) as usize;
         let num_sh_coeffs_rest = num_sh_coeffs - 3;
-        let features: Vec<i8> = if let Ok(features) = self.npz_file.by_name("features").unwrap().unwrap().into_vec() {
-            features
+        let features: Vec<i8> = if self.npz_file.by_name("features").unwrap().is_some() {
+            self.npz_file.by_name("features").unwrap().unwrap().into_vec()?
         } else {
             // reading the low and high frequency coefficients separately and combining them
             let features_dc = self.npz_file.by_name("features_dc").unwrap().unwrap().into_vec()?;

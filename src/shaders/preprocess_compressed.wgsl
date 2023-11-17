@@ -61,6 +61,8 @@ struct PointcloudUniforms {
     rotation_zp: i32,
     features_s: f32,
     features_zp: i32,
+    features_rest_s: f32,
+    features_rest_zp: i32,
     scaling_factor_s: f32,
     scaling_factor_zp: i32,
 };
@@ -177,7 +179,7 @@ fn get_pos(splat_idx: u32) -> vec4<f32> {
     return v;
 }
 
-fn get_covar(geometry_idx: u32) -> mat3x3<f32> {
+fn get_covar(point_idx: u32, geometry_idx: u32) -> mat3x3<f32> {
     let base_pos = geometry_idx * 3u / 4u;
     var scale: vec3<f32>;
     switch (geometry_idx & 3u) {
@@ -189,9 +191,9 @@ fn get_covar(geometry_idx: u32) -> mat3x3<f32> {
     }
     scale = (scale - f32(pc_uniforms.scaling_zp)) * pc_uniforms.scaling_s;
     scale = exp(scale);
-    
-    if false && pc_uniforms.scaling_factor_s > 0.0 {
-        let s = unpack4x8snorm(scaling_factor[geometry_idx / 4u])[geometry_idx & 3u] * 127.0;
+
+    if pc_uniforms.scaling_factor_s > 0.0 {
+        let s = unpack4xi8(scaling_factor[point_idx / 4u])[point_idx & 3u];
         scale *= (s - f32(pc_uniforms.scaling_factor_zp)) * pc_uniforms.scaling_factor_s;
     }
     
@@ -236,17 +238,15 @@ fn sh_coef(splat_idx: u32, c_idx: u32) -> vec3<f32> {
     let coef_idx = 3u * (splat_idx * n + c_idx);
     // coefs are packed as  bytes (4x per u32)
     let buff_idx = coef_idx / 4u;
-    var v1 = unpack4x8snorm(features[buff_idx]) * 127.0;
-    var v2 = unpack4x8snorm(features[buff_idx + 1u]) * 127.0;
-    v1 = (v1 - f32(pc_uniforms.features_zp)) * pc_uniforms.features_s;
-    v2 = (v2 - f32(pc_uniforms.features_zp)) * pc_uniforms.features_s;
-    //if c_idx == 0u {
-    //    v1 *= 4.;
-    //    v2 *= 4.;
-    //} else {
-    //    v1 *= 0.5;
-    //    v2 *= 0.5;
-    //}
+    var v1 = unpack4xi8(features[buff_idx]);
+    var v2 = unpack4xi8(features[buff_idx + 1u]);
+    if c_idx == 0u {
+        v1 = (v1 - f32(pc_uniforms.features_zp)) * pc_uniforms.features_s;
+        v2 = (v2 - f32(pc_uniforms.features_zp)) * pc_uniforms.features_s;
+    } else {
+        v1 = (v1 - f32(pc_uniforms.features_rest_zp)) * pc_uniforms.features_rest_s;
+        v2 = (v2 - f32(pc_uniforms.features_rest_zp)) * pc_uniforms.features_rest_s;
+    }
     let r = coef_idx % 4u;
     if r == 0u {
         return vec3<f32>(v1.xyz);
@@ -320,7 +320,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     }
 
     let geometry_idx = gaussian_indices[idx];
-    let Vrk = get_covar(geometry_idx);
+    let Vrk = get_covar(idx, geometry_idx);
     let opacity = get_opacity(idx);
     let J = mat3x3<f32>(
         focal.x / camspace.z,
