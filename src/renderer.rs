@@ -13,7 +13,7 @@ use instant::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
-use cgmath::{Matrix4, SquareMatrix, Vector2};
+use cgmath::{Matrix4, SquareMatrix, Vector2, Vector4};
 
 pub enum Renderer{
     Rast(GaussianRenderer),
@@ -497,6 +497,7 @@ impl GaussianRendererCompute  {
         uniform.set_camera(camera);
         uniform.set_focal(camera.projection.focal(viewport));
         uniform.set_viewport(viewport.cast().unwrap());
+        uniform.set_near_far(Vector2::<f32>{x: camera.projection.znear, y: camera.projection.zfar});
         self.camera.sync(queue);
         // TODO perform this in vertex buffer after draw call
         queue.write_buffer(
@@ -686,6 +687,7 @@ pub struct CameraUniform {
 
     pub(crate) viewport: Vector2<f32>,
     pub(crate) focal: Vector2<f32>,
+    pub(crate) near_far: Vector4<f32>,
 }
 
 impl Default for CameraUniform {
@@ -697,6 +699,7 @@ impl Default for CameraUniform {
             proj_inv_matrix: Matrix4::identity(),
             viewport: Vector2::new(1., 1.),
             focal: Vector2::new(1., 1.),
+            near_far: Vector4::new(0.0001, 1000.0, 0.0, 0.0),
         }
     }
 }
@@ -721,7 +724,10 @@ impl CameraUniform {
         self.viewport = viewport;
     }
     pub fn set_focal(&mut self, focal: Vector2<f32>) {
-        self.focal = focal
+        self.focal = focal;
+    }
+    pub fn set_near_far(&mut self, near_far: Vector2<f32>) {
+        self.near_far = Vector4::new(near_far.x, near_far.y, 0.0, 0.0);
     }
 }
 

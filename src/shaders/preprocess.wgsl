@@ -36,7 +36,8 @@ struct CameraUniforms {
     proj_inv: mat4x4<f32>,
     
     viewport: vec2<f32>,
-    focal: vec2<f32>
+    focal: vec2<f32>,
+    near_far: vec4<f32>,
 };
 
 
@@ -106,7 +107,7 @@ var<storage,read_write> indirect_draw_call : DrawIndirect;
 @group(3) @binding(0)
 var<storage, read_write> sort_infos: SortInfos;
 @group(3) @binding(2)
-var<storage, read_write> sort_depths : array<f32>;
+var<storage, read_write> sort_depths : array<u32>;
 @group(3) @binding(4)
 var<storage, read_write> sort_indices : array<u32>;
 @group(3) @binding(6)
@@ -278,7 +279,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     );
     
     // filling the sorting buffers and the indirect sort dispatch buffer
-    sort_depths[store_idx] = 1. - v_center.z;    // z is already larger than 1, as OpenGL projection is used
+    sort_depths[store_idx] = u32(f32(0xffffffu) - pos2d.z / camera.near_far.y * f32(0xffffffu));
     sort_indices[store_idx] = store_idx;
     if idx == 0u {
         atomicAdd(&sort_dispatch.dispatch_x, 1u);   // safety addition to always have an unfull block at the end of the buffer
