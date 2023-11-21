@@ -78,7 +78,7 @@ impl WGPUContext {
         #[cfg(target_arch="wasm32")]
         let features =  wgpu::Features::default();
         #[cfg(not(target_arch="wasm32"))]
-        let features  =wgpu::Features::TIMESTAMP_QUERY;
+        let features  =wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM |wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
 
         let (device, queue) = adapter
             .request_device(
@@ -127,6 +127,7 @@ struct WindowContext {
     current_view: Option<usize>,
     ui_renderer: ui_renderer::EguiWGPU,
     fps: f32,
+    ui_visible:bool,
 
     #[cfg(not(target_arch="wasm32"))]
     history: RingBuffer<(Duration, Duration, Duration)>,
@@ -165,6 +166,7 @@ impl WindowContext {
             .next()
             .unwrap_or(&surface_caps.formats[0])
             .clone();
+
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -232,6 +234,7 @@ impl WindowContext {
             fps: 0.,
             #[cfg(not(target_arch="wasm32"))]
             history: RingBuffer::new(512),
+            ui_visible:true
         }
     }
 
@@ -438,26 +441,27 @@ impl WindowContext {
             viewport,
         );
 
-        // {
-        //     // ui rendering
-        //     self.ui_renderer.begin_frame(&self.window);
-        //     // self.ui();
+        if self.ui_visible{
+            // ui rendering
+            self.ui_renderer.begin_frame(&self.window);
+            self.ui();
 
-        //     let shapes = self.ui_renderer.end_frame(&self.window);
+            let shapes = self.ui_renderer.end_frame(&self.window);
 
-        //     self.ui_renderer.paint(
-        //         PhysicalSize {
-        //             width: output.texture.size().width,
-        //             height: output.texture.size().height,
-        //         },
-        //         self.scale_factor,
-        //         &self.wgpu_context.device,
-        //         &self.wgpu_context.queue,
-        //         &view,
-        //         shapes,
-        //     );
-        // }
-        self.renderer.stopwatch.reset();
+            self.ui_renderer.paint(
+                PhysicalSize {
+                    width: output.texture.size().width,
+                    height: output.texture.size().height,
+                },
+                self.scale_factor,
+                &self.wgpu_context.device,
+                &self.wgpu_context.queue,
+                &view,
+                shapes,
+            );
+        }else{
+            self.renderer.stopwatch.reset();
+        }
         output.present();
         Ok(())
     }
@@ -586,6 +590,9 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(file: R, pc_dat
                     if input.state == ElementState::Released{
                         if key == VirtualKeyCode::T{
                             state.start_tracking_shot(Some(Split::Test));
+                            
+                        }else if key == VirtualKeyCode::U{
+                            state.ui_visible = !state.ui_visible;
                             
                         }else
                         if let Some(scene) = &state.scene{

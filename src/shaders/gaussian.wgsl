@@ -12,13 +12,14 @@ struct VertexInput {
 };
 
 struct Splats2D {
-    // 4x f16 packed as u32
+     // 4x f16 packed as u32
     v_0: u32, v_1: u32,
     // 2x f16 packed as u32
     pos: u32,
     // rgba packed as u8
-    color: u32,
+    color_0: u32,color_1: u32,
 };
+
 
 @group(0) @binding(2)
 var<storage, read> points_2d : array<Splats2D>;
@@ -51,7 +52,7 @@ fn vs_main(
     let offset = position.x * v1 * 2.0 + position.y * v2 * 2.0;
     out.position = vec4<f32>(v_center + offset, 0., 1.);
     out.screen_pos = position;
-    out.color = unpack4x8unorm(vertex.color);
+    out.color = vec4<f32>(unpack2x16float(vertex.color_0), unpack2x16float(vertex.color_1));
 
     return out;
 }
@@ -59,7 +60,10 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let a = -dot(in.screen_pos, in.screen_pos);
-    if a < -4.0 {discard;}
-    let b = exp(a) * in.color.a;
+    // if a < -4.0 {discard;}
+    let b = min(0.99, exp(a) * in.color.a);
+    if b < 1.0 / 255.0 {
+        discard;
+    }
     return vec4<f32>(in.color.rgb * b, b);
 }

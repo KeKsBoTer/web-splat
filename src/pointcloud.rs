@@ -454,7 +454,7 @@ impl PointCloud {
 pub struct Splat2D {
     v: Vector4<f16>,
     pos: Vector2<f16>,
-    color: Vector4<u8>,
+    color: Vector4<f16>,
 }
 
 pub trait PointCloudReader {

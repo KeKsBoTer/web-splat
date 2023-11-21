@@ -85,7 +85,11 @@ impl TrackingShot {
                 })
                 .unwrap()
                 .0;
-            (start, cameras[idx], ((idx as i32 + n as i32 - 1) % n as i32) as usize)
+            (
+                start,
+                cameras[idx],
+                ((idx as i32 + n as i32 - 1) % n as i32) as usize,
+            )
         } else {
             (cameras[0], cameras[1], 0)
         };
@@ -95,6 +99,14 @@ impl TrackingShot {
             transiton: Self::create_transition(first, second, speed),
             speed,
         }
+    }
+
+    pub fn duration(&self) -> Duration {
+        let mut total = Duration::ZERO;
+        for (start, end) in self.cameras.iter().zip(self.cameras.iter().skip(1)) {
+            total += Self::create_transition(start.clone(), end.clone(), self.speed).duration;
+        }
+        return total;
     }
 
     fn create_transition(

@@ -59,7 +59,7 @@ async fn render_views(
                 s.clone().into(),
                 resolution,
             );
-            renderer.stopwatch.reset();
+            // renderer.stopwatch.reset();
         }
     }
     device.poll(wgpu::MaintainBase::Wait);

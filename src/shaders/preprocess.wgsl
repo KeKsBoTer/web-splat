@@ -64,7 +64,8 @@ struct Splats2D {
     // 2x f16 packed as u32
     pos: u32,
     // rgba packed as u8
-    color: u32,
+    color_0: u32,
+    color_1: u32,
 };
 
 struct DrawIndirect {
@@ -114,7 +115,7 @@ var<storage,read_write> indirect_draw_call : DrawIndirect;
 @group(3) @binding(0)
 var<storage, read_write> sort_infos: SortInfos;
 @group(3) @binding(2)
-var<storage, read_write> sort_depths : array<f32>;
+var<storage, read_write> sort_depths : array<u32>;
 @group(3) @binding(4)
 var<storage, read_write> sort_indices : array<u32>;
 @group(3) @binding(6)
@@ -249,8 +250,8 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let mid = 0.5 * (diagonal1 + diagonal2);
     let radius = length(vec2<f32>((diagonal1 - diagonal2) / 2.0, offDiagonal));
     // eigenvalues of the 2D screen space splat
-    let lambda1 = mid + radius;
-    let lambda2 = max(mid - radius, 0.1);
+    let lambda1 = mid + max(radius, 0.1);
+    let lambda2 = mid - max(radius, 0.1);
 
     let diagonalVector = normalize(vec2<f32>(offDiagonal, lambda1 - diagonal1));
     // scaled eigenvectors in screen space 
@@ -262,7 +263,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let camera_pos = camera.view_inv[3].xyz;
     let dir = normalize(xyz - camera_pos);
     let color = vec4<f32>(
-        saturate(evaluate_sh(dir, vertex.sh_idx, MAX_SH_DEG)),
+        max(vec3<f32>(0.), evaluate_sh(dir, vertex.sh_idx, MAX_SH_DEG)),
         opacity
     );
 
@@ -271,11 +272,15 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     points_2d[store_idx] = Splats2D(
         pack2x16float(v.xy), pack2x16float(v.zw),
         pack2x16float(v_center.xy),
-        pack4x8unorm(color),
+        pack2x16float(color.rg),
+        pack2x16float(color.ba),
     );
     
     // filling the sorting buffers and the indirect sort dispatch buffer
-    sort_depths[store_idx] = 1. - v_center.z;    // z is already larger than 1, as OpenGL projection is used
+    let znear = -camera.proj[3][2] / camera.proj[2][2];
+    let zfar = -camera.proj[3][2] / (camera.proj[2][2] - (1.));
+    // filling the sorting buffers and the indirect sort dispatch buffer
+    sort_depths[store_idx] = u32(f32(0xffffffu) - pos2d.z / zfar * f32(0xffffffu));
     sort_indices[store_idx] = store_idx;
     if idx == 0u {
         atomicAdd(&sort_dispatch.dispatch_x, 1u);   // safety addition to always have an unfull block at the end of the buffer
