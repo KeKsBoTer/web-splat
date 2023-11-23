@@ -1,7 +1,5 @@
 use cgmath::Vector2;
 use clap::Parser;
-use image::{ImageBuffer, Rgba};
-use indicatif::{ProgressBar, ProgressStyle};
 use std::{
     fs::File,
     path::PathBuf,
@@ -10,7 +8,6 @@ use std::{
 use web_splats::{
     GaussianRenderer, PCDataType, PointCloud, Scene, SceneCamera, Split, WGPUContext,
 };
-use wgpu::SubmissionIndex;
 
 #[derive(Debug, Parser)]
 #[command(author, version)]
@@ -49,6 +46,9 @@ async fn render_views(
     let start = Instant::now();
     let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let num_samples = 50;
+    let mut preprocess_time = Duration::ZERO;
+    let mut sorting_time = Duration::ZERO;
+    let mut rasterization_time = Duration::ZERO;
     for (i, s) in cameras.iter().enumerate() {
         for _ in 0..num_samples {
             renderer.render(
@@ -59,7 +59,10 @@ async fn render_views(
                 s.clone().into(),
                 resolution,
             );
-            // renderer.stopwatch.reset();
+            let timing = renderer.stopwatch.take_measurements(&device, &queue).await;
+            preprocess_time += *timing.get("preprocess").unwrap();
+            sorting_time += *timing.get("sorting").unwrap();
+            rasterization_time += *timing.get("rasterization").unwrap();
         }
     }
     device.poll(wgpu::MaintainBase::Wait);
@@ -68,6 +71,14 @@ async fn render_views(
     println!(
         "average FPS: {:}",
         1. / (duration.as_secs_f32() / (cameras.len() as f32 * num_samples as f32))
+    );
+    println!(
+        "preprocess: {:.2}, sorting: {:.2}, rasterization: {:.2}, total {:.2}",
+        preprocess_time.as_secs_f32() * 1000. / (num_samples as f32 * cameras.len() as f32),
+        sorting_time.as_secs_f32() * 1000. / (num_samples as f32 * cameras.len() as f32),
+        rasterization_time.as_secs_f32() * 1000. / (num_samples as f32 * cameras.len() as f32),
+        (preprocess_time + sorting_time + rasterization_time).as_secs_f32() * 1000.
+            / (num_samples as f32 * cameras.len() as f32),
     );
 }
 

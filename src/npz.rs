@@ -49,8 +49,8 @@ impl<'a, R: Read + Seek> NpzReader<'a, R> {
         let mut npz_file = npz::NpzArchive::new(reader)?;
 
         let mut sh_deg = 0;
-        if let Some(rest) = npz_file.by_name("features")? {
-            sh_deg = sh_deg_from_num_coefs(rest.shape()[1] as u32) // + 1)
+        if let Some(rest) = npz_file.by_name("features_rest")? {
+            sh_deg = sh_deg_from_num_coefs(rest.shape()[1] as u32 + 1)
                 .ok_or(anyhow::anyhow!("num sh coefs not valid"))?;
         }
         let num_points = npz_file

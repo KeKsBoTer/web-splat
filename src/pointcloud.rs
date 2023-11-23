@@ -73,7 +73,7 @@ impl Debug for PointCloud {
 }
 
 fn ply_header_info<R: io::BufRead + io::Seek>(buf_reader: &mut R) -> (u32, usize) {
-    let reader = crate::ply::PlyReader::new(buf_reader).unwrap();
+    let reader: PlyReader<&mut R> = crate::ply::PlyReader::new(buf_reader).unwrap();
     (reader.file_sh_deg().unwrap(), reader.num_points().unwrap())
 }
 #[cfg(feature = "npz")]
@@ -97,15 +97,8 @@ impl PointCloud {
             .max_buffer_size
             .max(device.limits().max_storage_buffer_binding_size as u64);
 
-        let target_sh_deg = max_sh_deg.unwrap_or(file_sh_deg);
-        let sh_deg = max_supported_sh_deg(max_buffer_size, num_points as u64, target_sh_deg)
-            .ok_or(anyhow::anyhow!(
-                "cannot fit sh coefs into a buffer (exceeds WebGPU's max_buffer_size)"
-            ))?;
+        let sh_deg = 3; //max_sh_deg.unwrap_or(file_sh_deg);
         log::info!("num_points: {num_points}, sh_deg: {sh_deg}");
-        if sh_deg < target_sh_deg {
-            log::warn!("color sh degree (file: {file_sh_deg}) was decreased to degree {sh_deg} to fit the coefficients into memory")
-        }
 
         let bind_group_layout = Self::bind_group_layout(device);
 
@@ -454,7 +447,7 @@ impl PointCloud {
 pub struct Splat2D {
     v: Vector4<f16>,
     pos: Vector2<f16>,
-    color: Vector4<f16>,
+    color: Vector4<u8>,
 }
 
 pub trait PointCloudReader {

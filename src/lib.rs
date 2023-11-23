@@ -66,14 +66,8 @@ impl WGPUContext {
     }
 
     pub async fn new(instance: &wgpu::Instance, surface: Option<&wgpu::Surface>) -> Self {
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: surface,
-                force_fallback_adapter: false,
-            })
-            .await
-            .unwrap();
+        
+        let adapter = wgpu::util::initialize_adapter_from_env_or_default(instance, surface).await.unwrap();
 
         #[cfg(target_arch="wasm32")]
         let features =  wgpu::Features::default();
@@ -311,12 +305,11 @@ impl WindowContext {
                     .allow_drag(false)
                     .allow_boxed_zoom(false)
                     .allow_zoom(false)
-                    .allow_scroll(false)
-                    .show_x(false)
+                    .allow_scroll(false).y_axis_width(1)
                     .y_axis_label("ms")
-                    .show_axes([false, false])
+                    .show_axes([false, true])
                     .legend(Legend {
-                        text_style: TextStyle::Small,
+                        text_style: TextStyle::Body,
                         background_alpha: 1.,
                         position: egui_plot::Corner::LeftBottom,
                     })
