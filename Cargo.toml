@@ -34,12 +34,12 @@ egui-wgpu = "0.23.0"
 egui-winit = { version = "0.23.0", features = [], default-features = false }
 egui_plot = "0.23.0"
 
-npyz = { version = "0.8", features = ["npz"], optional = true }
+npyz = { version = "0.8", features = [
+    "npz",
+    "half",
+], git = 'https://github.com/KeKsBoTer/npyz', optional = true }
 futures-intrusive = "0.5.0"
 
-imageproc = "0.23.0"
-minimp4 = "0.1.0"
-openh264 = "0.4.4"
 
 [lib]
 path = "src/lib.rs"
@@ -47,13 +47,6 @@ crate-type = ["cdylib", "rlib"]
 
 [[bin]]
 name = "viewer"
-
-[[bin]]
-name = "render"
-
-[[bin]]
-name = "measure"
-
 
 [features]
 npz = ["dep:npyz"]

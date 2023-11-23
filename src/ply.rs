@@ -35,7 +35,7 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
         })
     }
 
-    fn read_line<B: ByteOrder>(&mut self, idx: usize, sh_deg: u32) -> GaussianSplatFloat {
+    fn read_line<B: ByteOrder>(&mut self) -> GaussianSplatFloat {
         let mut pos = [0.; 3];
         self.reader.read_f32_into::<B>(&mut pos).unwrap();
 
@@ -81,16 +81,16 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
         };
     }
 
-    pub fn read(&mut self, sh_deg: u32) -> Result<Vec<GaussianSplatFloat>, anyhow::Error> {
+    pub fn read(&mut self) -> Result<Vec<GaussianSplatFloat>, anyhow::Error> {
         let start = Instant::now();
         let num_points = self.num_points()?;
         let vertices: Vec<GaussianSplatFloat> = match self.header.encoding {
             ply_rs::ply::Encoding::Ascii => todo!("acsii ply format not supported"),
             ply_rs::ply::Encoding::BinaryBigEndian => (0..num_points)
-                .map(|i| self.read_line::<BigEndian>(i, sh_deg))
+                .map(|_| self.read_line::<BigEndian>())
                 .collect(),
             ply_rs::ply::Encoding::BinaryLittleEndian => (0..num_points)
-                .map(|i| self.read_line::<LittleEndian>(i, sh_deg))
+                .map(|_| self.read_line::<LittleEndian>())
                 .collect(),
         };
         info!(

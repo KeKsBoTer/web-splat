@@ -1,6 +1,6 @@
 use std::io::{Read, Seek};
 
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::WriteBytesExt;
 use cgmath::{InnerSpace, Point3, Quaternion, Vector3};
 use half::f16;
 use npyz::npz::{self, NpzArchive};
@@ -11,32 +11,6 @@ use crate::{
     },
     utils::{build_cov, sh_deg_from_num_coefs, sh_num_coefficients},
 };
-#[derive(Debug, PartialEq, Clone)]
-struct Half(f16);
-struct HalfReader;
-impl npyz::TypeRead for HalfReader {
-    type Value = Half;
-
-    #[inline]
-    fn read_one<R: Read>(&self, mut reader: R) -> std::io::Result<Self::Value> {
-        Ok(Half {
-            0: f16::from_bits(reader.read_u16::<LittleEndian>()?),
-        })
-    }
-}
-impl npyz::Deserialize for Half {
-    type TypeReader = HalfReader;
-
-    fn reader(dtype: &npyz::DType) -> Result<Self::TypeReader, npyz::DTypeError> {
-        if true {
-            Ok(HalfReader)
-        } else {
-            Err(npyz::DTypeError::custom(
-                "Vector5 only supports '<i4' format!",
-            ))
-        }
-    }
-}
 
 pub struct NpzReader<'a, R: Read + Seek> {
     npz_file: NpzArchive<&'a mut R>,
@@ -124,7 +98,7 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
             .into_vec()?
             .as_slice()
             .chunks_exact(3)
-            .map(|c: &[Half]| Point3::new(c[0].0, c[1].0, c[2].0).cast().unwrap())
+            .map(|c: &[f16]| Point3::new(c[0], c[1], c[2]).cast().unwrap())
             .collect();
 
         let scaling: Vec<Vector3<f32>> = self

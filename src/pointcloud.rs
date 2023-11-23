@@ -6,12 +6,10 @@ use std::io::{self, BufReader, Read, Seek};
 use std::mem;
 use wgpu::util::DeviceExt;
 
-use crate::gpu_rs::GPURSSorter;
 #[cfg(feature = "npz")]
 use crate::npz::NpzReader;
 use crate::ply::PlyReader;
 use crate::uniform::UniformBuffer;
-use crate::utils::max_supported_sh_deg;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -48,20 +46,6 @@ pub struct PointCloud {
     pub render_bind_group: wgpu::BindGroup,
     num_points: u32,
     sh_deg: u32,
-
-    // Fields needed for data sorting
-    pub sorter: GPURSSorter,
-    sorter_b_a: wgpu::Buffer,              // buffer a for keyval
-    sorter_b_b: wgpu::Buffer,              // buffer b for keyval
-    sorter_p_a: wgpu::Buffer,              // payload buffer a
-    sorter_p_b: wgpu::Buffer,              // payload buffer b
-    sorter_int: wgpu::Buffer,              // internal memory storage (used for histgoram calcs)
-    pub sorter_uni: wgpu::Buffer,          // uniform buffer information
-    pub sorter_dis: wgpu::Buffer,          // dispatch buffer
-    pub sorter_dis_bg: wgpu::BindGroup, // sorter dispatch bind group (needed mainly for the preprocess pipeline to set the correct dispatch count in shader)
-    pub sorter_bg: wgpu::BindGroup,     // sorter bind group
-    pub sorter_render_bg: wgpu::BindGroup, // bind group only with the sorted indices for rendering
-    pub sorter_bg_pre: wgpu::BindGroup, // bind group for the preprocess (is the sorter_dis and sorter_bg merged as we only have a limited amount of bgs for the preprocessing)
 }
 
 impl Debug for PointCloud {
@@ -84,20 +68,10 @@ fn npz_header_info<R: io::BufRead + io::Seek>(buf_reader: &mut R) -> (u32, usize
 
 impl PointCloud {
     #[cfg(feature = "npz")]
-    pub fn load_npz<R: Read + Seek>(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        f: R,
-        max_sh_deg: Option<u32>,
-    ) -> Result<Self, anyhow::Error> {
+    pub fn load_npz<R: Read + Seek>(device: &wgpu::Device, f: R) -> Result<Self, anyhow::Error> {
         let mut reader = BufReader::new(f);
         let (file_sh_deg, num_points) = npz_header_info(&mut reader);
-        let max_buffer_size = device
-            .limits()
-            .max_buffer_size
-            .max(device.limits().max_storage_buffer_binding_size as u64);
-
-        let sh_deg = 3; //max_sh_deg.unwrap_or(file_sh_deg);
+        let sh_deg = file_sh_deg;
         log::info!("num_points: {num_points}, sh_deg: {sh_deg}");
 
         let bind_group_layout = Self::bind_group_layout(device);
@@ -168,31 +142,6 @@ impl PointCloud {
             ],
         });
 
-        let sorter = GPURSSorter::new(device, queue);
-        let (sorter_b_a, sorter_b_b, sorter_p_a, sorter_p_b) =
-            GPURSSorter::create_keyval_buffers(device, num_points, 4);
-        let sorter_int = sorter.create_internal_mem_buffer(device, num_points);
-        let (sorter_uni, sorter_dis, sorter_bg, sorter_dis_bg) = sorter.create_bind_group(
-            device,
-            num_points,
-            &sorter_int,
-            &sorter_b_a,
-            &sorter_b_b,
-            &sorter_p_a,
-            &sorter_p_b,
-        );
-        let sorter_render_bg = sorter.create_bind_group_render(device, &sorter_uni, &sorter_p_a);
-        let sorter_bg_pre = sorter.create_bind_group_preprocess(
-            device,
-            &sorter_uni,
-            &sorter_dis,
-            &sorter_int,
-            &sorter_b_a,
-            &sorter_b_b,
-            &sorter_p_a,
-            &sorter_p_b,
-        );
-
         Ok(Self {
             splat_2d_buffer,
 
@@ -200,43 +149,15 @@ impl PointCloud {
             render_bind_group,
             num_points: num_points as u32,
             sh_deg,
-            sorter,
-            sorter_b_a,
-            sorter_b_b,
-            sorter_p_a,
-            sorter_p_b,
-            sorter_int,
-            sorter_uni,
-            sorter_dis,
-            sorter_dis_bg,
-            sorter_bg,
-            sorter_render_bg,
-            sorter_bg_pre,
         })
     }
 
-    pub fn load_ply<R: Read + Seek>(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        f: R,
-        max_sh_deg: Option<u32>,
-    ) -> Result<Self, anyhow::Error> {
+    pub fn load_ply<R: Read + Seek>(device: &wgpu::Device, f: R) -> Result<Self, anyhow::Error> {
         let mut reader = BufReader::new(f);
         let (file_sh_deg, num_points) = ply_header_info(&mut reader);
-        let max_buffer_size = device
-            .limits()
-            .max_buffer_size
-            .max(device.limits().max_storage_buffer_binding_size as u64);
 
-        let target_sh_deg = max_sh_deg.unwrap_or(file_sh_deg);
-        let sh_deg = max_supported_sh_deg(max_buffer_size, num_points as u64, target_sh_deg)
-            .ok_or(anyhow::anyhow!(
-                "cannot fit sh coefs into a buffer (exceeds WebGPU's max_buffer_size)"
-            ))?;
+        let sh_deg = file_sh_deg;
         log::info!("num_points: {num_points}, sh_deg: {sh_deg}");
-        if sh_deg < target_sh_deg {
-            log::warn!("color sh degree (file: {file_sh_deg}) was decreased to degree {sh_deg} to fit the coefficients into memory")
-        }
 
         let bind_group_layout = Self::bind_group_layout_float(device);
 
@@ -257,7 +178,7 @@ impl PointCloud {
         });
 
         reader.seek(std::io::SeekFrom::Start(0)).unwrap(); // have to reset reader to start of file
-        let vertices = PlyReader::new(reader).unwrap().read(sh_deg)?;
+        let vertices = PlyReader::new(reader).unwrap().read()?;
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("3d gaussians buffer"),
@@ -280,30 +201,30 @@ impl PointCloud {
             ],
         });
 
-        let sorter = GPURSSorter::new(device, queue);
-        let (sorter_b_a, sorter_b_b, sorter_p_a, sorter_p_b) =
-            GPURSSorter::create_keyval_buffers(device, num_points, 4);
-        let sorter_int = sorter.create_internal_mem_buffer(device, num_points);
-        let (sorter_uni, sorter_dis, sorter_bg, sorter_dis_bg) = sorter.create_bind_group(
-            device,
-            num_points,
-            &sorter_int,
-            &sorter_b_a,
-            &sorter_b_b,
-            &sorter_p_a,
-            &sorter_p_b,
-        );
-        let sorter_render_bg = sorter.create_bind_group_render(device, &sorter_uni, &sorter_p_a);
-        let sorter_bg_pre = sorter.create_bind_group_preprocess(
-            device,
-            &sorter_uni,
-            &sorter_dis,
-            &sorter_int,
-            &sorter_b_a,
-            &sorter_b_b,
-            &sorter_p_a,
-            &sorter_p_b,
-        );
+        // let sorter = GPURSSorter::new(device, queue);
+        // let (sorter_b_a, sorter_b_b, sorter_p_a, sorter_p_b) =
+        //     GPURSSorter::create_keyval_buffers(device, num_points, 4);
+        // let sorter_int = sorter.create_internal_mem_buffer(device, num_points);
+        // let (sorter_uni, sorter_dis, sorter_bg, sorter_dis_bg) = sorter.create_bind_group(
+        //     device,
+        //     num_points,
+        //     &sorter_int,
+        //     &sorter_b_a,
+        //     &sorter_b_b,
+        //     &sorter_p_a,
+        //     &sorter_p_b,
+        // );
+        // let sorter_render_bg = sorter.create_bind_group_render(device, &sorter_uni, &sorter_p_a);
+        // let sorter_bg_pre = sorter.create_bind_group_preprocess(
+        //     device,
+        //     &sorter_uni,
+        //     &sorter_dis,
+        //     &sorter_int,
+        //     &sorter_b_a,
+        //     &sorter_b_b,
+        //     &sorter_p_a,
+        //     &sorter_p_b,
+        // );
 
         Ok(Self {
             splat_2d_buffer,
@@ -312,18 +233,6 @@ impl PointCloud {
             render_bind_group,
             num_points: num_points as u32,
             sh_deg,
-            sorter,
-            sorter_b_a,
-            sorter_b_b,
-            sorter_p_a,
-            sorter_p_b,
-            sorter_int,
-            sorter_uni,
-            sorter_dis,
-            sorter_dis_bg,
-            sorter_bg,
-            sorter_render_bg,
-            sorter_bg_pre,
         })
     }
 

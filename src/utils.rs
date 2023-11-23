@@ -208,19 +208,6 @@ pub fn sh_deg_from_num_coefs(n: u32) -> Option<u32> {
     return Some((sqrt as u32) - 1);
 }
 
-/// calculates the maximum sh degree that will fit into
-/// the max_buffer_size
-pub fn max_supported_sh_deg(max_buffer_size: u64, num_points: u64, max_deg: u32) -> Option<u32> {
-    for i in (0..=max_deg).rev() {
-        let n_coefs = sh_num_coefficients(i) * 3;
-        let buf_size = num_points as u64 * 4 as u64 * n_coefs as u64;
-        if buf_size < max_buffer_size {
-            return Some(i);
-        }
-    }
-    return None;
-}
-
 /// builds a covariance matrix based on a quaterion and rotation
 /// the matrix is symmetric so we only return the upper right half
 /// see "3D Gaussian Splatting" Kerbel et al.

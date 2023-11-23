@@ -11,10 +11,6 @@ struct Opt {
     /// Scene json file
     scene: Option<PathBuf>,
 
-    /// maximum allowed Spherical Harmonics (SH) degree
-    #[arg(long, default_value_t = 3)]
-    max_sh_deg: u32,
-
     #[arg(long, default_value_t = true)]
     no_vsync: bool,
 }
@@ -44,7 +40,6 @@ async fn main() {
         data_type,
         scene_file,
         RenderConfig {
-            max_sh_deg: opt.max_sh_deg,
             no_vsync: opt.no_vsync,
         },
     )

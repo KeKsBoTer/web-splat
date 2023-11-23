@@ -101,7 +101,6 @@ impl WGPUContext {
 }
 
 pub struct RenderConfig {
-    pub max_sh_deg: u32,
     pub no_vsync: bool,
 }
 
@@ -150,6 +149,7 @@ impl WindowContext {
         log::info!("device: {:?}", wgpu_context.adapter.get_info().name);
 
         let device = &wgpu_context.device;
+        let queue = &wgpu_context.queue;
 
         let surface_caps = surface.get_capabilities(&wgpu_context.adapter);
 
@@ -179,23 +179,19 @@ impl WindowContext {
         let pc = match pc_data_type {
             PCDataType::PLY => PointCloud::load_ply(
                 &device,
-                &wgpu_context.queue,
                 pc_file,
-                Some(render_config.max_sh_deg),
             )
             .unwrap(),
             #[cfg(feature="npz")]
             PCDataType::NPZ => PointCloud::load_npz(
                 &device,
-                &wgpu_context.queue,
                 pc_file,
-                Some(render_config.max_sh_deg),
             )
             .unwrap(),
         }; 
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
-        let renderer = GaussianRenderer::new(&device, surface_format, pc.sh_deg(),pc_data_type==PCDataType::PLY);
+        let renderer = GaussianRenderer::new(&device, &queue,surface_format, pc.sh_deg(),pc_data_type==PCDataType::PLY);
 
         let aspect = size.width as f32 / size.height as f32;
         let view_camera = PerspectiveCamera::new(
@@ -330,6 +326,7 @@ impl WindowContext {
             .default_width(200.)
             .resizable(false)
             .default_height(100.)
+            .default_open(false)
             .show(ctx, |ui| {
                 egui::Grid::new("timing")
                     .num_columns(2)

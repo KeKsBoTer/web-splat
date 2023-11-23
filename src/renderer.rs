@@ -1,4 +1,4 @@
-use crate::gpu_rs::GPURSSorter;
+use crate::gpu_rs::{GPURSSorter, PointCloudSortStuff};
 use crate::{
     camera::{Camera, PerspectiveCamera, VIEWPORT_Y_FLIP},
     pointcloud::PointCloud,
@@ -23,11 +23,14 @@ pub struct GaussianRenderer {
     color_format: wgpu::TextureFormat,
     #[cfg(not(target_arch = "wasm32"))]
     pub stopwatch: GPUStopwatch,
+    sorter: GPURSSorter,
+    sorter_suff: Option<PointCloudSortStuff>,
 }
 
 impl GaussianRenderer {
     pub fn new(
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         color_format: wgpu::TextureFormat,
         sh_deg: u32,
         float: bool,
@@ -96,6 +99,8 @@ impl GaussianRenderer {
         #[cfg(not(target_arch = "wasm32"))]
         let stopwatch = GPUStopwatch::new(device, Some(3));
 
+        let sorter = GPURSSorter::new(device, queue);
+
         let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
         let preprocess = PreprocessPipeline::new(device, sh_deg, float);
         GaussianRenderer {
@@ -107,10 +112,12 @@ impl GaussianRenderer {
             color_format,
             #[cfg(not(target_arch = "wasm32"))]
             stopwatch,
+            sorter,
+            sorter_suff: None,
         }
     }
 
-    pub fn preprocess<'a>(
+    fn preprocess<'a>(
         &'a mut self,
         encoder: &'a mut wgpu::CommandEncoder,
         queue: &wgpu::Queue,
@@ -137,8 +144,9 @@ impl GaussianRenderer {
             }
             .as_bytes(),
         );
+        let depth_buffer = &self.sorter_suff.as_ref().unwrap().sorter_bg_pre;
         self.preprocess
-            .run(encoder, pc, &self.camera, &self.draw_indirect);
+            .run(encoder, pc, &self.camera, &self.draw_indirect, depth_buffer);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -176,7 +184,24 @@ impl GaussianRenderer {
             label: Some("Render Encoder Compare"),
         });
         {
-            GPURSSorter::record_reset_indirect_buffer(&pc.sorter_dis, &pc.sorter_uni, &queue);
+            if self.sorter_suff.is_none()
+                || self
+                    .sorter_suff
+                    .as_ref()
+                    .is_some_and(|s| s.num_points != pc.num_points() as usize)
+            {
+                log::info!("created sort buffers for {:} points", pc.num_points());
+                self.sorter_suff = Some(
+                    self.sorter
+                        .create_sort_stuff(device, pc.num_points() as usize),
+                );
+            }
+
+            GPURSSorter::record_reset_indirect_buffer(
+                &self.sorter_suff.as_ref().unwrap().sorter_dis,
+                &self.sorter_suff.as_ref().unwrap().sorter_uni,
+                &queue,
+            );
 
             // convert 3D gaussian splats to 2D gaussian splats
             #[cfg(not(target_arch = "wasm32"))]
@@ -188,8 +213,11 @@ impl GaussianRenderer {
             // sort 2d splats
             #[cfg(not(target_arch = "wasm32"))]
             self.stopwatch.start(&mut encoder, "sorting").unwrap();
-            pc.sorter
-                .record_sort_indirect(&pc.sorter_bg, &pc.sorter_dis, &mut encoder);
+            self.sorter.record_sort_indirect(
+                &self.sorter_suff.as_ref().unwrap().sorter_bg,
+                &self.sorter_suff.as_ref().unwrap().sorter_dis,
+                &mut encoder,
+            );
             #[cfg(not(target_arch = "wasm32"))]
             self.stopwatch.stop(&mut encoder, "sorting").unwrap();
 
@@ -212,7 +240,11 @@ impl GaussianRenderer {
                 });
 
                 render_pass.set_bind_group(0, &pc.render_bind_group, &[]);
-                render_pass.set_bind_group(1, &pc.sorter_render_bg, &[]);
+                render_pass.set_bind_group(
+                    1,
+                    &self.sorter_suff.as_ref().unwrap().sorter_render_bg,
+                    &[],
+                );
                 render_pass.set_pipeline(&self.pipeline);
 
                 render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
@@ -372,6 +404,7 @@ impl PreprocessPipeline {
         pc: &PointCloud,
         camera: &UniformBuffer<CameraUniform>,
         draw_indirect: &wgpu::BindGroup,
+        depth_buffer: &wgpu::BindGroup,
     ) {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("preprocess compute pass"),
@@ -380,7 +413,7 @@ impl PreprocessPipeline {
         pass.set_bind_group(0, camera.bind_group(), &[]);
         pass.set_bind_group(1, pc.bind_group(), &[]);
         pass.set_bind_group(2, draw_indirect, &[]);
-        pass.set_bind_group(3, &pc.sorter_bg_pre, &[]);
+        pass.set_bind_group(3, &depth_buffer, &[]);
 
         let wgs_x = (pc.num_points() as f32 / 256.0).ceil() as u32;
         pass.dispatch_workgroups(wgs_x, 1, 1);

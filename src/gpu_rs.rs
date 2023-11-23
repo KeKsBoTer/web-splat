@@ -22,7 +22,6 @@ const SCATTER_WG_SIZE: usize = 1 << 8;
 
 pub struct GPURSSorter {
     bind_group_layout: wgpu::BindGroupLayout,
-    dispatch_bind_group_layout: wgpu::BindGroupLayout,
     render_bind_group_layout: wgpu::BindGroupLayout,
     preprocess_bind_group_layout: wgpu::BindGroupLayout,
     zero_p: wgpu::ComputePipeline,
@@ -31,6 +30,15 @@ pub struct GPURSSorter {
     scatter_even_p: wgpu::ComputePipeline,
     scatter_odd_p: wgpu::ComputePipeline,
     subgroup_size: usize,
+}
+
+pub struct PointCloudSortStuff {
+    pub num_points: usize,
+    pub(crate) sorter_uni: wgpu::Buffer, // uniform buffer information
+    pub(crate) sorter_dis: wgpu::Buffer, // dispatch buffer
+    pub(crate) sorter_bg: wgpu::BindGroup, // sorter bind group
+    pub(crate) sorter_render_bg: wgpu::BindGroup, // bind group only with the sorted indices for rendering
+    pub(crate) sorter_bg_pre: wgpu::BindGroup, // bind group for the preprocess (is the sorter_dis and sorter_bg merged as we only have a limited amount of bgs for the preprocessing)
 }
 
 #[allow(dead_code)]
@@ -55,75 +63,111 @@ unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
 impl GPURSSorter {
     // The new call also needs the queue to be able to determine the maximum subgroup size (Does so by running test runs)
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
-        // hardcoded subgroup size to 32 for now
-        // until this test works
-
-        // let mut cur_sorter: GPURSSorter;
-        // #[cfg(not(target_arch = "wasm32"))]
-        // {
-        //     println!("Searching for the maximum subgroup size (wgpu currently does not allow to query subgroup sizes)");
-        //     let sizes = vec![1, 16, 32, 64, 128];
-        //     let mut cur_size = 2;
-        //     enum State {
-        //         Init,
-        //         Increasing,
-        //         Decreasing,
-        //     }
-        //     let mut biggest_that_worked = 0;
-        //     let mut s = State::Init;
-        //     loop {
-        //         if cur_size >= sizes.len() {
-        //             break;
-        //         }
-        //         println!("Checking sorting with subgroupsize {}", sizes[cur_size]);
-        //         cur_sorter = Self::new_with_sg_size(device, sizes[cur_size]);
-        //         let sort_success = cur_sorter.test_sort(device, queue);
-        //         println!("{} worked: {}", sizes[cur_size], sort_success);
-        //         match s {
-        //             State::Init => {
-        //                 if sort_success {
-        //                     biggest_that_worked = sizes[cur_size];
-        //                     s = State::Increasing;
-        //                     cur_size += 1;
-        //                 } else {
-        //                     s = State::Decreasing;
-        //                     cur_size -= 1;
-        //                 }
-        //             }
-        //             State::Increasing => {
-        //                 if sort_success {
-        //                     if sizes[cur_size] > biggest_that_worked {
-        //                         biggest_that_worked = sizes[cur_size];
-        //                     }
-        //                     cur_size += 1;
-        //                 } else {
-        //                     break;
-        //                 }
-        //             }
-        //             State::Decreasing => {
-        //                 if sort_success {
-        //                     if sizes[cur_size] > biggest_that_worked {
-        //                         biggest_that_worked = sizes[cur_size];
-        //                     }
-        //                     break;
-        //                 } else {
-        //                     cur_size -= 1;
-        //                 }
-        //             }
-        //         }
-        //     }
-        //     if biggest_that_worked == 0 {
-        //         panic!("GPURSSorter::new() No workgroup size that works was found. Unable to use sorter");
-        //     }
-        //     cur_sorter = Self::new_with_sg_size(device, biggest_that_worked);
-        // }
-        // #[cfg(target_arch = "wasm32")]
+        let mut cur_sorter: GPURSSorter;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            log::debug!("Searching for the maximum subgroup size (wgpu currently does not allow to query subgroup sizes)");
+            let sizes = vec![1, 16, 32, 64, 128];
+            let mut cur_size = 2;
+            enum State {
+                Init,
+                Increasing,
+                Decreasing,
+            }
+            let mut biggest_that_worked = 0;
+            let mut s = State::Init;
+            loop {
+                if cur_size >= sizes.len() {
+                    break;
+                }
+                log::debug!("Checking sorting with subgroupsize {}", sizes[cur_size]);
+                cur_sorter = Self::new_with_sg_size(device, sizes[cur_size]);
+                let sort_success = cur_sorter.test_sort(device, queue);
+                log::debug!("{} worked: {}", sizes[cur_size], sort_success);
+                match s {
+                    State::Init => {
+                        if sort_success {
+                            biggest_that_worked = sizes[cur_size];
+                            s = State::Increasing;
+                            cur_size += 1;
+                        } else {
+                            s = State::Decreasing;
+                            cur_size -= 1;
+                        }
+                    }
+                    State::Increasing => {
+                        if sort_success {
+                            if sizes[cur_size] > biggest_that_worked {
+                                biggest_that_worked = sizes[cur_size];
+                            }
+                            cur_size += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    State::Decreasing => {
+                        if sort_success {
+                            if sizes[cur_size] > biggest_that_worked {
+                                biggest_that_worked = sizes[cur_size];
+                            }
+                            break;
+                        } else {
+                            cur_size -= 1;
+                        }
+                    }
+                }
+            }
+            if biggest_that_worked == 0 {
+                panic!("GPURSSorter::new() No workgroup size that works was found. Unable to use sorter");
+            }
+            cur_sorter = Self::new_with_sg_size(device, biggest_that_worked);
+        }
+        #[cfg(target_arch = "wasm32")]
         let cur_sorter = Self::new_with_sg_size(device, 32);
         log::info!(
             "Created a sorter with subgroup size {}\n",
             cur_sorter.subgroup_size
         );
         return cur_sorter;
+    }
+
+    pub fn create_sort_stuff(
+        &self,
+        device: &wgpu::Device,
+        num_points: usize,
+    ) -> PointCloudSortStuff {
+        let (sorter_b_a, sorter_b_b, sorter_p_a, sorter_p_b) =
+            GPURSSorter::create_keyval_buffers(device, num_points, 4);
+        let sorter_int = self.create_internal_mem_buffer(device, num_points);
+        let (sorter_uni, sorter_dis, sorter_bg) = self.create_bind_group(
+            device,
+            num_points,
+            &sorter_int,
+            &sorter_b_a,
+            &sorter_b_b,
+            &sorter_p_a,
+            &sorter_p_b,
+        );
+        let sorter_render_bg = self.create_bind_group_render(device, &sorter_uni, &sorter_p_a);
+        let sorter_bg_pre = self.create_bind_group_preprocess(
+            device,
+            &sorter_uni,
+            &sorter_dis,
+            &sorter_int,
+            &sorter_b_a,
+            &sorter_b_b,
+            &sorter_p_a,
+            &sorter_p_b,
+        );
+
+        PointCloudSortStuff {
+            num_points,
+            sorter_uni,
+            sorter_dis,
+            sorter_bg,
+            sorter_render_bg,
+            sorter_bg_pre,
+        }
     }
 
     fn new_with_sg_size(device: &wgpu::Device, sg_size: i32) -> Self {
@@ -141,7 +185,7 @@ impl GPURSSorter {
         let rs_mem_sweep_1_offset: usize = rs_mem_sweep_0_offset + rs_sweep_0_size;
         let rs_mem_sweep_2_offset: usize = rs_mem_sweep_1_offset + rs_sweep_1_size;
 
-        let (bind_group_layout, dispatch_bind_group_layout) = Self::bind_group_layouts(device);
+        let bind_group_layout = Self::bind_group_layouts(device);
         let render_bind_group_layout = Self::bind_group_layout_rendering(device);
         let preprocess_bind_group_layout = Self::bind_group_layout_preprocess(device);
 
@@ -222,7 +266,6 @@ impl GPURSSorter {
 
         return Self {
             bind_group_layout,
-            dispatch_bind_group_layout,
             render_bind_group_layout,
             preprocess_bind_group_layout,
             zero_p,
@@ -243,16 +286,15 @@ impl GPURSSorter {
 
         let internal_mem_buffer = Self::create_internal_mem_buffer(self, device, n);
         let (keyval_a, keyval_b, payload_a, payload_b) = Self::create_keyval_buffers(device, n, 4);
-        let (_uniform_buffer, _dispatch_buffer, bind_group, _dispatch_bind_group) = self
-            .create_bind_group(
-                device,
-                n,
-                &internal_mem_buffer,
-                &keyval_a,
-                &keyval_b,
-                &payload_a,
-                &payload_b,
-            );
+        let (_uniform_buffer, _dispatch_buffer, bind_group) = self.create_bind_group(
+            device,
+            n,
+            &internal_mem_buffer,
+            &keyval_a,
+            &keyval_b,
+            &payload_a,
+            &payload_b,
+        );
 
         upload_to_buffer(&keyval_a, device, queue, scrambled_data.as_slice());
 
@@ -273,78 +315,11 @@ impl GPURSSorter {
     }
 
     // layouts used by the sorting pipeline, as the dispatch buffer has to be in separate bind group
-    pub fn bind_group_layouts(
-        device: &wgpu::Device,
-    ) -> (wgpu::BindGroupLayout, wgpu::BindGroupLayout) {
-        return (
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Radix bind group layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 5,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            }),
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Radix bind group layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
+    pub fn bind_group_layouts(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        return device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Radix bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
@@ -353,9 +328,59 @@ impl GPURSSorter {
                         min_binding_size: None,
                     },
                     count: None,
-                }],
-            }),
-        );
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
     }
     // is used by the preprocess pipeline as the limitation of bind groups forces us to only use 1 bind group for the sort infos
     pub fn bind_group_layout_preprocess(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -439,26 +464,28 @@ impl GPURSSorter {
     pub fn bind_group_layout_rendering(device: &wgpu::Device) -> wgpu::BindGroupLayout {
         return device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Radix bind group layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 4,
-                visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+            ],
         });
     }
 
@@ -586,7 +613,7 @@ impl GPURSSorter {
         keyval_b: &wgpu::Buffer,
         payload_a: &wgpu::Buffer,
         payload_b: &wgpu::Buffer,
-    ) -> (wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup, wgpu::BindGroup) {
+    ) -> (wgpu::Buffer, wgpu::Buffer, wgpu::BindGroup) {
         let (_, scatter_blocks_ru, _, _, _, count_ru_histo) =
             Self::get_scatter_histogram_sizes(keysize);
         // if keyval_a.size() as usize != count_ru_histo * std::mem::size_of::<f32>()
@@ -648,20 +675,7 @@ impl GPURSSorter {
                 },
             ],
         });
-        let indirect_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Indirect dispatch bind group"),
-            layout: &self.dispatch_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: dispatch_buffer.as_entire_binding(),
-            }],
-        });
-        return (
-            uniform_buffer,
-            dispatch_buffer,
-            bind_group,
-            indirect_bind_group,
-        );
+        return (uniform_buffer, dispatch_buffer, bind_group);
     }
     pub fn create_bind_group_render(
         &self,
@@ -672,14 +686,16 @@ impl GPURSSorter {
         let rendering_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Render bind group"),
             layout: &self.render_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: general_infos.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 4,
-                resource: payload_a.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: general_infos.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: payload_a.as_entire_binding(),
+                },
+            ],
         });
         return rendering_bind_group;
     }
