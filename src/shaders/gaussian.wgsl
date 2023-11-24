@@ -16,8 +16,8 @@ struct Splats2D {
     v_0: u32, v_1: u32,
     // 2x f16 packed as u32
     pos: u32,
-    // rgba packed as u8
-    color: u32
+    // rgba packed as f16
+    color_0: u32,color_1: u32,
 };
 
 @group(0) @binding(2)
@@ -51,7 +51,7 @@ fn vs_main(
     let offset = position.x * v1 * 2.0 + position.y * v2 * 2.0;
     out.position = vec4<f32>(v_center + offset, 0., 1.);
     out.screen_pos = position;
-    out.color = vec4<f32>(unpack4x8unorm(vertex.color));
+    out.color = vec4<f32>(unpack2x16float(vertex.color_0), unpack2x16float(vertex.color_1));
 
     return out;
 }

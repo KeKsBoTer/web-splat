@@ -32,7 +32,7 @@ async fn main() {
     let scene_file = opt.scene.map(|p| File::open(p).unwrap());
 
     if opt.no_vsync {
-        println!("V-sync disabled");
+        log::info!("V-sync disabled");
     }
 
     open_window(

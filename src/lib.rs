@@ -1,4 +1,4 @@
-use std::io::{ Seek, Read};
+use std::{io::{ Seek, Read}, fmt::Display};
 
 #[cfg(target_arch = "wasm32")]
 use instant::{Duration,Instant};
@@ -124,6 +124,7 @@ struct WindowContext {
 
     #[cfg(not(target_arch="wasm32"))]
     history: RingBuffer<(Duration, Duration, Duration)>,
+    display:Display
 }
 
 impl WindowContext {
@@ -191,7 +192,7 @@ impl WindowContext {
         }; 
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
-        let renderer = GaussianRenderer::new(&device, &queue,surface_format, pc.sh_deg(),pc_data_type==PCDataType::PLY);
+        let renderer = GaussianRenderer::new(&device, &queue,wgpu::TextureFormat::Rgba16Float, pc.sh_deg(),pc_data_type==PCDataType::PLY,size.width,size.height);
 
         let aspect = size.width as f32 / size.height as f32;
         let view_camera = PerspectiveCamera::new(
@@ -425,10 +426,10 @@ impl WindowContext {
         self.renderer.render(
             &self.wgpu_context.device,
             &self.wgpu_context.queue,
-            &view,
             &self.pc,
             self.camera,
             viewport,
+            &view,
         );
 
         if self.ui_visible{

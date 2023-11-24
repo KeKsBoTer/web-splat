@@ -11,6 +11,7 @@ use std::num::NonZeroU64;
 use instant::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
+use wgpu::{include_wgsl, Extent3d, MultisampleState};
 
 use cgmath::{Matrix4, SquareMatrix, Vector2};
 
@@ -25,6 +26,9 @@ pub struct GaussianRenderer {
     pub stopwatch: GPUStopwatch,
     sorter: GPURSSorter,
     sorter_suff: Option<PointCloudSortStuff>,
+    target_view: wgpu::TextureView,
+    render_target: wgpu::BindGroup,
+    display: Display,
 }
 
 impl GaussianRenderer {
@@ -34,6 +38,8 @@ impl GaussianRenderer {
         color_format: wgpu::TextureFormat,
         sh_deg: u32,
         float: bool,
+        width: u32,
+        height: u32,
     ) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render pipeline layout"),
@@ -52,7 +58,7 @@ impl GaussianRenderer {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[], //&[Splat2D::desc()],
+                buffers: &[],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -103,6 +109,9 @@ impl GaussianRenderer {
 
         let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
         let preprocess = PreprocessPipeline::new(device, sh_deg, float);
+        let (target_view, render_target) =
+            Self::create_render_target(device, color_format, width, height);
+        let display = Display::new(device, color_format);
         GaussianRenderer {
             pipeline,
             camera,
@@ -114,7 +123,53 @@ impl GaussianRenderer {
             stopwatch,
             sorter,
             sorter_suff: None,
+            render_target,
+            target_view,
+            display,
         }
+    }
+
+    fn create_render_target(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) -> (wgpu::TextureView, wgpu::BindGroup) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("display render image"),
+            size: Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let texture_view = texture.create_view(&Default::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("render target bind group"),
+            layout: &Display::bind_group_layout(device),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        return (texture_view, bind_group);
     }
 
     fn preprocess<'a>(
@@ -175,10 +230,10 @@ impl GaussianRenderer {
         &'a mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        target: &wgpu::TextureView,
         pc: &'a PointCloud,
         camera: PerspectiveCamera,
         viewport: Vector2<u32>,
+        target: &wgpu::TextureView,
     ) {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder Compare"),
@@ -229,11 +284,11 @@ impl GaussianRenderer {
                 let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("render pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &target,
+                        view: &self.target_view,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: true,
+                            store: false,
                         },
                     })],
                     depth_stencil_attachment: None,
@@ -249,6 +304,8 @@ impl GaussianRenderer {
 
                 render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
             }
+            self.display
+                .display(&mut encoder, target, &self.render_target);
         }
         #[cfg(not(target_arch = "wasm32"))]
         self.stopwatch.stop(&mut encoder, "rasterization").unwrap();
@@ -424,4 +481,94 @@ pub struct RenderStatistics {
     pub preprocess_time: Duration,
     pub rasterization_time: Duration,
     pub sort_time: Duration,
+}
+
+pub struct Display {
+    pipeline: wgpu::RenderPipeline,
+}
+
+impl Display {
+    pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("display pipeline layout"),
+            bind_group_layouts: &[&Self::bind_group_layout(device)],
+            push_constant_ranges: &[],
+        });
+        let shader = device.create_shader_module(include_wgsl!("shaders/display.wgsl"));
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("display pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_main",
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview: None,
+        });
+        Self { pipeline }
+    }
+
+    pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("disply bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        })
+    }
+
+    pub fn display(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target_view: &wgpu::TextureView,
+        target: &wgpu::BindGroup,
+    ) {
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("render pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: true,
+                },
+            })],
+            depth_stencil_attachment: None,
+        });
+
+        render_pass.set_bind_group(0, target, &[]);
+        render_pass.set_pipeline(&self.pipeline);
+
+        render_pass.draw(0..4, 0..1);
+    }
 }

@@ -67,7 +67,7 @@ impl GPURSSorter {
         #[cfg(not(target_arch = "wasm32"))]
         {
             log::debug!("Searching for the maximum subgroup size (wgpu currently does not allow to query subgroup sizes)");
-            let sizes = vec![1, 16, 32, 64, 128];
+            let sizes = vec![1, 8, 16, 32];
             let mut cur_size = 2;
             enum State {
                 Init,
