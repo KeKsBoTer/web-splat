@@ -49,7 +49,8 @@ struct camerauniforms {
     proj_inv: mat4x4<f32>,
     
     viewport: vec2<f32>,
-    focal: vec2<f32>
+    focal: vec2<f32>,
+    near_far: vec4<f32>,
 };
 
 struct PointcloudUniforms {
@@ -144,7 +145,7 @@ var<storage,read_write> indirect_draw_call : DrawIndirect;
 @group(3) @binding(0)
 var<storage, read_write> sort_infos: SortInfos;
 @group(3) @binding(2)
-var<storage, read_write> sort_depths : array<f32>;
+var<storage, read_write> sort_depths : array<u32>;
 @group(3) @binding(4)
 var<storage, read_write> sort_indices : array<u32>;
 @group(3) @binding(6)
@@ -190,12 +191,12 @@ fn get_covar(point_idx: u32, geometry_idx: u32) -> mat3x3<f32> {
         default: {}
     }
     scale = (scale - f32(pc_uniforms.scaling_zp)) * pc_uniforms.scaling_s;
-    scale = exp(scale);
-
     if pc_uniforms.scaling_factor_s > 0.0 {
-        let s = unpack4xi8(scaling_factor[point_idx / 4u])[point_idx & 3u];
-        scale *= (s - f32(pc_uniforms.scaling_factor_zp)) * pc_uniforms.scaling_factor_s;
+        var s = unpack4xi8(scaling_factor[point_idx / 4u])[point_idx & 3u];
+        s = (s - f32(pc_uniforms.scaling_factor_zp)) * pc_uniforms.scaling_factor_s;
+        scale +=  2.0 * s;
     }
+    scale = exp(scale);
     
     // note that the x component is the scalar in this case...
     var rotation = unpack4xi8(rotation[geometry_idx]);
@@ -305,6 +306,9 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     if idx * 3u / 4u > arrayLength(&xyz) {
         return;
     }
+    if idx == 0u {
+        atomicAdd(&sort_dispatch.dispatch_x, 1u);   // safety addition to always have an unfull block at the end of the buffer for sorting
+    }
 
     let focal = camera.focal;
     let viewport = camera.viewport;
@@ -374,9 +378,6 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     // filling the sorting buffers and the indirect sort dispatch buffer
     sort_depths[store_idx] = u32(f32(0xffffffu) - pos2d.z / camera.near_far.y * f32(0xffffffu));
     sort_indices[store_idx] = store_idx;
-    if idx == 0u {
-        atomicAdd(&sort_dispatch.dispatch_x, 1u);   // safety addition to always have an unfull block at the end of the buffer
-    }
     let cur_key_size = atomicAdd(&sort_infos.keys_size, 1u);
     let keys_per_wg = 256u * 15u;         // Caution: if workgroup size (256) or keys per thread (15) changes the dispatch is wrong!!
     if (cur_key_size % keys_per_wg) == 0u {

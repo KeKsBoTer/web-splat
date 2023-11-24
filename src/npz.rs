@@ -280,7 +280,7 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
                                             (0..xyz.len() as u32 / 3).collect()
                                         };
 
-        let num_sh_coeffs = sh_num_coefficients(sh_deg) as usize;
+        let num_sh_coeffs = 3 * sh_num_coefficients(sh_deg) as usize;
         let num_sh_coeffs_rest = num_sh_coeffs - 3;
         let features: Vec<i8> = if self.npz_file.by_name("features").unwrap().is_some() {
             self.npz_file.by_name("features").unwrap().unwrap().into_vec()?
@@ -296,7 +296,7 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
                 ret[i * num_sh_coeffs + 1] = features_dc[i * 3 + 1];
                 ret[i * num_sh_coeffs + 2] = features_dc[i * 3 + 2];
                 for j in 0..num_sh_coeffs_rest {
-                    ret[i * num_sh_coeffs + 3 + j] = features_rest[j * num_sh_coeffs_rest + j];
+                    ret[i * num_sh_coeffs + 3 + j] = features_rest[i * num_sh_coeffs_rest + j];
                 }
             }
             
@@ -309,7 +309,7 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
             assert_eq!(num_points, feature_indices.len());
             assert_eq!(num_points, gaussian_indices.len());
             assert_eq!(scaling.len() / 3usize, rotation.len() / 4usize);
-            let features_len = features.len() / num_sh_coeffs as usize / 3usize;
+            let features_len = features.len() / num_sh_coeffs;
             let gaussian_len = scaling.len() / 3usize;
             assert_eq!(*feature_indices.iter().max().unwrap(), features_len as u32 - 1);
             assert_eq!(*gaussian_indices.iter().max().unwrap(), gaussian_len as u32 - 1);

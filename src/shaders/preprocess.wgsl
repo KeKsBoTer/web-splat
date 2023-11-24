@@ -198,6 +198,9 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     if idx > arrayLength(&vertices) {
         return;
     }
+    if idx == 0u {
+        atomicAdd(&sort_dispatch.dispatch_x, 1u);   // safety addition to always have an unfull block at the end of the buffer
+    }
 
     let focal = camera.focal;
     let viewport = camera.viewport;
@@ -281,9 +284,6 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     // filling the sorting buffers and the indirect sort dispatch buffer
     sort_depths[store_idx] = u32(f32(0xffffffu) - pos2d.z / camera.near_far.y * f32(0xffffffu));
     sort_indices[store_idx] = store_idx;
-    if idx == 0u {
-        atomicAdd(&sort_dispatch.dispatch_x, 1u);   // safety addition to always have an unfull block at the end of the buffer
-    }
     let cur_key_size = atomicAdd(&sort_infos.keys_size, 1u);
     let keys_per_wg = 256u * 15u;         // Caution: if workgroup size (256) or keys per thread (15) changes the dispatch is wrong!!
     if (cur_key_size % keys_per_wg) == 0u {
