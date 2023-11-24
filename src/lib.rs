@@ -74,7 +74,7 @@ impl WGPUContext {
     pub async fn new(instance: &wgpu::Instance, surface: Option<&wgpu::Surface>) -> Self {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::LowPower,//wgpu::PowerPreference::HighPerformance,
+                power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: surface,
                 force_fallback_adapter: false,
             })
