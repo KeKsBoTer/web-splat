@@ -228,7 +228,7 @@ impl GPURSSorter {
             )
             .replace("{prefix_wg_size}", PREFIX_WG_SIZE.to_string().as_str())
             .replace("{scatter_wg_size}", SCATTER_WG_SIZE.to_string().as_str());
-        //println!("{}", shader_code);
+
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Radix sort shader"),
             source: wgpu::ShaderSource::Wgsl(shader_code.into()),
@@ -772,6 +772,7 @@ impl GPURSSorter {
         {
             let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
                 label: Some("zeroing the histogram"),
+                timestamp_writes: None,
             });
 
             pass.set_pipeline(&self.zero_p);
@@ -782,6 +783,7 @@ impl GPURSSorter {
         {
             let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
                 label: Some("calculate histogram"),
+                timestamp_writes: None,
             });
 
             pass.set_pipeline(&self.histogram_p);
@@ -798,6 +800,7 @@ impl GPURSSorter {
         {
             let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
                 label: Some("zeroing the histogram"),
+                timestamp_writes: None,
             });
 
             pass.set_pipeline(&self.zero_p);
@@ -808,6 +811,7 @@ impl GPURSSorter {
         {
             let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
                 label: Some("calculate histogram"),
+                timestamp_writes: None,
             });
 
             pass.set_pipeline(&self.histogram_p);
@@ -825,6 +829,7 @@ impl GPURSSorter {
     ) {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("prefix histogram"),
+            timestamp_writes: None,
         });
 
         pass.set_pipeline(&self.prefix_p);
@@ -843,6 +848,7 @@ impl GPURSSorter {
         let (_, scatter_blocks_ru, _, _, _, _) = Self::get_scatter_histogram_sizes(keysize);
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Scatter keyvals"),
+            timestamp_writes: None,
         });
 
         pass.set_bind_group(0, bind_group, &[]);
@@ -869,6 +875,7 @@ impl GPURSSorter {
 
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Scatter keyvals"),
+            timestamp_writes: None,
         });
 
         pass.set_bind_group(0, bind_group, &[]);

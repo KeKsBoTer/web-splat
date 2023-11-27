@@ -11,7 +11,7 @@ struct Opt {
     /// Scene json file
     scene: Option<PathBuf>,
 
-    #[arg(long, default_value_t = true)]
+    #[arg(long, default_value_t = false)]
     no_vsync: bool,
 }
 

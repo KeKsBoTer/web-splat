@@ -1,7 +1,8 @@
-use std::{io::{ Seek, Read}, fmt::Display};
+use std::io::{ Seek, Read};
 
 #[cfg(target_arch = "wasm32")]
 use instant::{Duration,Instant};
+use renderer::Display;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration,Instant};
 
@@ -57,10 +58,7 @@ pub struct WGPUContext {
 
 impl WGPUContext {
     pub async fn new_instance() -> Self {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            dx12_shader_compiler: Default::default(),
-        });
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
 
         return WGPUContext::new(&instance, None).await;
     }
@@ -138,10 +136,7 @@ impl WindowContext {
     ) -> Self {
         let size = window.inner_size();
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            dx12_shader_compiler: Default::default(),
-        });
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
 
         let surface: wgpu::Surface = unsafe { instance.create_surface(&window) }.unwrap();
 
@@ -157,11 +152,12 @@ impl WindowContext {
         let surface_format = surface_caps
             .formats
             .iter()
-            .filter(|f| !f.is_srgb())
+            .filter(|f| f.is_srgb())
             .next()
             .unwrap_or(&surface_caps.formats[0])
             .clone();
 
+        let render_format = wgpu::TextureFormat::Rgba16Float;
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -192,7 +188,7 @@ impl WindowContext {
         }; 
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
-        let renderer = GaussianRenderer::new(&device, &queue,wgpu::TextureFormat::Rgba16Float, pc.sh_deg(),pc_data_type==PCDataType::PLY,size.width,size.height);
+        let renderer = GaussianRenderer::new(&device, &queue,render_format, pc.sh_deg(),pc_data_type==PCDataType::PLY);
 
         let aspect = size.width as f32 / size.height as f32;
         let view_camera = PerspectiveCamera::new(
@@ -208,6 +204,7 @@ impl WindowContext {
 
         let controller = CameraController::new(3., 0.25);
         let ui_renderer = ui_renderer::EguiWGPU::new(event_loop, device, surface_format);
+        let display = Display::new(device,render_format ,surface_format,size.width,size.height);
         Self {
             wgpu_context,
             scale_factor: window.scale_factor() as f32,
@@ -225,7 +222,8 @@ impl WindowContext {
             fps: 0.,
             #[cfg(not(target_arch="wasm32"))]
             history: RingBuffer::new(512),
-            ui_visible:true
+            ui_visible:true,
+            display
         }
     }
 
@@ -236,6 +234,7 @@ impl WindowContext {
 
             self.surface
                 .configure(&self.wgpu_context.device, &self.config);
+            self.display.resize(&self.wgpu_context.device, new_size.width, new_size.height);
         }
         if let Some(scale_factor) = scale_factor {
             if scale_factor > 0. {
@@ -302,8 +301,11 @@ impl WindowContext {
                     .allow_drag(false)
                     .allow_boxed_zoom(false)
                     .allow_zoom(false)
-                    .allow_scroll(false).y_axis_width(1)
+                    .allow_scroll(false)
+                    .y_axis_width(1)
                     .y_axis_label("ms")
+                    .auto_bounds_y()
+                    .auto_bounds_x()
                     .show_axes([false, true])
                     .legend(Legend {
                         text_style: TextStyle::Body,
@@ -418,10 +420,10 @@ impl WindowContext {
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
+     
         let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
+        .texture
+        .create_view(&Default::default());
         let viewport = Vector2::new(self.config.width, self.config.height);
         self.renderer.render(
             &self.wgpu_context.device,
@@ -429,10 +431,17 @@ impl WindowContext {
             &self.pc,
             self.camera,
             viewport,
-            &view,
+            self.display.texture(),
         );
 
-        if self.ui_visible{
+        let mut encoder = self.wgpu_context.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{
+            label: Some("display"),
+        });
+
+        self.display.render(&mut encoder, &view);
+        self.wgpu_context.queue.submit([encoder.finish()]);
+
+        if self.ui_visible {
             // ui rendering
             self.ui_renderer.begin_frame(&self.window);
             self.ui();
@@ -453,6 +462,7 @@ impl WindowContext {
         }else{
             self.renderer.stopwatch.reset();
         }
+
         output.present();
         Ok(())
     }
@@ -575,7 +585,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(file: R, pc_dat
             } => {
                 state.resize(**new_inner_size, Some(*scale_factor as f32));
             }
-            WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+            WindowEvent::CloseRequested => {log::info!("close!");*control_flow = ControlFlow::Exit},
             WindowEvent::KeyboardInput { input, .. } => {
                 if let Some(key) = input.virtual_keycode {
                     if input.state == ElementState::Released{

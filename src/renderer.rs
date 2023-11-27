@@ -26,9 +26,6 @@ pub struct GaussianRenderer {
     pub stopwatch: GPUStopwatch,
     sorter: GPURSSorter,
     sorter_suff: Option<PointCloudSortStuff>,
-    target_view: wgpu::TextureView,
-    render_target: wgpu::BindGroup,
-    display: Display,
 }
 
 impl GaussianRenderer {
@@ -38,8 +35,6 @@ impl GaussianRenderer {
         color_format: wgpu::TextureFormat,
         sh_deg: u32,
         float: bool,
-        width: u32,
-        height: u32,
     ) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render pipeline layout"),
@@ -109,9 +104,6 @@ impl GaussianRenderer {
 
         let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
         let preprocess = PreprocessPipeline::new(device, sh_deg, float);
-        let (target_view, render_target) =
-            Self::create_render_target(device, color_format, width, height);
-        let display = Display::new(device, color_format);
         GaussianRenderer {
             pipeline,
             camera,
@@ -123,53 +115,7 @@ impl GaussianRenderer {
             stopwatch,
             sorter,
             sorter_suff: None,
-            render_target,
-            target_view,
-            display,
         }
-    }
-
-    fn create_render_target(
-        device: &wgpu::Device,
-        format: wgpu::TextureFormat,
-        width: u32,
-        height: u32,
-    ) -> (wgpu::TextureView, wgpu::BindGroup) {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("display render image"),
-            size: Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let texture_view = texture.create_view(&Default::default());
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("render target bind group"),
-            layout: &Display::bind_group_layout(device),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-        });
-        return (texture_view, bind_group);
     }
 
     fn preprocess<'a>(
@@ -236,7 +182,7 @@ impl GaussianRenderer {
         target: &wgpu::TextureView,
     ) {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Render Encoder Compare"),
+            label: Some("Render Encoder"),
         });
         {
             if self.sorter_suff.is_none()
@@ -284,14 +230,14 @@ impl GaussianRenderer {
                 let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("render pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &self.target_view,
+                        view: target,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: false,
+                            store: wgpu::StoreOp::Store,
                         },
                     })],
-                    depth_stencil_attachment: None,
+                    ..Default::default()
                 });
 
                 render_pass.set_bind_group(0, &pc.render_bind_group, &[]);
@@ -304,8 +250,6 @@ impl GaussianRenderer {
 
                 render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
             }
-            self.display
-                .display(&mut encoder, target, &self.render_target);
         }
         #[cfg(not(target_arch = "wasm32"))]
         self.stopwatch.stop(&mut encoder, "rasterization").unwrap();
@@ -465,6 +409,7 @@ impl PreprocessPipeline {
     ) {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("preprocess compute pass"),
+            ..Default::default()
         });
         pass.set_pipeline(&self.0);
         pass.set_bind_group(0, camera.bind_group(), &[]);
@@ -485,10 +430,19 @@ pub struct RenderStatistics {
 
 pub struct Display {
     pipeline: wgpu::RenderPipeline,
+    bind_group: wgpu::BindGroup,
+    format: wgpu::TextureFormat,
+    view: wgpu::TextureView,
 }
 
 impl Display {
-    pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        source_format: wgpu::TextureFormat,
+        target_format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("display pipeline layout"),
             bind_group_layouts: &[&Self::bind_group_layout(device)],
@@ -520,7 +474,60 @@ impl Display {
             }),
             multiview: None,
         });
-        Self { pipeline }
+        let (view, bind_group) = Self::create_render_target(device, source_format, width, height);
+        Self {
+            pipeline,
+            view,
+            format: source_format,
+            bind_group,
+        }
+    }
+
+    pub fn texture(&self) -> &wgpu::TextureView {
+        &self.view
+    }
+
+    fn create_render_target(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) -> (wgpu::TextureView, wgpu::BindGroup) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("display render image"),
+            size: Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let texture_view = texture.create_view(&Default::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("render target bind group"),
+            layout: &Display::bind_group_layout(device),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        return (texture_view, bind_group);
     }
 
     pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -547,26 +554,26 @@ impl Display {
         })
     }
 
-    pub fn display(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        target_view: &wgpu::TextureView,
-        target: &wgpu::BindGroup,
-    ) {
+    pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        let (view, bind_group) = Self::create_render_target(device, self.format, width, height);
+        self.bind_group = bind_group;
+        self.view = view;
+    }
+
+    pub fn render(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("render pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target_view,
+                view: target,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load,
-                    store: true,
+                    store: wgpu::StoreOp::Store,
                 },
             })],
-            depth_stencil_attachment: None,
+            ..Default::default()
         });
-
-        render_pass.set_bind_group(0, target, &[]);
+        render_pass.set_bind_group(0, &self.bind_group, &[]);
         render_pass.set_pipeline(&self.pipeline);
 
         render_pass.draw(0..4, 0..1);

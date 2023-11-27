@@ -97,7 +97,7 @@ impl GPUStopwatch {
     }
 
     pub fn reset(&mut self) {
-        self.labels.drain().last().unwrap();
+        self.labels.drain().last();
     }
 
     // #[cfg(not(target_arch = "wasm32"))]

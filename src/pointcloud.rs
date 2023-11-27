@@ -2,7 +2,7 @@ use bytemuck::Zeroable;
 use cgmath::{Point3, Vector2, Vector4};
 use half::f16;
 use std::fmt::Debug;
-use std::io::{self, BufReader, Read, Seek};
+use std::io::{BufReader, Read, Seek};
 use std::mem;
 use wgpu::util::DeviceExt;
 
@@ -56,21 +56,12 @@ impl Debug for PointCloud {
     }
 }
 
-fn ply_header_info<R: io::BufRead + io::Seek>(buf_reader: &mut R) -> (u32, usize) {
-    let reader: PlyReader<&mut R> = crate::ply::PlyReader::new(buf_reader).unwrap();
-    (reader.file_sh_deg().unwrap(), reader.num_points().unwrap())
-}
-#[cfg(feature = "npz")]
-fn npz_header_info<R: io::BufRead + io::Seek>(buf_reader: &mut R) -> (u32, usize) {
-    let reader = crate::npz::NpzReader::new(buf_reader).unwrap();
-    (reader.file_sh_deg().unwrap(), reader.num_points().unwrap())
-}
-
 impl PointCloud {
     #[cfg(feature = "npz")]
     pub fn load_npz<R: Read + Seek>(device: &wgpu::Device, f: R) -> Result<Self, anyhow::Error> {
         let mut reader = BufReader::new(f);
-        let (file_sh_deg, num_points) = npz_header_info(&mut reader);
+        let mut npz_reader = NpzReader::new(&mut reader)?;
+        let (file_sh_deg, num_points) = (npz_reader.file_sh_deg()?, npz_reader.num_points()?);
         let sh_deg = file_sh_deg;
         log::info!("num_points: {num_points}, sh_deg: {sh_deg}");
 
@@ -92,9 +83,7 @@ impl PointCloud {
             }],
         });
 
-        reader.seek(std::io::SeekFrom::Start(0)).unwrap(); // have to reset reader to start of file
-        let (vertices, sh_coefs, covars, quantization) =
-            NpzReader::new(&mut reader).unwrap().read(sh_deg)?;
+        let (vertices, sh_coefs, covars, quantization) = npz_reader.read(sh_deg)?;
 
         let sh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("sh coefs buffer"),
@@ -153,10 +142,12 @@ impl PointCloud {
     }
 
     pub fn load_ply<R: Read + Seek>(device: &wgpu::Device, f: R) -> Result<Self, anyhow::Error> {
-        let mut reader = BufReader::new(f);
-        let (file_sh_deg, num_points) = ply_header_info(&mut reader);
+        let reader = BufReader::new(f);
 
-        let sh_deg = file_sh_deg;
+        let mut ply_reader = PlyReader::new(reader).unwrap();
+
+        let sh_deg = ply_reader.file_sh_deg()?;
+        let num_points = ply_reader.num_points()?;
         log::info!("num_points: {num_points}, sh_deg: {sh_deg}");
 
         let bind_group_layout = Self::bind_group_layout_float(device);
@@ -177,8 +168,7 @@ impl PointCloud {
             }],
         });
 
-        reader.seek(std::io::SeekFrom::Start(0)).unwrap(); // have to reset reader to start of file
-        let vertices = PlyReader::new(reader).unwrap().read()?;
+        let vertices = ply_reader.read()?;
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("3d gaussians buffer"),
@@ -200,31 +190,6 @@ impl PointCloud {
                 },
             ],
         });
-
-        // let sorter = GPURSSorter::new(device, queue);
-        // let (sorter_b_a, sorter_b_b, sorter_p_a, sorter_p_b) =
-        //     GPURSSorter::create_keyval_buffers(device, num_points, 4);
-        // let sorter_int = sorter.create_internal_mem_buffer(device, num_points);
-        // let (sorter_uni, sorter_dis, sorter_bg, sorter_dis_bg) = sorter.create_bind_group(
-        //     device,
-        //     num_points,
-        //     &sorter_int,
-        //     &sorter_b_a,
-        //     &sorter_b_b,
-        //     &sorter_p_a,
-        //     &sorter_p_b,
-        // );
-        // let sorter_render_bg = sorter.create_bind_group_render(device, &sorter_uni, &sorter_p_a);
-        // let sorter_bg_pre = sorter.create_bind_group_preprocess(
-        //     device,
-        //     &sorter_uni,
-        //     &sorter_dis,
-        //     &sorter_int,
-        //     &sorter_b_a,
-        //     &sorter_b_b,
-        //     &sorter_p_a,
-        //     &sorter_p_b,
-        // );
 
         Ok(Self {
             splat_2d_buffer,

@@ -1,4 +1,4 @@
-use egui::FullOutput;
+use egui::{FullOutput, ViewportId};
 // adapted from https://github.com/niklaskorz/linon/blob/main/src/egui_wgpu.rs
 use winit::{dpi::PhysicalSize, event_loop::EventLoop};
 
@@ -16,7 +16,7 @@ impl EguiWGPU {
     ) -> Self {
         Self {
             ctx: Default::default(),
-            winit: egui_winit::State::new(event_loop),
+            winit: egui_winit::State::new(ViewportId::ROOT, event_loop, None, None),
             renderer: egui_wgpu::Renderer::new(device, output_format, None, 1),
         }
     }
@@ -28,7 +28,7 @@ impl EguiWGPU {
     ///
     /// Note that egui uses `tab` to move focus between elements, so this will always return `true` for tabs.
     pub fn on_event(&mut self, event: &winit::event::WindowEvent<'_>) -> bool {
-        self.winit.on_event(&self.ctx, event).consumed
+        self.winit.on_window_event(&self.ctx, event).consumed
     }
 
     pub fn begin_frame(&mut self, window: &winit::window::Window) {
@@ -53,9 +53,8 @@ impl EguiWGPU {
         color_attachment: &wgpu::TextureView,
         output: FullOutput,
     ) {
-        let clipped_meshes = self.ctx.tessellate(output.shapes);
+        let clipped_meshes = self.ctx.tessellate(output.shapes, scale_factor);
 
-        self.ctx.set_pixels_per_point(scale_factor);
         // let size = window.inner_size();l
         let screen_descriptor = egui_wgpu::renderer::ScreenDescriptor {
             size_in_pixels: [size.width, size.height],
@@ -85,11 +84,11 @@ impl EguiWGPU {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
-                        store: true,
+                        store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
                 label: Some("egui_render"),
+                ..Default::default()
             });
             self.renderer
                 .render(&mut render_pass, &clipped_meshes, &screen_descriptor);
