@@ -57,10 +57,7 @@ pub struct WGPUContext {
 
 impl WGPUContext {
     pub async fn new_instance() -> Self {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            dx12_shader_compiler: Default::default(),
-        });
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
 
         return WGPUContext::new(&instance, None).await;
     }
@@ -137,10 +134,7 @@ impl WindowContext {
     ) -> Self {
         let size = window.inner_size();
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            dx12_shader_compiler: Default::default(),
-        });
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
 
         let surface: wgpu::Surface = unsafe { instance.create_surface(&window) }.unwrap();
 
@@ -301,8 +295,11 @@ impl WindowContext {
                     .allow_drag(false)
                     .allow_boxed_zoom(false)
                     .allow_zoom(false)
-                    .allow_scroll(false).y_axis_width(1)
+                    .allow_scroll(false)
+                    .y_axis_width(1)
                     .y_axis_label("ms")
+                    .auto_bounds_y()
+                    .auto_bounds_x()
                     .show_axes([false, true])
                     .legend(Legend {
                         text_style: TextStyle::Body,
@@ -574,7 +571,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(file: R, pc_dat
             } => {
                 state.resize(**new_inner_size, Some(*scale_factor as f32));
             }
-            WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+            WindowEvent::CloseRequested => {log::info!("close!");*control_flow = ControlFlow::Exit},
             WindowEvent::KeyboardInput { input, .. } => {
                 if let Some(key) = input.virtual_keycode {
                     if input.state == ElementState::Released{

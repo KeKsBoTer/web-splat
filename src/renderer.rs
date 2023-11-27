@@ -233,10 +233,10 @@ impl GaussianRenderer {
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: true,
+                            store: wgpu::StoreOp::Store,
                         },
                     })],
-                    depth_stencil_attachment: None,
+                    ..Default::default()
                 });
 
                 render_pass.set_bind_group(0, &pc.render_bind_group, &[]);
@@ -408,6 +408,7 @@ impl PreprocessPipeline {
     ) {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("preprocess compute pass"),
+            ..Default::default()
         });
         pass.set_pipeline(&self.0);
         pass.set_bind_group(0, camera.bind_group(), &[]);

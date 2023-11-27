@@ -32,7 +32,7 @@ fn vs_main(
 ) -> VertexOutput {
     var out: VertexOutput;
 
-    let vertex = points_2d[indices[in_instance_index]];
+    let vertex = points_2d[indices[in_instance_index] + 0u];
 
     // scaled eigenvectors in screen space 
     let v1 = unpack2x16float(vertex.v_0);
@@ -40,15 +40,14 @@ fn vs_main(
 
     let v_center = unpack2x16float(vertex.pos);
 
-    // splat rectangle with left lower corner at (-2,-2)
-    // and upper right corner at (2,2)
-    let x = f32(in_vertex_index % 2u == 0u) * 4. - (2.);
-    let y = f32(in_vertex_index < 2u) * 4. - (2.);
+    // splat rectangle with left lower corner at (-1,-1)
+    // and upper right corner at (1,1)
+    let x = f32(in_vertex_index % 2u == 0u) * 2. - (1.);
+    let y = f32(in_vertex_index < 2u) * 2. - (1.);
 
-    let position = vec2<f32>(x, y);
+    let position = vec2<f32>(x, y) * 2.;
 
-    // let offset = position * 0.01;
-    let offset = position.x * v1 * 2.0 + position.y * v2 * 2.0;
+    let offset = 2. * mat2x2<f32>(v1, v2) * position;
     out.position = vec4<f32>(v_center + offset, 0., 1.);
     out.screen_pos = position;
     out.color = vec4<f32>(unpack4x8unorm(vertex.color));
