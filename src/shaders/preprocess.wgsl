@@ -278,7 +278,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let znear = -camera.proj[3][2] / camera.proj[2][2];
     let zfar = -camera.proj[3][2] / (camera.proj[2][2] - (1.));
     // filling the sorting buffers and the indirect sort dispatch buffer
-    sort_depths[store_idx] = u32(f32(0xffffffu) - pos2d.z / zfar * f32(0xffffffu));
+    sort_depths[store_idx] = u32(f32(0xffffffu) - (pos2d.z - znear) / (zfar - znear) * f32(0xffffffu));
     sort_indices[store_idx] = store_idx;
     if idx == 0u {
         atomicAdd(&sort_dispatch.dispatch_x, 1u);   // safety addition to always have an unfull block at the end of the buffer

@@ -10,6 +10,8 @@ use crate::camera::{Camera, PerspectiveCamera};
 
 #[derive(Debug)]
 pub struct CameraController {
+    pub center: Point3<f32>,
+    pub up: Vector3<f32>,
     amount: Vector3<f32>,
     shift: Vector2<f32>,
     rotation: Vector3<f32>,
@@ -24,6 +26,8 @@ pub struct CameraController {
 impl CameraController {
     pub fn new(speed: f32, sensitivity: f32) -> Self {
         Self {
+            center: Point3::origin(),
+            up: Vector3::new(0., 1., 0.),
             amount: Vector3::zero(),
             shift: Vector2::zero(),
             rotation: Vector3::zero(),
@@ -39,35 +43,35 @@ impl CameraController {
         let amount = if pressed { 1.0 } else { 0.0 };
         match key {
             VirtualKeyCode::W | VirtualKeyCode::Up => {
-                self.amount.z = amount;
+                self.amount.z += amount;
                 true
             }
             VirtualKeyCode::S | VirtualKeyCode::Down => {
-                self.amount.z = -amount;
+                self.amount.z += -amount;
                 true
             }
             VirtualKeyCode::A | VirtualKeyCode::Left => {
-                self.amount.x = -amount;
+                self.amount.x += -amount;
                 true
             }
             VirtualKeyCode::D | VirtualKeyCode::Right => {
-                self.amount.x = amount;
+                self.amount.x += amount;
                 true
             }
             VirtualKeyCode::Q => {
-                self.rotation.z = amount / self.sensitivity;
+                self.rotation.z += amount / self.sensitivity;
                 true
             }
             VirtualKeyCode::E => {
-                self.rotation.z = -amount / self.sensitivity;
+                self.rotation.z += -amount / self.sensitivity;
                 true
             }
             VirtualKeyCode::Space => {
-                self.amount.y = amount;
+                self.amount.y += amount;
                 true
             }
             VirtualKeyCode::LShift => {
-                self.amount.y = -amount;
+                self.amount.y += -amount;
                 true
             }
             _ => false,
@@ -76,47 +80,68 @@ impl CameraController {
 
     pub fn process_mouse(&mut self, mouse_dx: f32, mouse_dy: f32) {
         if self.left_mouse_pressed {
-            self.rotation.y = mouse_dx as f32;
-            self.rotation.x = mouse_dy as f32;
+            self.rotation.x += mouse_dx as f32;
+            self.rotation.y += mouse_dy as f32;
         }
         if self.right_mouse_pressed {
-            self.shift.y = -mouse_dx as f32;
-            self.shift.x = mouse_dy as f32;
+            self.shift.y += -mouse_dx as f32;
+            self.shift.x += mouse_dy as f32;
         } else {
-            self.shift = Vector2::zero();
+            self.shift += Vector2::zero();
         }
     }
 
     pub fn process_scroll(&mut self, dy: f32) {
-        self.scroll = -dy;
+        self.scroll += -dy;
+    }
+
+    pub fn reset_to_camera(&mut self, camera: PerspectiveCamera) {
+        let inv_view = camera.view_matrix().inverse_transform().unwrap();
+        let forward = inv_view.z.truncate();
+        let up = inv_view.z.truncate();
+        self.center = closest_point(camera.position, forward, self.center);
     }
 
     pub fn update_camera(&mut self, camera: &mut PerspectiveCamera, dt: Duration) {
         let dt: f32 = dt.as_secs_f32();
 
+        let mut dir = camera.position - self.center;
+        let distance = dir.magnitude();
+
+        dir = dir.normalize_to((distance.ln() + self.scroll * dt * 10. * self.speed).exp());
+
         let inv_view = camera.view_matrix().inverse_transform().unwrap();
 
-        let x_axis = inv_view.transform_vector(Vector3::new(1., 0., 0.));
-        let y_axis = inv_view.transform_vector(Vector3::new(0., 1., 0.));
-        let z_axis = inv_view.transform_vector(Vector3::new(0., 0., 1.));
-        camera.position += z_axis * (self.amount.z) * self.speed * dt;
-        camera.position += x_axis * (self.amount.x) * self.speed * dt;
-        camera.position -= y_axis * (self.amount.y) * self.speed * dt;
+        let x_axis = inv_view.x.truncate();
+        let y_axis = inv_view.y.truncate();
 
-        // zoom / scroll
-        camera.position -= z_axis * self.scroll * self.speed * self.sensitivity * dt;
+        let offset =
+            (self.shift.y * x_axis - self.shift.x * y_axis) * dt * self.speed * 0.1 * distance;
+        self.center += offset;
+        camera.position += offset;
 
-        // Rotate camera according to camera main axes
-        let rot_y =
-            Quaternion::from_axis_angle(y_axis, Rad(self.rotation.y * self.sensitivity * dt));
-        let rot_x =
-            Quaternion::from_axis_angle(x_axis, -Rad(self.rotation.x * self.sensitivity * dt));
-        let rot_z =
-            Quaternion::from_axis_angle(z_axis, -Rad(self.rotation.z * self.sensitivity * dt));
-        camera.rotation = (camera.rotation * rot_x * rot_y * rot_z).normalize();
+        let rot =
+            Quaternion::from_axis_angle(self.up, Rad(self.rotation.x * dt * self.sensitivity))
+                * Quaternion::from_axis_angle(
+                    x_axis,
+                    Rad(-self.rotation.y * dt * self.sensitivity),
+                );
+        let new_dir = rot.rotate_vector(dir);
+        camera.position = self.center + new_dir;
+        camera.rotation = Quaternion::look_at(-new_dir, self.up);
 
         // reset
-        self.rotation = <_>::zero();
-        self.scroll = 0.0;
+        self.rotation *= 0.8;
+        self.shift *= 0.8;
+        self.scroll *= 0.8;
     }
+}
+
+fn closest_point(orig: Point3<f32>, dir: Vector3<f32>, point: Point3<f32>) -> Point3<f32> {
+    let dir = dir.normalize();
+    let lhs = point - orig;
+
+    let dot_p = lhs.dot(dir);
+    // Return result
+    return orig + dir * dot_p;
 }

@@ -1,6 +1,9 @@
 use bytemuck::Zeroable;
-use cgmath::{Point3, Vector2, Vector4};
+use cgmath::{
+    BaseNum, ElementWise, EuclideanSpace, MetricSpace, Point3, Vector2, Vector3, Vector4,
+};
 use half::f16;
+use num_traits::Float;
 use std::fmt::Debug;
 use std::io::{BufReader, Read, Seek};
 use std::mem;
@@ -46,6 +49,7 @@ pub struct PointCloud {
     pub render_bind_group: wgpu::BindGroup,
     num_points: u32,
     sh_deg: u32,
+    bbox: Aabb<f32>,
 }
 
 impl Debug for PointCloud {
@@ -85,6 +89,10 @@ impl PointCloud {
 
         let (vertices, sh_coefs, covars, quantization) = npz_reader.read(sh_deg)?;
 
+        let mut bbox: Aabb<f16> = Aabb::unit();
+        for v in &vertices {
+            bbox.grow(v.xyz);
+        }
         let sh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("sh coefs buffer"),
             contents: bytemuck::cast_slice(sh_coefs.as_slice()),
@@ -138,6 +146,7 @@ impl PointCloud {
             render_bind_group,
             num_points: num_points as u32,
             sh_deg,
+            bbox: bbox.into(),
         })
     }
 
@@ -169,7 +178,10 @@ impl PointCloud {
         });
 
         let vertices = ply_reader.read()?;
-
+        let mut bbox = Aabb::unit();
+        for v in &vertices {
+            bbox.grow(v.xyz);
+        }
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("3d gaussians buffer"),
             contents: bytemuck::cast_slice(vertices.as_slice()),
@@ -198,6 +210,7 @@ impl PointCloud {
             render_bind_group,
             num_points: num_points as u32,
             sh_deg,
+            bbox,
         })
     }
 
@@ -207,6 +220,10 @@ impl PointCloud {
 
     pub fn sh_deg(&self) -> u32 {
         self.sh_deg
+    }
+
+    pub fn bbox(&self) -> &Aabb<f32> {
+        &self.bbox
     }
 
     pub(crate) fn bind_group(&self) -> &wgpu::BindGroup {
@@ -388,4 +405,62 @@ pub struct GaussianSplatFloat {
     pub cov: [f32; 6],
     pub sh: [[f32; 3]; 16],
     pub _pad: [u32; 2],
+}
+
+pub struct Aabb<F: Float + BaseNum> {
+    min: Point3<F>,
+    max: Point3<F>,
+}
+
+impl<F: Float + BaseNum> Aabb<F> {
+    pub fn new(min: Point3<F>, max: Point3<F>) -> Self {
+        Self { min, max }
+    }
+
+    pub fn grow(&mut self, pos: Point3<F>) {
+        self.min.x = self.min.x.min(pos.x);
+        self.min.y = self.min.y.min(pos.y);
+        self.min.z = self.min.z.min(pos.z);
+        self.max.x = self.max.x.max(pos.x);
+        self.max.y = self.max.y.max(pos.y);
+        self.max.z = self.max.z.max(pos.z);
+    }
+
+    pub fn corners(&self) -> [Point3<F>; 8] {
+        [
+            Vector3::new(F::zero(), F::zero(), F::zero()),
+            Vector3::new(F::one(), F::zero(), F::zero()),
+            Vector3::new(F::zero(), F::one(), F::zero()),
+            Vector3::new(F::one(), F::one(), F::zero()),
+            Vector3::new(F::zero(), F::zero(), F::one()),
+            Vector3::new(F::one(), F::zero(), F::one()),
+            Vector3::new(F::zero(), F::one(), F::one()),
+            Vector3::new(F::one(), F::one(), F::one()),
+        ]
+        .map(|d| self.min + self.max.to_vec().mul_element_wise(d))
+    }
+
+    pub fn unit() -> Self {
+        Self {
+            min: Point3::new(-F::one(), -F::one(), -F::one()),
+            max: Point3::new(F::one(), F::one(), F::one()),
+        }
+    }
+
+    pub fn center(&self) -> Point3<F> {
+        self.min.midpoint(self.max)
+    }
+
+    pub fn sphere(&self) -> F {
+        self.min.distance(self.max) / (F::one() + F::one())
+    }
+}
+
+impl Into<Aabb<f32>> for Aabb<f16> {
+    fn into(self) -> Aabb<f32> {
+        Aabb {
+            min: self.min.map(|v| v.into()),
+            max: self.max.map(|v| v.into()),
+        }
+    }
 }

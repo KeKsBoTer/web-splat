@@ -1,15 +1,15 @@
-use std::io::{ Seek, Read};
+use std::io::{Read, Seek};
 
 #[cfg(target_arch = "wasm32")]
-use instant::{Duration,Instant};
+use instant::{Duration, Instant};
 use renderer::Display;
 #[cfg(not(target_arch = "wasm32"))]
-use std::time::{Duration,Instant};
+use std::time::{Duration, Instant};
 
-use cgmath::{Deg, EuclideanSpace, Point3, Quaternion, Vector2};
+use cgmath::{Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, Vector2, Vector3, InnerSpace};
 use egui::{epaint::Shadow, Rounding, TextStyle, Visuals};
 use egui_plot::{Legend, PlotPoints};
-use num_traits::One;
+use num_traits::{One, Zero};
 
 use utils::{key_to_num, RingBuffer};
 
@@ -31,7 +31,7 @@ pub use controller::CameraController;
 mod pointcloud;
 pub use pointcloud::PointCloud;
 
-#[cfg(feature="npz")]
+#[cfg(feature = "npz")]
 mod npz;
 mod ply;
 
@@ -41,14 +41,13 @@ pub use renderer::GaussianRenderer;
 mod scene;
 pub use self::scene::{Scene, SceneCamera, Split};
 
+pub mod gpu_rs;
 mod ui_renderer;
 mod uniform;
 mod utils;
-pub mod gpu_rs;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use utils::download_buffer;
-
 
 pub struct WGPUContext {
     pub device: wgpu::Device,
@@ -64,23 +63,26 @@ impl WGPUContext {
     }
 
     pub async fn new(instance: &wgpu::Instance, surface: Option<&wgpu::Surface>) -> Self {
-        
-        let adapter = wgpu::util::initialize_adapter_from_env_or_default(instance, surface).await.unwrap();
+        let adapter = wgpu::util::initialize_adapter_from_env_or_default(instance, surface)
+            .await
+            .unwrap();
 
-        #[cfg(target_arch="wasm32")]
-        let features =  wgpu::Features::default();
-        #[cfg(not(target_arch="wasm32"))]
-        let features  =wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM |wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        #[cfg(target_arch = "wasm32")]
+        let features = wgpu::Features::default();
+        #[cfg(not(target_arch = "wasm32"))]
+        let features = wgpu::Features::TIMESTAMP_QUERY
+            | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
 
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     features,
                     limits: wgpu::Limits {
-                        max_storage_buffer_binding_size: (1 << 31) -1,
-                        max_buffer_size: (1 << 31) -1,
+                        max_storage_buffer_binding_size: (1 << 31) - 1,
+                        max_buffer_size: (1 << 31) - 1,
                         max_storage_buffers_per_shader_stage: 12,
-                        max_compute_workgroup_storage_size:1<<15,
+                        max_compute_workgroup_storage_size: 1 << 15,
                         ..Default::default()
                     },
                     label: None,
@@ -118,16 +120,16 @@ struct WindowContext {
     current_view: Option<usize>,
     ui_renderer: ui_renderer::EguiWGPU,
     fps: f32,
-    ui_visible:bool,
+    ui_visible: bool,
 
-    #[cfg(not(target_arch="wasm32"))]
+    #[cfg(not(target_arch = "wasm32"))]
     history: RingBuffer<(Duration, Duration, Duration)>,
-    display:Display
+    display: Display,
 }
 
 impl WindowContext {
     // Creating some of the wgpu types requires async code
-    async fn new<R:Read+Seek>(
+    async fn new<R: Read + Seek>(
         window: Window,
         event_loop: &EventLoop<()>,
         pc_file: R,
@@ -174,21 +176,19 @@ impl WindowContext {
         };
         surface.configure(&device, &config);
         let pc = match pc_data_type {
-            PCDataType::PLY => PointCloud::load_ply(
-                &device,
-                pc_file,
-            )
-            .unwrap(),
-            #[cfg(feature="npz")]
-            PCDataType::NPZ => PointCloud::load_npz(
-                &device,
-                pc_file,
-            )
-            .unwrap(),
-        }; 
+            PCDataType::PLY => PointCloud::load_ply(&device, pc_file).unwrap(),
+            #[cfg(feature = "npz")]
+            PCDataType::NPZ => PointCloud::load_npz(&device, pc_file).unwrap(),
+        };
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
-        let renderer = GaussianRenderer::new(&device, &queue,render_format, pc.sh_deg(),pc_data_type==PCDataType::PLY);
+        let renderer = GaussianRenderer::new(
+            &device,
+            &queue,
+            render_format,
+            pc.sh_deg(),
+            pc_data_type == PCDataType::PLY,
+        );
 
         let aspect = size.width as f32 / size.height as f32;
         let view_camera = PerspectiveCamera::new(
@@ -197,14 +197,20 @@ impl WindowContext {
             PerspectiveProjection::new(
                 Vector2::new(size.width, size.height),
                 Vector2::new(Deg(45.), Deg(45. / aspect)),
-                0.1,
-                100.,
+                0.01,
+                1000.,
             ),
         );
 
-        let controller = CameraController::new(3., 0.25);
+        let controller = CameraController::new(0.1, 0.1);
         let ui_renderer = ui_renderer::EguiWGPU::new(event_loop, device, surface_format);
-        let display = Display::new(device,render_format ,surface_format,size.width,size.height);
+        let display = Display::new(
+            device,
+            render_format,
+            surface_format,
+            size.width,
+            size.height,
+        );
         Self {
             wgpu_context,
             scale_factor: window.scale_factor() as f32,
@@ -220,10 +226,10 @@ impl WindowContext {
             current_view: None,
             ui_renderer,
             fps: 0.,
-            #[cfg(not(target_arch="wasm32"))]
+            #[cfg(not(target_arch = "wasm32"))]
             history: RingBuffer::new(512),
-            ui_visible:true,
-            display
+            ui_visible: true,
+            display,
         }
     }
 
@@ -234,7 +240,8 @@ impl WindowContext {
 
             self.surface
                 .configure(&self.wgpu_context.device, &self.config);
-            self.display.resize(&self.wgpu_context.device, new_size.width, new_size.height);
+            self.display
+                .resize(&self.wgpu_context.device, new_size.width, new_size.height);
         }
         if let Some(scale_factor) = scale_factor {
             if scale_factor > 0. {
@@ -250,20 +257,36 @@ impl WindowContext {
             self.camera = next_camera.update(dt);
             if next_camera.done() {
                 self.animation.take();
+                self.controller.reset_to_camera(self.camera);
             }
         } else {
             self.controller.update_camera(&mut self.camera, dt);
         }
+
+        // set camera near and far plane
+        let center = self.pc.bbox().center();
+        let radius = self.pc.bbox().sphere();
+        let distance = self.camera.position.distance(center);
+        let zfar = distance + radius;
+        let znear = (distance - radius).max(zfar / 1000.);
+        self.camera.projection.zfar = zfar;
+        self.camera.projection.znear = znear;
     }
 
     fn ui(&mut self) {
         let ctx = &self.ui_renderer.ctx;
-        #[cfg(not(target_arch="wasm32"))]
-        let stats =pollster::block_on(self.renderer.render_stats(&self.wgpu_context.device, &self.wgpu_context.queue));
-        #[cfg(not(target_arch="wasm32"))]
-        let num_drawn = pollster::block_on(self.renderer.num_visible_points(&self.wgpu_context.device, &self.wgpu_context.queue));
-        
-        #[cfg(not(target_arch="wasm32"))]
+        #[cfg(not(target_arch = "wasm32"))]
+        let stats = pollster::block_on(
+            self.renderer
+                .render_stats(&self.wgpu_context.device, &self.wgpu_context.queue),
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        let num_drawn = pollster::block_on(
+            self.renderer
+                .num_visible_points(&self.wgpu_context.device, &self.wgpu_context.queue),
+        );
+
+        #[cfg(not(target_arch = "wasm32"))]
         self.history.push((
             stats.preprocess_time,
             stats.sort_time,
@@ -275,7 +298,7 @@ impl WindowContext {
             ..Default::default()
         });
 
-        #[cfg(not(target_arch="wasm32"))]
+        #[cfg(not(target_arch = "wasm32"))]
         egui::Window::new("Render Stats")
             .default_width(200.)
             .default_height(100.)
@@ -379,7 +402,6 @@ impl WindowContext {
             });
 
         if let Some(scene) = &self.scene {
-
             let mut new_camera = None;
             let mut start_tracking_shot = false;
             egui::Window::new("Scene")
@@ -387,21 +409,21 @@ impl WindowContext {
                 .resizable(false)
                 .default_height(100.)
                 .show(ctx, |ui| {
-                    ui.horizontal(|ui|{
-                    let nearest = scene.nearest_camera(self.camera.position, None);
-                    if ui.button("Snap to closest").clicked() {
-                        new_camera = Some(nearest);
-                    }
-                    if let Some(c) = &mut self.current_view {
-                        let drag = ui.add(
-                            egui::DragValue::new(c)
-                                .clamp_range(0..=(scene.num_cameras().saturating_sub(1))),
-                        );
-                        if drag.changed() {
-                            new_camera = Some(*c);
+                    ui.horizontal(|ui| {
+                        let nearest = scene.nearest_camera(self.camera.position, None);
+                        if ui.button("Snap to closest").clicked() {
+                            new_camera = Some(nearest);
                         }
-                        ui.label(scene.camera(*c).split.to_string());
-                    }
+                        if let Some(c) = &mut self.current_view {
+                            let drag = ui.add(
+                                egui::DragValue::new(c)
+                                    .clamp_range(0..=(scene.num_cameras().saturating_sub(1))),
+                            );
+                            if drag.changed() {
+                                new_camera = Some(*c);
+                            }
+                            ui.label(scene.camera(*c).split.to_string());
+                        }
                     });
                     if ui.button("Start tracking shot").clicked() {
                         start_tracking_shot = true;
@@ -420,10 +442,8 @@ impl WindowContext {
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
-     
-        let view = output
-        .texture
-        .create_view(&Default::default());
+
+        let view = output.texture.create_view(&Default::default());
         let viewport = Vector2::new(self.config.width, self.config.height);
         self.renderer.render(
             &self.wgpu_context.device,
@@ -434,9 +454,12 @@ impl WindowContext {
             self.display.texture(),
         );
 
-        let mut encoder = self.wgpu_context.device.create_command_encoder(&wgpu::CommandEncoderDescriptor{
-            label: Some("display"),
-        });
+        let mut encoder =
+            self.wgpu_context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("display"),
+                });
 
         self.display.render(&mut encoder, &view);
         self.wgpu_context.queue.submit([encoder.finish()]);
@@ -459,7 +482,7 @@ impl WindowContext {
                 &view,
                 shapes,
             );
-        }else{
+        } else {
             self.renderer.stopwatch.reset();
         }
 
@@ -468,6 +491,19 @@ impl WindowContext {
     }
 
     fn set_scene(&mut self, scene: Scene) {
+        let mut up = Vector3::zero();
+        let mut center = Point3::origin();
+        for c in scene.cameras(None){
+            up += Vector3::from(c.rotation[1]);
+            center += Vector3::from(c.position)+ Vector3::from(c.rotation[2])*2.;
+        }
+        up /= scene.num_cameras() as f32;
+        center /= scene.num_cameras() as f32;
+        up = up.normalize();
+      
+        log::debug!("oribital camera up vector: {up:?}");
+        self.controller.up = up;
+        self.controller.center = center;
         self.scene.replace(scene);
     }
 
@@ -511,13 +547,17 @@ pub fn smoothstep(x: f32) -> f32 {
 #[derive(PartialEq)]
 pub enum PCDataType {
     PLY,
-    #[cfg(feature="npz")]
+    #[cfg(feature = "npz")]
     NPZ,
 }
 
-pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(file: R, pc_data_type: PCDataType, scene_file: Option<R>
-    ,config: RenderConfig) {
-        #[cfg(not(target_arch = "wasm32"))]
+pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
+    file: R,
+    pc_data_type: PCDataType,
+    scene_file: Option<R>,
+    config: RenderConfig,
+) {
+    #[cfg(not(target_arch = "wasm32"))]
     env_logger::init();
     let event_loop = EventLoop::new();
 
@@ -533,7 +573,11 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(file: R, pc_dat
     } else {
         PhysicalSize::new(800, 600)
     };
-    log::info!("rendering at resolution {}x{}px",window_size.width,window_size.height);
+    log::info!(
+        "rendering at resolution {}x{}px",
+        window_size.width,
+        window_size.height
+    );
 
     let window = WindowBuilder::new()
         .with_title("web-splats")
@@ -541,22 +585,22 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(file: R, pc_dat
         .build(&event_loop)
         .unwrap();
 
-        #[cfg(target_arch = "wasm32")]
-        {
-            use winit::platform::web::WindowExtWebSys;
-            // On wasm, append the canvas to the document body
-            web_sys::window()
-                .and_then(|win| win.document())
-                .and_then(|doc| doc.body())
-                .and_then(|body| {
-                    let canvas = window.canvas();
-                    canvas.set_width(body.client_width() as u32);
-                    canvas.set_height(body.client_height() as u32);
-                    let elm = web_sys::Element::from(canvas);
-                    body.append_child(&elm).ok()
-                })
-                .expect("couldn't append canvas to document body");
-        }
+    #[cfg(target_arch = "wasm32")]
+    {
+        use winit::platform::web::WindowExtWebSys;
+        // On wasm, append the canvas to the document body
+        web_sys::window()
+            .and_then(|win| win.document())
+            .and_then(|doc| doc.body())
+            .and_then(|body| {
+                let canvas = window.canvas();
+                canvas.set_width(body.client_width() as u32);
+                canvas.set_height(body.client_height() as u32);
+                let elm = web_sys::Element::from(canvas);
+                body.append_child(&elm).ok()
+            })
+            .expect("couldn't append canvas to document body");
+    }
 
     let mut state = WindowContext::new(window, &event_loop, file, pc_data_type, config).await;
 
@@ -675,8 +719,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(file: R, pc_dat
     });
 }
 
-
-#[cfg(target_arch="wasm32")]
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub fn run_wasm(pc: Vec<u8>, scene: Option<Vec<u8>>) {
     use std::io::Cursor;
@@ -685,5 +728,13 @@ pub fn run_wasm(pc: Vec<u8>, scene: Option<Vec<u8>>) {
     let pc_reader = Cursor::new(pc);
     let scene_reader = scene.map(|d: Vec<u8>| Cursor::new(d));
 
-    wasm_bindgen_futures::spawn_local(open_window(pc_reader, scene_reader,RenderConfig { max_sh_deg: 3, sh_dtype: SHDType::Byte, no_vsync: false }));
+    wasm_bindgen_futures::spawn_local(open_window(
+        pc_reader,
+        scene_reader,
+        RenderConfig {
+            max_sh_deg: 3,
+            sh_dtype: SHDType::Byte,
+            no_vsync: false,
+        },
+    ));
 }
