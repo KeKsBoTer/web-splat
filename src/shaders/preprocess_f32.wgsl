@@ -41,7 +41,7 @@ struct GaussianSplat {
     sh: array<f32,48>
 }
 
-struct Splats2D {
+struct Splat {
      // 4x f16 packed as u32
     v_0: u32, v_1: u32,
     // 2x f16 packed as u32
@@ -83,7 +83,7 @@ var<uniform> camera: CameraUniforms;
 var<storage,read> vertices : array<GaussianSplat>;
 
 @group(1) @binding(1) 
-var<storage,read_write> points_2d : array<Splats2D>;
+var<storage,read_write> points_2d : array<Splat>;
 
 @group(2) @binding(0) 
 var<storage,read_write> indirect_draw_call : DrawIndirect;
@@ -210,7 +210,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
 
     let store_idx = atomicAdd(&indirect_draw_call.instance_count, 1u);
     let v = vec4<f32>(v1 / viewport, v2 / viewport);
-    points_2d[store_idx] = Splats2D(
+    points_2d[store_idx] = Splat(
         pack2x16float(v.xy), pack2x16float(v.zw),
         pack2x16float(v_center.xy),
         pack2x16float(color.rg), pack2x16float(color.ba),

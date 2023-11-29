@@ -16,7 +16,7 @@ use crate::uniform::UniformBuffer;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct GaussianSplat {
+pub struct Gaussian {
     pub xyz: Point3<f16>,
     pub opacity: i8,
     pub scale_factor: i8,
@@ -24,9 +24,9 @@ pub struct GaussianSplat {
     pub sh_idx: u32,
 }
 
-impl Default for GaussianSplat {
+impl Default for Gaussian {
     fn default() -> Self {
-        GaussianSplat::zeroed()
+        Gaussian::zeroed()
     }
 }
 
@@ -73,7 +73,7 @@ impl PointCloud {
 
         let splat_2d_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("2d gaussians buffer"),
-            size: (num_points * mem::size_of::<Splat2D>()) as u64,
+            size: (num_points * mem::size_of::<Splat>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
@@ -163,7 +163,7 @@ impl PointCloud {
 
         let splat_2d_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("2d gaussians buffer"),
-            size: (num_points * mem::size_of::<Splat2D>()) as u64,
+            size: (num_points * mem::size_of::<Splat>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
@@ -335,10 +335,10 @@ impl PointCloud {
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Splat2D {
+pub struct Splat {
     v: Vector4<f16>,
     pos: Vector2<f16>,
-    color: Vector4<u8>,
+    color: Vector4<f16>,
 }
 
 pub trait PointCloudReader {
@@ -347,7 +347,7 @@ pub trait PointCloudReader {
         sh_deg: u32,
     ) -> Result<
         (
-            Vec<GaussianSplat>,
+            Vec<Gaussian>,
             Vec<u8>,
             Vec<GeometricInfo>,
             QuantizationUniform,

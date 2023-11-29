@@ -6,9 +6,7 @@ use half::f16;
 use npyz::npz::{self, NpzArchive};
 
 use crate::{
-    pointcloud::{
-        GaussianSplat, GeometricInfo, PointCloudReader, Quantization, QuantizationUniform,
-    },
+    pointcloud::{Gaussian, GeometricInfo, PointCloudReader, Quantization, QuantizationUniform},
     utils::{build_cov, sh_deg_from_num_coefs, sh_num_coefficients},
 };
 
@@ -55,7 +53,7 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
         sh_deg: u32,
     ) -> Result<
         (
-            Vec<GaussianSplat>,
+            Vec<Gaussian>,
             Vec<u8>,
             Vec<GeometricInfo>,
             QuantizationUniform,
@@ -178,8 +176,8 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
         let num_points: usize = xyz.len();
         let num_sh_coeffs = sh_num_coefficients(sh_deg);
 
-        let vertices: Vec<GaussianSplat> = (0..num_points)
-            .map(|i| GaussianSplat {
+        let vertices: Vec<Gaussian> = (0..num_points)
+            .map(|i| Gaussian {
                 xyz: xyz[i],
                 opacity: opacity[i],
                 scale_factor: scaling_factor[i],

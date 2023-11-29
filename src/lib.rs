@@ -6,7 +6,7 @@ use renderer::Display;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
-use cgmath::{Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, Vector2, Vector3, InnerSpace};
+use cgmath::{Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, Vector2, Vector3, InnerSpace, Basis3};
 use egui::{epaint::Shadow, Rounding, TextStyle, Visuals};
 use egui_plot::{Legend, PlotPoints};
 use num_traits::{One, Zero};
@@ -498,6 +498,7 @@ impl WindowContext {
             center += Vector3::from(c.position)+ Vector3::from(c.rotation[2])*2.;
         }
         up /= scene.num_cameras() as f32;
+        up = scene.camera(0).rotation[1].into();
         center /= scene.num_cameras() as f32;
         up = up.normalize();
       

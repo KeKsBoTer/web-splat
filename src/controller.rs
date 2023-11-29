@@ -120,6 +120,14 @@ impl CameraController {
         self.center += offset;
         camera.position += offset;
 
+        if self.up.angle(dir) < Deg(5.).into() && self.rotation.y < 0. {
+            self.rotation.y = 0.;
+        }
+
+        if self.up.angle(dir) > Deg(180. - 5.).into() && self.rotation.y > 0. {
+            self.rotation.y = 0.;
+        }
+
         let rot =
             Quaternion::from_axis_angle(self.up, Rad(self.rotation.x * dt * self.sensitivity))
                 * Quaternion::from_axis_angle(
@@ -128,12 +136,12 @@ impl CameraController {
                 );
         let new_dir = rot.rotate_vector(dir);
         camera.position = self.center + new_dir;
-        camera.rotation = Quaternion::look_at(-new_dir, self.up);
+        camera.rotation = Quaternion::look_at(-new_dir, y_axis);
 
         // reset
-        self.rotation *= 0.8;
-        self.shift *= 0.8;
-        self.scroll *= 0.8;
+        self.rotation *= 0.85;
+        self.shift *= 0.85;
+        self.scroll *= 0.85;
     }
 }
 
