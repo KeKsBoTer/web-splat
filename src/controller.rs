@@ -11,7 +11,6 @@ use crate::camera::{Camera, PerspectiveCamera};
 #[derive(Debug)]
 pub struct CameraController {
     pub center: Point3<f32>,
-    pub up: Vector3<f32>,
     amount: Vector3<f32>,
     shift: Vector2<f32>,
     rotation: Vector3<f32>,
@@ -21,13 +20,13 @@ pub struct CameraController {
 
     pub left_mouse_pressed: bool,
     pub right_mouse_pressed: bool,
+    pub alt_pressed: bool,
 }
 
 impl CameraController {
     pub fn new(speed: f32, sensitivity: f32) -> Self {
         Self {
             center: Point3::origin(),
-            up: Vector3::new(0., 1., 0.),
             amount: Vector3::zero(),
             shift: Vector2::zero(),
             rotation: Vector3::zero(),
@@ -36,6 +35,7 @@ impl CameraController {
             sensitivity,
             left_mouse_pressed: false,
             right_mouse_pressed: false,
+            alt_pressed: false,
         }
     }
 
@@ -98,7 +98,6 @@ impl CameraController {
     pub fn reset_to_camera(&mut self, camera: PerspectiveCamera) {
         let inv_view = camera.view_matrix().inverse_transform().unwrap();
         let forward = inv_view.z.truncate();
-        let up = inv_view.z.truncate();
         self.center = closest_point(camera.position, forward, self.center);
     }
 
@@ -114,34 +113,38 @@ impl CameraController {
 
         let x_axis = inv_view.x.truncate();
         let y_axis = inv_view.y.truncate();
+        let z_axis = inv_view.z.truncate();
 
         let offset =
             (self.shift.y * x_axis - self.shift.x * y_axis) * dt * self.speed * 0.1 * distance;
         self.center += offset;
         camera.position += offset;
 
-        if self.up.angle(dir) < Deg(5.).into() && self.rotation.y < 0. {
-            self.rotation.y = 0.;
+        let mut theta = Rad((-self.rotation.x) * dt * self.sensitivity);
+        let mut phi = Rad((-self.rotation.y) * dt * self.sensitivity);
+        let mut eta = Rad::zero();
+
+        if self.alt_pressed {
+            eta = Rad(-self.rotation.y * dt * self.sensitivity);
+            theta = Rad::zero();
+            phi = Rad::zero();
         }
 
-        if self.up.angle(dir) > Deg(180. - 5.).into() && self.rotation.y > 0. {
-            self.rotation.y = 0.;
-        }
+        let rot_theta = Quaternion::from_axis_angle(y_axis, -theta);
+        let rot_phi = Quaternion::from_axis_angle(x_axis, phi);
+        let rot_eta = Quaternion::from_axis_angle(z_axis, eta);
+        let rot = rot_theta * rot_phi * rot_eta;
 
-        let rot =
-            Quaternion::from_axis_angle(self.up, Rad(self.rotation.x * dt * self.sensitivity))
-                * Quaternion::from_axis_angle(
-                    x_axis,
-                    Rad(-self.rotation.y * dt * self.sensitivity),
-                );
+        let up = rot.rotate_vector(y_axis);
         let new_dir = rot.rotate_vector(dir);
         camera.position = self.center + new_dir;
-        camera.rotation = Quaternion::look_at(-new_dir, y_axis);
+
+        camera.rotation = Quaternion::look_at(-new_dir, up);
 
         // reset
-        self.rotation *= 0.85;
-        self.shift *= 0.85;
-        self.scroll *= 0.85;
+        self.rotation *= 0.80;
+        self.shift *= 0.80;
+        self.scroll *= 0.80;
     }
 }
 

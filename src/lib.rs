@@ -6,7 +6,7 @@ use renderer::Display;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
-use cgmath::{Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, Vector2, Vector3, InnerSpace, Basis3};
+use cgmath::{Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, Vector2, Vector3};
 use egui::{epaint::Shadow, Rounding, TextStyle, Visuals};
 use egui_plot::{Legend, PlotPoints};
 use num_traits::{One, Zero};
@@ -192,7 +192,7 @@ impl WindowContext {
 
         let aspect = size.width as f32 / size.height as f32;
         let view_camera = PerspectiveCamera::new(
-            Point3::origin(),
+            Point3::new(0.,0.,-1.),
             Quaternion::one(),
             PerspectiveProjection::new(
                 Vector2::new(size.width, size.height),
@@ -202,7 +202,7 @@ impl WindowContext {
             ),
         );
 
-        let controller = CameraController::new(0.1, 0.1);
+        let controller = CameraController::new(0.1, 0.05);
         let ui_renderer = ui_renderer::EguiWGPU::new(event_loop, device, surface_format);
         let display = Display::new(
             device,
@@ -491,19 +491,13 @@ impl WindowContext {
     }
 
     fn set_scene(&mut self, scene: Scene) {
-        let mut up = Vector3::zero();
         let mut center = Point3::origin();
         for c in scene.cameras(None){
-            up += Vector3::from(c.rotation[1]);
-            center += Vector3::from(c.position)+ Vector3::from(c.rotation[2])*2.;
+            let z_axis:Vector3<f32> = c.rotation[2].into();
+            center += Vector3::from(c.position) + z_axis*2.;
         }
-        up /= scene.num_cameras() as f32;
-        up = scene.camera(0).rotation[1].into();
         center /= scene.num_cameras() as f32;
-        up = up.normalize();
       
-        log::debug!("oribital camera up vector: {up:?}");
-        self.controller.up = up;
         self.controller.center = center;
         self.scene.replace(scene);
     }
@@ -609,7 +603,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
         let init_camera = scene.camera(0);
         state.set_scene(scene);
         state.set_camera(init_camera, Duration::ZERO);
-        state.start_tracking_shot(Some(Split::Test));
+        // state.start_tracking_shot(Some(Split::Test));
     }
 
     let mut last = Instant::now();
@@ -631,9 +625,13 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
                 state.resize(**new_inner_size, Some(*scale_factor as f32));
             }
             WindowEvent::CloseRequested => {log::info!("close!");*control_flow = ControlFlow::Exit},
+            WindowEvent::ModifiersChanged(m)=>{
+                state.controller.alt_pressed = m.alt();
+            }
             WindowEvent::KeyboardInput { input, .. } => {
                 if let Some(key) = input.virtual_keycode {
                     if input.state == ElementState::Released{
+
                         if key == VirtualKeyCode::T{
                             state.start_tracking_shot(Some(Split::Test));
                             
