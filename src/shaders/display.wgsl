@@ -3,6 +3,9 @@ var source_img : texture_2d<f32>;
 @group(0) @binding(1)
 var texture_sampler: sampler;
 
+@group(0) @binding(2)
+var depth_img : texture_2d<f32>;
+
 struct VertexOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) tex_coord: vec2<f32>,

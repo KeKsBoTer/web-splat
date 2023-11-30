@@ -7,7 +7,7 @@ use renderer::Display;
 use std::time::{Duration, Instant};
 
 use cgmath::{Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, Vector2, Vector3};
-use egui::{epaint::Shadow, Rounding, TextStyle, Visuals};
+use egui::{epaint::Shadow, load::SizedTexture, Rounding, TextStyle, Vec2, Visuals};
 use egui_plot::{Legend, PlotPoints};
 use num_traits::One;
 
@@ -399,6 +399,33 @@ impl WindowContext {
                     });
             });
 
+        egui::Window::new("Depth Image")
+            .resizable(true)
+            .show(ctx, |ui| {
+                let size = Vec2::new(300., 600.);
+                let texture_id = self.ui_renderer.renderer.register_native_texture(
+                    &self.wgpu_context.device,
+                    self.display.depth(),
+                    wgpu::FilterMode::Linear,
+                );
+                let img = egui::Image::new(egui::ImageSource::Texture(SizedTexture::new(
+                    texture_id,
+                    Vec2::new(size.x, size.y / 2.),
+                )));
+                ui.add(img);
+
+                let texture_id = self.ui_renderer.renderer.register_native_texture(
+                    &self.wgpu_context.device,
+                    &self.display.previous_depth(),
+                    wgpu::FilterMode::Linear,
+                );
+                let img = egui::Image::new(egui::ImageSource::Texture(SizedTexture::new(
+                    texture_id,
+                    Vec2::new(size.x, size.y / 2.),
+                )));
+                ui.add(img);
+            });
+
         if let Some(scene) = &self.scene {
             let mut new_camera = None;
             let mut start_tracking_shot = false;
@@ -450,6 +477,7 @@ impl WindowContext {
             self.camera,
             viewport,
             self.display.texture(),
+            self.display.depth(),
         );
 
         let mut encoder =
@@ -459,7 +487,7 @@ impl WindowContext {
                     label: Some("display"),
                 });
 
-        self.display.render(&mut encoder, &view);
+        self.display.render(&mut encoder, &view, &self.camera);
         self.wgpu_context.queue.submit([encoder.finish()]);
 
         if self.ui_visible {

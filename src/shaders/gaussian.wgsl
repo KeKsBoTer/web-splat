@@ -65,11 +65,11 @@ struct FragmentOut {
 }
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_main(in: VertexOutput) -> FragmentOut {
     let a = dot(in.screen_pos, in.screen_pos);
     if a > 2. * CUTOFF {
         discard;
     }
     let b = min(0.99, exp(-a) * in.color.a);
-    return vec4<f32>(in.color.rgb * b, b);
+    return FragmentOut(vec4<f32>(in.color.rgb * b, b), vec4<f32>(in.depth / 100. * b, 0., 0., b));
 }

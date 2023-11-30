@@ -58,11 +58,18 @@ impl GaussianRenderer {
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: "fs_main",
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: color_format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: color_format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba32Float,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::RED | wgpu::ColorWrites::ALPHA,
+                    }),
+                ],
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleStrip,
@@ -180,6 +187,7 @@ impl GaussianRenderer {
         camera: PerspectiveCamera,
         viewport: Vector2<u32>,
         target: &wgpu::TextureView,
+        target_depth: &wgpu::TextureView,
     ) {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
@@ -229,14 +237,29 @@ impl GaussianRenderer {
             {
                 let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("render pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: target,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
+                    color_attachments: &[
+                        Some(wgpu::RenderPassColorAttachment {
+                            view: target,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        }),
+                        Some(wgpu::RenderPassColorAttachment {
+                            view: target_depth,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: 1.,
+                                    g: 0.,
+                                    b: 0.,
+                                    a: 1.,
+                                }),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        }),
+                    ],
                     ..Default::default()
                 });
 
@@ -431,8 +454,10 @@ pub struct RenderStatistics {
 pub struct Display {
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
-    format: wgpu::TextureFormat,
-    view: wgpu::TextureView,
+    framebuffer: FrameBuffer,
+    previous: FrameBuffer,
+    fb_view: wgpu::TextureView,
+    depth_view: wgpu::TextureView,
 }
 
 impl Display {
@@ -474,40 +499,32 @@ impl Display {
             }),
             multiview: None,
         });
-        let (view, bind_group) = Self::create_render_target(device, source_format, width, height);
+
+        let framebuffer = FrameBuffer::new(width, height, source_format, device);
+        let previous = FrameBuffer::new(width, height, source_format, device);
+        let fb_view = framebuffer.texture.create_view(&Default::default());
+        let depth_view = framebuffer.depth.create_view(&Default::default());
+        let bind_group = Self::create_bind_group(device, &fb_view, &depth_view);
+
         Self {
             pipeline,
-            view,
-            format: source_format,
+            framebuffer,
+            previous,
             bind_group,
+            fb_view,
+            depth_view,
         }
     }
 
     pub fn texture(&self) -> &wgpu::TextureView {
-        &self.view
+        &self.fb_view
     }
 
-    fn create_render_target(
+    fn create_bind_group(
         device: &wgpu::Device,
-        format: wgpu::TextureFormat,
-        width: u32,
-        height: u32,
-    ) -> (wgpu::TextureView, wgpu::BindGroup) {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("display render image"),
-            size: Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let texture_view = texture.create_view(&Default::default());
+        fb_view: &wgpu::TextureView,
+        depth_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
@@ -519,15 +536,19 @@ impl Display {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                    resource: wgpu::BindingResource::TextureView(fb_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(depth_view),
+                },
             ],
         });
-        return (texture_view, bind_group);
+        return bind_group;
     }
 
     pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -550,32 +571,139 @@ impl Display {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         })
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
-        let (view, bind_group) = Self::create_render_target(device, self.format, width, height);
-        self.bind_group = bind_group;
-        self.view = view;
+        self.framebuffer.resize(device, width, height);
+        self.previous.resize(device, width, height);
+        self.fb_view = self.framebuffer.texture.create_view(&Default::default());
+        self.depth_view = self.framebuffer.depth.create_view(&Default::default());
+        self.bind_group = Self::create_bind_group(device, &self.fb_view, &self.depth_view);
     }
 
-    pub fn render(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
-        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("render pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            ..Default::default()
-        });
-        render_pass.set_bind_group(0, &self.bind_group, &[]);
-        render_pass.set_pipeline(&self.pipeline);
+    pub fn render(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        camera: &PerspectiveCamera,
+    ) {
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("render pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            render_pass.set_bind_group(0, &self.bind_group, &[]);
+            render_pass.set_pipeline(&self.pipeline);
 
-        render_pass.draw(0..4, 0..1);
+            render_pass.draw(0..4, 0..1);
+        }
+        self.previous.camera = self.framebuffer.camera;
+        self.framebuffer.camera = camera.clone();
+        encoder.copy_texture_to_texture(
+            self.framebuffer.texture.as_image_copy(),
+            self.previous.texture.as_image_copy(),
+            self.previous.texture.size(),
+        );
+        encoder.copy_texture_to_texture(
+            self.framebuffer.depth.as_image_copy(),
+            self.previous.depth.as_image_copy(),
+            self.previous.depth.size(),
+        );
+    }
+
+    // pub fn save_frame(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+    //     qu
+    // }
+
+    pub(crate) fn depth(&self) -> &wgpu::TextureView {
+        &self.depth_view
+    }
+    pub(crate) fn previous_depth(&self) -> wgpu::TextureView {
+        self.previous.depth.create_view(&Default::default())
+    }
+}
+
+struct FrameBuffer {
+    texture: wgpu::Texture,
+    depth: wgpu::Texture,
+    camera: PerspectiveCamera,
+}
+
+impl FrameBuffer {
+    fn new(width: u32, height: u32, format: wgpu::TextureFormat, device: &wgpu::Device) -> Self {
+        let (texture, depth_texture) = Self::create_textures(device, format, width, height);
+        Self {
+            texture,
+            depth: depth_texture,
+            camera: PerspectiveCamera::default(),
+        }
+    }
+    fn create_textures(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) -> (wgpu::Texture, wgpu::Texture) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("display render image"),
+            size: Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("depth render image"),
+            size: Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        return (texture, depth_texture);
+    }
+
+    fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        let (texture, depth) = Self::create_textures(device, self.texture.format(), width, height);
+        self.texture = texture;
+        self.depth = depth;
     }
 }
