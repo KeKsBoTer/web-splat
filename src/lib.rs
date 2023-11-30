@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use cgmath::{Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, Vector2, Vector3};
 use egui::{epaint::Shadow, Rounding, TextStyle, Visuals};
 use egui_plot::{Legend, PlotPoints};
-use num_traits::{One, Zero};
+use num_traits::One;
 
 use utils::{key_to_num, RingBuffer};
 
@@ -192,7 +192,7 @@ impl WindowContext {
 
         let aspect = size.width as f32 / size.height as f32;
         let view_camera = PerspectiveCamera::new(
-            Point3::new(0.,0.,-1.),
+            Point3::new(0., 0., -1.),
             Quaternion::one(),
             PerspectiveProjection::new(
                 Vector2::new(size.width, size.height),
@@ -360,22 +360,20 @@ impl WindowContext {
                     .show(ui, |ui| {
                         ui.colored_label(egui::Color32::WHITE, "Camera");
                         ui.end_row();
-                        ui.label("Sideways");
-                        ui.label("W/A/S/D");
-                        ui.end_row();
-                        ui.label("");
-                        ui.label("Up/Left/Down/Right");
-                        ui.end_row();
-                        ui.label("Up/Down");
-                        ui.label("Space/Shift");
+                        ui.label("Rotate Camera");
+                        ui.label("Left click + drag");
                         ui.end_row();
 
-                        ui.label("Rotate (Yaw/Pitch)");
-                        ui.label("Mouse");
+                        ui.label("Move Target/Center");
+                        ui.label("Right click + drag");
                         ui.end_row();
 
-                        ui.label("Rotate (Roll)");
-                        ui.label("Q/E");
+                        ui.label("Tilt Camera");
+                        ui.label("Alt + drag mouse");
+                        ui.end_row();
+
+                        ui.label("Zoom");
+                        ui.label("Mouse wheel");
                         ui.end_row();
 
                         ui.colored_label(egui::Color32::WHITE, "Scene Views");
@@ -492,12 +490,12 @@ impl WindowContext {
 
     fn set_scene(&mut self, scene: Scene) {
         let mut center = Point3::origin();
-        for c in scene.cameras(None){
-            let z_axis:Vector3<f32> = c.rotation[2].into();
-            center += Vector3::from(c.position) + z_axis*2.;
+        for c in scene.cameras(None) {
+            let z_axis: Vector3<f32> = c.rotation[2].into();
+            center += Vector3::from(c.position) + z_axis * 2.;
         }
         center /= scene.num_cameras() as f32;
-      
+
         self.controller.center = center;
         self.scene.replace(scene);
     }
@@ -510,6 +508,11 @@ impl WindowContext {
                 Some(self.camera.clone()),
             )));
         }
+    }
+
+    fn stop_tracking_shot(&mut self) {
+        self.animation.take();
+        self.controller.reset_to_camera(self.camera);
     }
 
     pub fn set_camera<C: Into<PerspectiveCamera>>(
@@ -603,7 +606,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
         let init_camera = scene.camera(0);
         state.set_scene(scene);
         state.set_camera(init_camera, Duration::ZERO);
-        // state.start_tracking_shot(Some(Split::Test));
+        state.start_tracking_shot(Some(Split::Test));
     }
 
     let mut last = Instant::now();
@@ -633,8 +636,11 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
                     if input.state == ElementState::Released{
 
                         if key == VirtualKeyCode::T{
-                            state.start_tracking_shot(Some(Split::Test));
-                            
+                            if state.animation.is_none(){
+                                state.start_tracking_shot(Some(Split::Test));
+                            }else{
+                                state.stop_tracking_shot()
+                            }
                         }else if key == VirtualKeyCode::U{
                             state.ui_visible = !state.ui_visible;
                             
