@@ -1,3 +1,5 @@
+// we cutoff at 1/255 alpha value 
+const CUTOFF:f32 = 2.3539888583335364; // = sqrt(log(255))
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -45,7 +47,7 @@ fn vs_main(
     let x = f32(in_vertex_index % 2u == 0u) * 2. - (1.);
     let y = f32(in_vertex_index < 2u) * 2. - (1.);
 
-    let position = vec2<f32>(x, y) * 2.;
+    let position = vec2<f32>(x, y) * CUTOFF;
 
     let offset = 2. * mat2x2<f32>(v1, v2) * position;
     out.position = vec4<f32>(v_center + offset, 0., 1.);
@@ -57,11 +59,10 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let a = -dot(in.screen_pos, in.screen_pos);
-    // if a < -4.0 {discard;}
-    let b = min(0.99, exp(a) * in.color.a);
-    if b < 1.0 / 255.0 {
+    let a = dot(in.screen_pos, in.screen_pos);
+    if a > 2. * CUTOFF {
         discard;
     }
+    let b = min(0.99, exp(-a) * in.color.a);
     return vec4<f32>(in.color.rgb * b, b);
 }
