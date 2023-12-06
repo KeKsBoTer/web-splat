@@ -1564,8 +1564,9 @@ dependencies = [
 
 [[package]]
 name = "npyz"
-version = "0.8.1"
-source = "git+https://github.com/KeKsBoTer/npyz#2e47bec80e90396f9385a51c8fa74fa073f3d8b5"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6df72812223d401d8638c7c6b65ecbf81471214cb291e42afb9f8374d9a91e5e"
 dependencies = [
  "byteorder",
  "half",

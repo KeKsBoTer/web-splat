@@ -5,7 +5,6 @@ struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) screen_pos: vec2<f32>,
     @location(1) color: vec4<f32>,
-    @location(2) depth: f32
 };
 
 struct VertexInput {
@@ -18,7 +17,7 @@ struct Splat {
      // 4x f16 packed as u32
     v_0: u32, v_1: u32,
     // 2x f16 packed as u32
-    pos: u32,depth: f32,
+    pos: u32,
     // rgba packed as f16
     color_0: u32,color_1: u32,
 };
@@ -42,7 +41,6 @@ fn vs_main(
     let v2 = unpack2x16float(vertex.v_1);
 
     let v_center = unpack2x16float(vertex.pos);
-    let depth = vertex.depth;
 
     // splat rectangle with left lower corner at (-1,-1)
     // and upper right corner at (1,1)
@@ -55,13 +53,7 @@ fn vs_main(
     out.position = vec4<f32>(v_center + offset, 0., 1.);
     out.screen_pos = position;
     out.color = vec4<f32>(unpack2x16float(vertex.color_0), unpack2x16float(vertex.color_1));
-    out.depth = vertex.depth;
     return out;
-}
-
-struct FragmentOut {
-    @location(0) color: vec4<f32>,
-    @location(1) depth: vec4<f32>
 }
 
 @fragment
