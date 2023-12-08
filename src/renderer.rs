@@ -180,6 +180,7 @@ impl GaussianRenderer {
         camera: PerspectiveCamera,
         viewport: Vector2<u32>,
         target: &wgpu::TextureView,
+        background_color:wgpu::Color
     ) {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
@@ -233,7 +234,7 @@ impl GaussianRenderer {
                         view: target,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            load: wgpu::LoadOp::Clear(background_color),
                             store: wgpu::StoreOp::Store,
                         },
                     })],

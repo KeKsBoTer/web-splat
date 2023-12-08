@@ -141,10 +141,11 @@ impl CameraController {
 
         camera.rotation = Quaternion::look_at(-new_dir, up);
 
-        // reset
-        self.rotation *= 0.80;
-        self.shift *= 0.80;
-        self.scroll *= 0.80;
+        // decay based on fps
+        let decay = 0.8 /( dt * 60.);
+        self.rotation *= decay;
+        self.shift *= decay;
+        self.scroll *= decay;
     }
 }
 

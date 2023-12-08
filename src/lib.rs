@@ -7,7 +7,7 @@ use renderer::Display;
 use std::time::{Duration, Instant};
 
 use cgmath::{Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, Vector2, Vector3};
-use egui::{epaint::Shadow, Rounding, TextStyle, Visuals};
+use egui::{epaint::Shadow, Rounding, TextStyle, Visuals, Color32};
 use egui_plot::{Legend, PlotPoints};
 use num_traits::One;
 
@@ -125,6 +125,8 @@ struct WindowContext {
     #[cfg(not(target_arch = "wasm32"))]
     history: RingBuffer<(Duration, Duration, Duration)>,
     display: Display,
+
+    background_color: egui::Color32,
 }
 
 impl WindowContext {
@@ -172,7 +174,7 @@ impl WindowContext {
                 wgpu::PresentMode::AutoVsync
             },
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
-            view_formats: vec![],
+            view_formats: vec![surface_format.remove_srgb_suffix()],
         };
         surface.configure(&device, &config);
         let pc = match pc_data_type {
@@ -207,7 +209,7 @@ impl WindowContext {
         let display = Display::new(
             device,
             render_format,
-            surface_format,
+            surface_format.remove_srgb_suffix(),
             size.width,
             size.height,
         );
@@ -230,6 +232,7 @@ impl WindowContext {
             history: RingBuffer::new(512),
             ui_visible: true,
             display,
+            background_color:Color32::BLACK
         }
     }
 
@@ -399,6 +402,16 @@ impl WindowContext {
                     });
             });
 
+        egui::Window::new("Render Settings").show(ctx, |ui|{
+            egui::Grid::new("render_settings")
+            .num_columns(2)
+            .striped(true)
+            .show(ui, |ui| {
+                ui.label("Background Color");
+                egui::color_picker::color_edit_button_srgba(ui, &mut self.background_color,egui::color_picker::Alpha::BlendOrAdditive);
+            });
+        });
+
         if let Some(scene) = &self.scene {
             let mut new_camera = None;
             let mut start_tracking_shot = false;
@@ -441,8 +454,10 @@ impl WindowContext {
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
 
-        let view = output.texture.create_view(&Default::default());
+        let view_rgb = output.texture.create_view(&wgpu::TextureViewDescriptor {format:Some(self.config.format.remove_srgb_suffix()), ..Default::default()});
+        let view_srgb = output.texture.create_view(&Default::default());
         let viewport = Vector2::new(self.config.width, self.config.height);
+        let rgba = self.background_color.to_srgba_unmultiplied();
         self.renderer.render(
             &self.wgpu_context.device,
             &self.wgpu_context.queue,
@@ -450,6 +465,7 @@ impl WindowContext {
             self.camera,
             viewport,
             self.display.texture(),
+            wgpu::Color { r: rgba[0] as f64/255., g: rgba[1] as f64/255., b: rgba[2] as f64/255., a: rgba[3] as f64/255. }
         );
 
         let mut encoder =
@@ -459,7 +475,7 @@ impl WindowContext {
                     label: Some("display"),
                 });
 
-        self.display.render(&mut encoder, &view);
+        self.display.render(&mut encoder, &view_rgb);
         self.wgpu_context.queue.submit([encoder.finish()]);
 
         if self.ui_visible {
@@ -477,7 +493,7 @@ impl WindowContext {
                 self.scale_factor,
                 &self.wgpu_context.device,
                 &self.wgpu_context.queue,
-                &view,
+                &view_srgb,
                 shapes,
             );
         } else {
