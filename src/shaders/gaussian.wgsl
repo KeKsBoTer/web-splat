@@ -53,7 +53,6 @@ fn vs_main(
     out.position = vec4<f32>(v_center + offset, 0., 1.);
     out.screen_pos = position;
     out.color = vec4<f32>(unpack2x16float(vertex.color_0), unpack2x16float(vertex.color_1));
-
     return out;
 }
 
