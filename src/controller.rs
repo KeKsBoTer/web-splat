@@ -1,6 +1,7 @@
 use cgmath::*;
 #[cfg(target_arch = "wasm32")]
 use instant::Duration;
+use num_traits::Float;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
@@ -136,13 +137,13 @@ impl CameraController {
         let rot = rot_theta * rot_phi * rot_eta;
 
         let up = rot.rotate_vector(y_axis);
-        let new_dir = rot.rotate_vector(dir);
+        let new_dir: Vector3<f32> = rot.rotate_vector(dir);
         camera.position = self.center + new_dir;
 
         camera.rotation = Quaternion::look_at(-new_dir, up);
 
         // decay based on fps
-        let decay = 0.8 /( dt * 60.);
+        let decay = (0.8).powf(dt * 60.);
         self.rotation *= decay;
         self.shift *= decay;
         self.scroll *= decay;
