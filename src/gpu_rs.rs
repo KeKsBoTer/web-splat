@@ -11,7 +11,7 @@
 use wgpu::{util::DeviceExt, ComputePassDescriptor};
 
 // IMPORTANT: the following constants have to be synced with the numbers in radix_sort.wgsl
-pub const HISTOGRAM_WG_SIZE: usize = 256;
+pub const HISTOGRAM_WG_SIZE: usize = 128;
 const RS_RADIX_LOG2: usize = 8; // 8 bit radices
 const RS_RADIX_SIZE: usize = 1 << RS_RADIX_LOG2; // 256 entries into the radix table
 const RS_KEYVAL_SIZE: usize = 32 / RS_RADIX_LOG2;

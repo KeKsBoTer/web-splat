@@ -87,8 +87,8 @@ fn zero_histograms(@builtin(global_invocation_id) gid : vec3<u32>, @builtin(num_
 var<workgroup> smem : array<atomic<u32>, rs_radix_size>;
 var<private> kv : array<f32, rs_histogram_block_rows>;
 fn zero_smem(lid: u32) {
-    if lid < rs_radix_size {
-        smem[lid] = 0u;
+    for (var i = lid; i < rs_radix_size; i += histogram_wg_size) {
+        smem[i] = 0u;
     }
 }
 fn histogram_pass(pass_: u32, lid: u32) {
@@ -103,8 +103,10 @@ fn histogram_pass(pass_: u32, lid: u32) {
     
     workgroupBarrier();
     let histogram_offset = rs_radix_size * pass_ + lid;
-    if lid < rs_radix_size && smem[lid] >= 0u {
-        atomicAdd(&histograms[histogram_offset], smem[lid]);
+    for (var i = lid; i < rs_radix_size; i += histogram_wg_size) {
+        if smem[i] >= 0u {
+            atomicAdd(&histograms[histogram_offset], smem[i]);
+        }
     }
 }
 
@@ -145,6 +147,7 @@ fn calculate_histogram(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_in
 // Prefix sum over histogram
 // --------------------------------------------------------------------------------------------------------------
 fn prefix_reduce_smem(lid: u32) {
+    //const_assert(rs_radix_size <= 2 * histogram_wg_size);   // the radix size must not be larger than double the worgroup size, otherwise this function will not work as expected
     var offset = 1u;
     for (var d = rs_radix_size >> 1u; d > 0u; d = d >> 1u) { // sum in place tree
         workgroupBarrier();
@@ -175,20 +178,25 @@ fn prefix_reduce_smem(lid: u32) {
 fn prefix_histogram(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid : vec3<u32>) {
     // the work group  id is the pass, and is inverted in the next line, such that pass 3 is at the first position in the histogram buffer
     let histogram_base = (rs_keyval_size - 1u - wid.x) * rs_radix_size;
-    let histogram_offset = histogram_base + lid.x;
     
     // the following coode now corresponds to the prefix calc code in fuchsia/../shaders/prefix.h
     // however the implementation is taken from https://www.eecs.umich.edu/courses/eecs570/hw/parprefix.pdf listing 2 (better overview, nw subgroup arithmetic)
     // this also means that only half the amount of workgroups is spawned (one workgroup calculates for 2 positioons)
     // the smemory is used from the previous section
-    smem[lid.x] = histograms[histogram_offset];
-    smem[lid.x + {prefix_wg_size}u] = histograms[histogram_offset + {prefix_wg_size}u];
+    for (var i = lid.x; i < rs_radix_size; i += histogram_wg_size) {
+        let histogram_offset = histogram_base + i;
+        smem[i] = histograms[histogram_offset];
+        smem[i + {prefix_wg_size}u] = histograms[histogram_offset + {prefix_wg_size}u];
+    }
 
     prefix_reduce_smem(lid.x);
     workgroupBarrier();
     
-    histograms[histogram_offset] = smem[lid.x];
-    histograms[histogram_offset + {prefix_wg_size}u] = smem[lid.x + {prefix_wg_size}u];
+    for (var i = lid.x; i < rs_radix_size; i += histogram_wg_size) {
+        let histogram_offset = histogram_base + i;
+        histograms[histogram_offset] = smem[i];
+        histograms[histogram_offset + {prefix_wg_size}u] = smem[i + {prefix_wg_size}u];
+    }
 }
 
 // --------------------------------------------------------------------------------------------------------------
@@ -252,7 +260,7 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
     let partition_mask_reduction = partition_status_reduction << 30u;
     let partition_mask_prefix = partition_status_prefix << 30u;
     // kv_filling is done in the scatter_even and scatter_odd functions to account for front and backbuffer switch
-    // in the reference there is a nulling of the smmem here, was moved to line 251 as smem is used in the code until then
+    // in the reference there is a nulling of the smmem here, was moved to line 251 as smem is not used in the code until then
 
     // The following implements conceptually the same as the
     // Emulate a "match" operation with broadcasts for small subgroup sizes (line 665 ff in scatter.glsl)
@@ -308,17 +316,17 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
     // move the values into order without having any collisions
     
     // we do not check for single work groups (is currently not assumed to occur very often)
-    let partition_offset = lid.x + partitions_base_offset();    // is correct, the partitions pointer does not change
     let partition_base = wid.x * rs_radix_size;
     if wid.x == 0u {
         // special treating for the first workgroup as the data might be read back by later workgroups
         // corresponds to rs_first_prefix_store
-        let hist_offset = pass_ * rs_radix_size + lid.x;
-        if lid.x < rs_radix_size {
+        for (var i = lid.x; i < rs_radix_size; i += {scatter_wg_size}u) {
+            let partition_offset = i + partitions_base_offset();    // is correct, the partitions pointer does not change
+            let hist_offset = pass_ * rs_radix_size + i;
             let exc = histograms[hist_offset];
-            let red = histogram_load(lid.x);// scatter_smem[rs_keyval_size + lid.x];
+            let red = histogram_load(i);// scatter_smem[rs_keyval_size + lid.x];
             
-            scatter_smem[lid.x] = exc;
+            scatter_smem[i] = exc;
             
             let inc = exc + red;
 
@@ -329,13 +337,17 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
         // standard case for the "inbetween" workgroups
         
         // rs_reduction_store, only for inbetween workgroups
-        if lid.x < rs_radix_size && wid.x < nwg.x - 1u {
-            let red = histogram_load(lid.x);
-            atomicStore(&histograms[partition_offset + partition_base], red | partition_mask_reduction);
+        for (var i = lid.x; i < rs_radix_size; i += {scatter_wg_size}u) {
+            if wid.x < nwg.x - 1u {
+                let partition_offset = i + partitions_base_offset();    // is correct, the partitions pointer does not change
+                let red = histogram_load(i);
+                atomicStore(&histograms[partition_offset + partition_base], red | partition_mask_reduction);
+            }
         }
         
         // rs_loopback_store
-        if lid.x < rs_radix_size {
+        for (var i = lid.x; i < rs_radix_size; i += {scatter_wg_size}u) {
+            let partition_offset = i + partitions_base_offset();    // is correct, the partitions pointer does not change
             var partition_base_prev = partition_base - rs_radix_size;
             var exc                 = 0u;
 
@@ -356,7 +368,7 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
 
                 // otherwise save the exclusive scan and atomically transform the
                 // reduction into an inclusive prefix status math: reduction + 1 = prefix
-                scatter_smem[lid.x] = exc;
+                scatter_smem[i] = exc;
 
                 if wid.x < nwg.x - 1u { // only store when inbetween, skip for last workgrup
                     atomicAdd(&histograms[partition_offset + partition_base], exc | (1u << 30u));
