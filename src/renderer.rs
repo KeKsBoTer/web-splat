@@ -3,12 +3,12 @@ use crate::{
     camera::{Camera, PerspectiveCamera, VIEWPORT_Y_FLIP},
     pointcloud::PointCloud,
     uniform::UniformBuffer,
-    utils::GPUStopwatch,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+use crate::utils::GPUStopwatch;
 use std::num::NonZeroU64;
 
-#[cfg(target_arch = "wasm32")]
-use instant::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 use wgpu::{include_wgsl, Extent3d, MultisampleState};
@@ -20,6 +20,7 @@ pub struct GaussianRenderer {
     camera: UniformBuffer<CameraUniform>,
     preprocess: PreprocessPipeline,
     draw_indirect_buffer: wgpu::Buffer,
+    #[allow(dead_code)]
     draw_indirect: wgpu::BindGroup,
     color_format: wgpu::TextureFormat,
     #[cfg(not(target_arch = "wasm32"))]
@@ -29,7 +30,7 @@ pub struct GaussianRenderer {
 }
 
 impl GaussianRenderer {
-    pub fn new(
+    pub async fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         color_format: wgpu::TextureFormat,
@@ -100,7 +101,7 @@ impl GaussianRenderer {
         #[cfg(not(target_arch = "wasm32"))]
         let stopwatch = GPUStopwatch::new(device, Some(3));
 
-        let sorter = GPURSSorter::new(device, queue);
+        let sorter = GPURSSorter::new(device, queue).await;
 
         let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
         let preprocess = PreprocessPipeline::new(device, sh_deg, float);
@@ -146,8 +147,7 @@ impl GaussianRenderer {
             .as_bytes(),
         );
         let depth_buffer = &self.sorter_suff.as_ref().unwrap().sorter_bg_pre;
-        self.preprocess
-            .run(encoder, pc, &self.camera, &self.draw_indirect, depth_buffer);
+        self.preprocess.run(encoder, pc, &self.camera, depth_buffer);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -180,7 +180,7 @@ impl GaussianRenderer {
         camera: PerspectiveCamera,
         viewport: Vector2<u32>,
         target: &wgpu::TextureView,
-        background_color:wgpu::Color
+        background_color: wgpu::Color,
     ) {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
@@ -222,6 +222,14 @@ impl GaussianRenderer {
             );
             #[cfg(not(target_arch = "wasm32"))]
             self.stopwatch.stop(&mut encoder, "sorting").unwrap();
+
+            encoder.copy_buffer_to_buffer(
+                &self.sorter_suff.as_ref().unwrap().sorter_uni,
+                0,
+                &self.draw_indirect_buffer,
+                std::mem::size_of::<u32>() as u64,
+                std::mem::size_of::<u32>() as u64,
+            );
 
             // rasterize splats
             encoder.push_debug_group("render");
@@ -366,7 +374,6 @@ impl PreprocessPipeline {
                 } else {
                     PointCloud::bind_group_layout(device)
                 },
-                &GaussianRenderer::bind_group_layout(device),
                 &GPURSSorter::bind_group_layout_preprocess(device),
             ],
             push_constant_ranges: &[],
@@ -405,8 +412,7 @@ impl PreprocessPipeline {
         encoder: &'a mut wgpu::CommandEncoder,
         pc: &PointCloud,
         camera: &UniformBuffer<CameraUniform>,
-        draw_indirect: &wgpu::BindGroup,
-        depth_buffer: &wgpu::BindGroup,
+        sort_bg: &wgpu::BindGroup,
     ) {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("preprocess compute pass"),
@@ -415,14 +421,14 @@ impl PreprocessPipeline {
         pass.set_pipeline(&self.0);
         pass.set_bind_group(0, camera.bind_group(), &[]);
         pass.set_bind_group(1, pc.bind_group(), &[]);
-        pass.set_bind_group(2, draw_indirect, &[]);
-        pass.set_bind_group(3, &depth_buffer, &[]);
+        pass.set_bind_group(2, &sort_bg, &[]);
 
         let wgs_x = (pc.num_points() as f32 / 256.0).ceil() as u32;
         pass.dispatch_workgroups(wgs_x, 1, 1);
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub struct RenderStatistics {
     pub preprocess_time: Duration,
     pub rasterization_time: Duration,

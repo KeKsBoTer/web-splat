@@ -23,6 +23,12 @@ pub struct PlyReader<R> {
     _data: PhantomData<R>,
 }
 
+impl<R> PlyReader<R>{
+    pub fn magic_bytes() -> &'static [u8] {
+        "ply".as_bytes()
+    }
+}
+
 impl<R: io::BufRead + io::Seek> PlyReader<R> {
     pub fn new(reader: R) -> Result<Self, anyhow::Error> {
         let mut reader = reader;

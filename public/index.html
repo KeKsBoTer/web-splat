@@ -11,8 +11,64 @@
             width: 100vw;
             height: 100vh;
             overflow: hidden;
+            background-color: black;
+            font-family: Arial, Helvetica, sans-serif;
+        }
+
+        #spinner{
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            z-index: 1000;
+            color:white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        #spinner p{
+            opacity: 0.5;
+            font-size: small;
+        }
+        
+        .loader {
+            width: 96px;
+            height: 96px;
+            display: inline-block;
+            position: relative;
+        }
+        .loader::after,
+        .loader::before {
+            content: '';  
+            box-sizing: border-box;
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            border: 2px solid #FFF;
+            position: absolute;
+            left: 0;
+            top: 0;
+            animation: animloader 2s linear infinite;
+            }
+        .loader::after {
+            animation-delay: 1s;
+            }
+            
+            @keyframes animloader {
+            0% {
+                transform: scale(0);
+                opacity: 1;
+            }
+            100% {
+                transform: scale(1);
+                opacity: 0;
+            }
         }
     </style>
+    <div id="spinner">
+        <span class="loader"></span>
+        <p>Loading...</p>
+    </div>
+
 </head>
 
 <body>
@@ -20,15 +76,21 @@
         import init, { run_wasm } from "./web_splats.js";
         await init();
 
-        let resp_pc = await fetch("./point_cloud.ply");
-        let data_pc = new Uint8Array(await resp_pc.arrayBuffer());
+        let scene_file = "http://localhost:5500/scenes/bonsai/cameras.json";
+        let pc_file = "http://localhost:5500/scenes/bonsai/point_cloud/iteration_35000/point_cloud.npz";
 
+        
+        let pc_promise = fetch(pc_file).then(r => r.arrayBuffer()).then(data => new Uint8Array(data));
+        let scene_promise = fetch(scene_file).then(r => r.arrayBuffer()).then(data => new Uint8Array(data));
 
-        let resp_scene = await fetch("./cameras.json");
-        let data_scene = new Uint8Array(await resp_scene.arrayBuffer());
+        let [pc_data,scene_data] = await Promise.all([pc_promise, scene_promise]);
 
-        run_wasm(data_pc, data_scene);
-
+        run_wasm(pc_data, scene_data);
+        window.addEventListener('resize', function(event) {
+            document.getElementById("window-canvas").width = window.innerWidth;
+            document.getElementById("window-canvas").height = window.innerHeight;
+        }, true);
+        
         document.addEventListener('contextmenu', event => event.preventDefault());
     </script>
 </body>

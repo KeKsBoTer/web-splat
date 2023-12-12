@@ -1,12 +1,12 @@
 use cgmath::{BaseFloat, Matrix, Matrix3, Quaternion, SquareMatrix, Vector3};
-#[cfg(target_arch = "wasm32")]
-use instant::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::{fmt::Debug, mem::MaybeUninit};
 use winit::event::VirtualKeyCode;
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::{collections::HashMap, mem::size_of};
 
 pub fn key_to_num(key: VirtualKeyCode) -> Option<u32> {
@@ -25,6 +25,7 @@ pub fn key_to_num(key: VirtualKeyCode) -> Option<u32> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub struct GPUStopwatch {
     query_set: wgpu::QuerySet,
     query_buffer: wgpu::Buffer,
@@ -33,6 +34,7 @@ pub struct GPUStopwatch {
     labels: HashMap<String, u32>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl GPUStopwatch {
     pub fn new(device: &wgpu::Device, capacity: Option<u32>) -> Self {
         let capacity = capacity.unwrap_or(wgpu::QUERY_SET_MAX_QUERIES / 2);
@@ -136,6 +138,7 @@ impl GPUStopwatch {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub struct RingBuffer<T: Copy> {
     index: usize,
@@ -143,6 +146,7 @@ pub struct RingBuffer<T: Copy> {
     container: Box<[MaybeUninit<T>]>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<T> RingBuffer<T>
 where
     T: Copy + Debug,

@@ -5,13 +5,17 @@ use instant::{Duration, Instant};
 use renderer::Display;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
+use wgpu::Backends;
 
 use cgmath::{Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, Vector2, Vector3};
-use egui::{epaint::Shadow, Rounding, TextStyle, Visuals, Color32};
+use egui::{epaint::Shadow, Color32, Rounding, Visuals};
+#[cfg(not(target_arch = "wasm32"))]
 use egui_plot::{Legend, PlotPoints};
 use num_traits::One;
 
-use utils::{key_to_num, RingBuffer};
+use utils::key_to_num;
+#[cfg(not(target_arch = "wasm32"))]
+use utils::RingBuffer;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -57,7 +61,10 @@ pub struct WGPUContext {
 
 impl WGPUContext {
     pub async fn new_instance() -> Self {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: Backends::PRIMARY,
+            ..Default::default()
+        });
 
         return WGPUContext::new(&instance, None).await;
     }
@@ -78,10 +85,16 @@ impl WGPUContext {
             .request_device(
                 &wgpu::DeviceDescriptor {
                     features,
+                    #[cfg(not(target_arch = "wasm32"))]
                     limits: wgpu::Limits {
-                        max_storage_buffer_binding_size: (1 << 31) - 1,
-                        max_buffer_size: (1 << 31) - 1,
+                        max_storage_buffer_binding_size: (1 << 28) - 1,
+                        max_buffer_size: (1 << 28) - 1,
                         max_storage_buffers_per_shader_stage: 12,
+                        max_compute_workgroup_storage_size: 1 << 15,
+                        ..Default::default()
+                    },
+                    #[cfg(target_arch = "wasm32")]
+                    limits: wgpu::Limits {
                         max_compute_workgroup_storage_size: 1 << 15,
                         ..Default::default()
                     },
@@ -135,7 +148,6 @@ impl WindowContext {
         window: Window,
         event_loop: &EventLoop<()>,
         pc_file: R,
-        pc_data_type: PCDataType,
         render_config: RenderConfig,
     ) -> Self {
         let size = window.inner_size();
@@ -177,11 +189,9 @@ impl WindowContext {
             view_formats: vec![surface_format.remove_srgb_suffix()],
         };
         surface.configure(&device, &config);
-        let pc = match pc_data_type {
-            PCDataType::PLY => PointCloud::load_ply(&device, pc_file).unwrap(),
-            #[cfg(feature = "npz")]
-            PCDataType::NPZ => PointCloud::load_npz(&device, pc_file).unwrap(),
-        };
+
+
+        let pc = PointCloud::load(&device, pc_file).unwrap();
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
         let renderer = GaussianRenderer::new(
@@ -189,8 +199,9 @@ impl WindowContext {
             &queue,
             render_format,
             pc.sh_deg(),
-            pc_data_type == PCDataType::PLY,
-        );
+            !pc.compressed()
+        )
+        .await;
 
         let aspect = size.width as f32 / size.height as f32;
         let view_camera = PerspectiveCamera::new(
@@ -232,7 +243,7 @@ impl WindowContext {
             history: RingBuffer::new(512),
             ui_visible: true,
             display,
-            background_color:Color32::BLACK
+            background_color: Color32::BLACK,
         }
     }
 
@@ -306,6 +317,7 @@ impl WindowContext {
             .default_width(200.)
             .default_height(100.)
             .show(ctx, |ui| {
+                use egui::TextStyle;
                 egui::Grid::new("timing").num_columns(2).show(ui, |ui| {
                     ui.colored_label(egui::Color32::WHITE, "FPS");
                     ui.label(format!("{:}", self.fps as u32));
@@ -402,19 +414,23 @@ impl WindowContext {
                     });
             });
 
-        egui::Window::new("Render Settings").show(ctx, |ui|{
+        egui::Window::new("Render Settings").show(ctx, |ui| {
             egui::Grid::new("render_settings")
-            .num_columns(2)
-            .striped(true)
-            .show(ui, |ui| {
-                ui.label("Background Color");
-                egui::color_picker::color_edit_button_srgba(ui, &mut self.background_color,egui::color_picker::Alpha::BlendOrAdditive);
-            });
+                .num_columns(2)
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.label("Background Color");
+                    egui::color_picker::color_edit_button_srgba(
+                        ui,
+                        &mut self.background_color,
+                        egui::color_picker::Alpha::BlendOrAdditive,
+                    );
+                });
         });
 
         if let Some(scene) = &self.scene {
             let mut new_camera = None;
-            let mut start_tracking_shot = false;
+            let mut toggle_tracking_shot = false;
             egui::Window::new("Scene")
                 .default_width(200.)
                 .resizable(false)
@@ -436,8 +452,13 @@ impl WindowContext {
                             ui.label(scene.camera(*c).split.to_string());
                         }
                     });
-                    if ui.button("Start tracking shot").clicked() {
-                        start_tracking_shot = true;
+                    let text = if self.animation.is_some() {
+                        "Stop tracking shot"
+                    } else {
+                        "Start tracking shot"
+                    };
+                    if ui.button(text).clicked() {
+                        toggle_tracking_shot = true;
                     }
                 });
 
@@ -445,18 +466,29 @@ impl WindowContext {
                 self.current_view = new_camera;
                 self.set_camera(scene.camera(c), Duration::from_millis(200));
             }
-            if start_tracking_shot {
-                self.start_tracking_shot(Some(Split::Test))
+            if toggle_tracking_shot {
+                if self.animation.is_none() {
+                    self.start_tracking_shot(Some(Split::Test))
+                } else {
+                    self.stop_tracking_shot();
+                }
             }
         }
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        let output = self.surface.get_current_texture()?;
+        let window_size = self.window.inner_size();
+        if window_size.width != self.config.width || window_size.height != self.config.height {
+            self.resize(window_size, None);
+        }
 
-        let view_rgb = output.texture.create_view(&wgpu::TextureViewDescriptor {format:Some(self.config.format.remove_srgb_suffix()), ..Default::default()});
+        let output = self.surface.get_current_texture()?;
+        let view_rgb = output.texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(self.config.format.remove_srgb_suffix()),
+            ..Default::default()
+        });
         let view_srgb = output.texture.create_view(&Default::default());
-        let viewport = Vector2::new(self.config.width, self.config.height);
+        let viewport = Vector2::new(output.texture.size().width, output.texture.size().height);
         let rgba = self.background_color.to_srgba_unmultiplied();
         self.renderer.render(
             &self.wgpu_context.device,
@@ -465,7 +497,12 @@ impl WindowContext {
             self.camera,
             viewport,
             self.display.texture(),
-            wgpu::Color { r: rgba[0] as f64/255., g: rgba[1] as f64/255., b: rgba[2] as f64/255., a: rgba[3] as f64/255. }
+            wgpu::Color {
+                r: rgba[0] as f64 / 255.,
+                g: rgba[1] as f64 / 255.,
+                b: rgba[2] as f64 / 255.,
+                a: rgba[3] as f64 / 255.,
+            },
         );
 
         let mut encoder =
@@ -497,6 +534,7 @@ impl WindowContext {
                 shapes,
             );
         } else {
+            #[cfg(not(target_arch = "wasm32"))]
             self.renderer.stopwatch.reset();
         }
 
@@ -525,7 +563,6 @@ impl WindowContext {
             )));
         }
     }
-
     fn stop_tracking_shot(&mut self) {
         self.animation.take();
         self.controller.reset_to_camera(self.camera);
@@ -558,16 +595,9 @@ pub fn smoothstep(x: f32) -> f32 {
     return x * x * (3.0 - 2.0 * x);
 }
 
-#[derive(PartialEq)]
-pub enum PCDataType {
-    PLY,
-    #[cfg(feature = "npz")]
-    NPZ,
-}
 
 pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
     file: R,
-    pc_data_type: PCDataType,
     scene_file: Option<R>,
     config: RenderConfig,
 ) {
@@ -595,7 +625,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
 
     let window = WindowBuilder::new()
         .with_title("web-splats")
-        .with_inner_size(window_size)
+        // .with_inner_size(window_size)
         .build(&event_loop)
         .unwrap();
 
@@ -605,18 +635,23 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
         // On wasm, append the canvas to the document body
         web_sys::window()
             .and_then(|win| win.document())
-            .and_then(|doc| doc.body())
+            .and_then(|doc| {
+                doc.body()
+            })
             .and_then(|body| {
                 let canvas = window.canvas();
+                canvas.set_id("window-canvas");
                 canvas.set_width(body.client_width() as u32);
                 canvas.set_height(body.client_height() as u32);
                 let elm = web_sys::Element::from(canvas);
+                elm.set_attribute("style", "width: 100%; height: 100%;")
+                    .unwrap();
                 body.append_child(&elm).ok()
             })
             .expect("couldn't append canvas to document body");
     }
 
-    let mut state = WindowContext::new(window, &event_loop, file, pc_data_type, config).await;
+    let mut state = WindowContext::new(window, &event_loop, file, config).await;
 
     if let Some(scene) = scene {
         let init_camera = scene.camera(0);
@@ -625,9 +660,21 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
         state.start_tracking_shot(Some(Split::Test));
     }
 
+    #[cfg(target_arch = "wasm32")]
+    web_sys::window()
+    .and_then(|win| win.document())
+    .and_then(|doc| {
+        doc.get_element_by_id("spinner")
+            .unwrap()
+            .set_attribute("style", "display:none;")
+            .unwrap();
+        doc.body()
+    });
+
     let mut last = Instant::now();
 
     event_loop.run(move |event, _, control_flow| 
+        
         match event {
         Event::WindowEvent {
             ref event,
@@ -694,10 +741,10 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
             }
             WindowEvent::MouseWheel { delta, .. } => match delta {
                 winit::event::MouseScrollDelta::LineDelta(_, dy) => {
-                    state.controller.process_scroll(*dy)
+                    state.controller.process_scroll(*dy )
                 }
                 winit::event::MouseScrollDelta::PixelDelta(p) => {
-                    state.controller.process_scroll(p.y as f32)
+                    state.controller.process_scroll(p.y as f32 / 100.)
                 }
             },
             WindowEvent::MouseInput { state:button_state, button, .. }=>{
@@ -736,7 +783,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
             // request it.
             state.window.request_redraw();
         }
-        _ => {}
+        _ => {},
     });
 }
 
@@ -752,10 +799,6 @@ pub fn run_wasm(pc: Vec<u8>, scene: Option<Vec<u8>>) {
     wasm_bindgen_futures::spawn_local(open_window(
         pc_reader,
         scene_reader,
-        RenderConfig {
-            max_sh_deg: 3,
-            sh_dtype: SHDType::Byte,
-            no_vsync: false,
-        },
+        RenderConfig { no_vsync: false },
     ));
 }

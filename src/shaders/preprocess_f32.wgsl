@@ -85,15 +85,13 @@ var<storage,read> vertices : array<GaussianSplat>;
 @group(1) @binding(1) 
 var<storage,read_write> points_2d : array<Splat>;
 
-@group(2) @binding(0) 
-var<storage,read_write> indirect_draw_call : DrawIndirect;
-@group(3) @binding(0)
+@group(2) @binding(0)
 var<storage, read_write> sort_infos: SortInfos;
-@group(3) @binding(2)
+@group(2) @binding(1)
 var<storage, read_write> sort_depths : array<u32>;
-@group(3) @binding(4)
+@group(2) @binding(2)
 var<storage, read_write> sort_indices : array<u32>;
-@group(3) @binding(6)
+@group(2) @binding(3)
 var<storage, read_write> sort_dispatch: DispatchIndirect;
 
 
@@ -211,7 +209,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
         opacity
     );
 
-    let store_idx = atomicAdd(&indirect_draw_call.instance_count, 1u);
+    let store_idx = atomicAdd(&sort_infos.keys_size, 1u);
     let v = vec4<f32>(v1 / viewport, v2 / viewport);
     points_2d[store_idx] = Splat(
         pack2x16float(v.xy), pack2x16float(v.zw),
@@ -225,9 +223,8 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     sort_depths[store_idx] = u32(f32(0xffffffu) - pos2d.z / zfar * f32(0xffffffu));
     sort_indices[store_idx] = store_idx;
 
-    let cur_key_size = atomicAdd(&sort_infos.keys_size, 1u);
     let keys_per_wg = 256u * 15u;         // Caution: if workgroup size (256) or keys per thread (15) changes the dispatch is wrong!!
-    if (cur_key_size % keys_per_wg) == 0u {
+    if (store_idx % keys_per_wg) == 0u {
         atomicAdd(&sort_dispatch.dispatch_x, 1u);
     }
 }

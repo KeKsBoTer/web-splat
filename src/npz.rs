@@ -3,6 +3,7 @@ use std::io::{Read, Seek};
 use byteorder::WriteBytesExt;
 use cgmath::{InnerSpace, Point3, Quaternion, Vector3};
 use half::f16;
+use image::EncodableLayout;
 use npyz::npz::{self, NpzArchive};
 
 use crate::{
@@ -35,6 +36,10 @@ impl<'a, R: Read + Seek> NpzReader<'a, R> {
             sh_deg,
             num_points,
         })
+    }
+
+    pub fn magic_bytes() -> &'static [u8] {
+        (b"\x50\x4B\x03\x04").as_bytes()
     }
 }
 fn get_npz_const<'a, T: npyz::Deserialize + Copy, R: Read + Seek>(
