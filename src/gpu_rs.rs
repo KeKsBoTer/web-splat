@@ -184,11 +184,12 @@ impl GPURSSorter {
         let render_bind_group_layout = Self::bind_group_layout_rendering(device);
         let preprocess_bind_group_layout = Self::bind_group_layout_preprocess(device);
 
-        let pipeline_layout: wgpu::PipelineLayout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("radix sort pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
+        let pipeline_layout: wgpu::PipelineLayout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("radix sort pipeline layout"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            });
 
         let raw_shader: &str = include_str!("shaders/radix_sort.wgsl");
         let shader_w_const = format!(

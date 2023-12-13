@@ -23,7 +23,7 @@ pub struct PlyReader<R> {
     _data: PhantomData<R>,
 }
 
-impl<R> PlyReader<R>{
+impl<R> PlyReader<R> {
     pub fn magic_bytes() -> &'static [u8] {
         "ply".as_bytes()
     }

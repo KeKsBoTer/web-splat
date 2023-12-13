@@ -50,7 +50,7 @@ pub struct PointCloud {
     num_points: u32,
     sh_deg: u32,
     bbox: Aabb<f32>,
-    compressed:bool
+    compressed: bool,
 }
 
 impl Debug for PointCloud {
@@ -62,17 +62,16 @@ impl Debug for PointCloud {
 }
 
 impl PointCloud {
-
     pub fn load<R: Read + Seek>(device: &wgpu::Device, f: R) -> Result<Self, anyhow::Error> {
-        let mut signature: [u8; 4] = [0;4];
+        let mut signature: [u8; 4] = [0; 4];
         let mut f = f;
         f.read_exact(&mut signature)?;
         f.rewind()?;
-         if signature.starts_with(PlyReader::<R>::magic_bytes()) {
+        if signature.starts_with(PlyReader::<R>::magic_bytes()) {
             Ok(Self::load_ply(&device, f)?)
-        }else if signature.starts_with(NpzReader::<R>::magic_bytes()) {
+        } else if signature.starts_with(NpzReader::<R>::magic_bytes()) {
             Ok(Self::load_npz(&device, f)?)
-        }else{
+        } else {
             Err(anyhow::anyhow!("Unknown file format"))
         }
     }
@@ -167,7 +166,7 @@ impl PointCloud {
             num_points: num_points as u32,
             sh_deg,
             bbox: bbox.into(),
-            compressed:true,
+            compressed: true,
         })
     }
 
@@ -232,7 +231,7 @@ impl PointCloud {
             num_points: num_points as u32,
             sh_deg,
             bbox,
-            compressed:false,
+            compressed: false,
         })
     }
 

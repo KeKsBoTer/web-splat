@@ -62,3 +62,8 @@ console_log = "1"
 log = "0.4"
 instant = "0.1.12"
 web-sys = { version = "0.3.64"}
+
+[profile.web-release]
+inherits = "release"
+opt-level = "s"
+strip = "debuginfo"

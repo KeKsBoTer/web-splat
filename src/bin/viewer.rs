@@ -1,6 +1,6 @@
 use clap::Parser;
 use std::{fs::File, path::PathBuf};
-use web_splats::{open_window,  RenderConfig};
+use web_splats::{open_window, RenderConfig};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]

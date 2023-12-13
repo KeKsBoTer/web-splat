@@ -22,6 +22,7 @@ pub struct CameraController {
     pub left_mouse_pressed: bool,
     pub right_mouse_pressed: bool,
     pub alt_pressed: bool,
+    pub user_inptut: bool,
 }
 
 impl CameraController {
@@ -37,12 +38,13 @@ impl CameraController {
             left_mouse_pressed: false,
             right_mouse_pressed: false,
             alt_pressed: false,
+            user_inptut: false,
         }
     }
 
     pub fn process_keyboard(&mut self, key: VirtualKeyCode, pressed: bool) -> bool {
         let amount = if pressed { 1.0 } else { 0.0 };
-        match key {
+        let processed = match key {
             VirtualKeyCode::W | VirtualKeyCode::Up => {
                 self.amount.z += amount;
                 true
@@ -76,24 +78,27 @@ impl CameraController {
                 true
             }
             _ => false,
-        }
+        };
+        self.user_inptut = processed;
+        return processed;
     }
 
     pub fn process_mouse(&mut self, mouse_dx: f32, mouse_dy: f32) {
         if self.left_mouse_pressed {
             self.rotation.x += mouse_dx as f32;
             self.rotation.y += mouse_dy as f32;
+            self.user_inptut = true;
         }
         if self.right_mouse_pressed {
             self.shift.y += -mouse_dx as f32;
             self.shift.x += mouse_dy as f32;
-        } else {
-            self.shift += Vector2::zero();
+            self.user_inptut = true;
         }
     }
 
     pub fn process_scroll(&mut self, dy: f32) {
         self.scroll += -dy;
+        self.user_inptut = true;
     }
 
     pub fn reset_to_camera(&mut self, camera: PerspectiveCamera) {
@@ -147,6 +152,7 @@ impl CameraController {
         self.rotation *= decay;
         self.shift *= decay;
         self.scroll *= decay;
+        self.user_inptut = false;
     }
 }
 

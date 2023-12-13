@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use wgpu::Backends;
 
 use cgmath::{Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, Vector2, Vector3};
-use egui::{epaint::Shadow, Color32, Rounding, Visuals};
+use egui::{epaint::Shadow, Align2, Color32, Vec2, Visuals};
 #[cfg(not(target_arch = "wasm32"))]
 use egui_plot::{Legend, PlotPoints};
 use num_traits::One;
@@ -49,9 +49,6 @@ pub mod gpu_rs;
 mod ui_renderer;
 mod uniform;
 mod utils;
-
-#[cfg(not(target_arch = "wasm32"))]
-pub use utils::download_buffer;
 
 pub struct WGPUContext {
     pub device: wgpu::Device,
@@ -190,7 +187,6 @@ impl WindowContext {
         };
         surface.configure(&device, &config);
 
-
         let pc = PointCloud::load(&device, pc_file).unwrap();
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
@@ -199,13 +195,13 @@ impl WindowContext {
             &queue,
             render_format,
             pc.sh_deg(),
-            !pc.compressed()
+            !pc.compressed(),
         )
         .await;
 
         let aspect = size.width as f32 / size.height as f32;
         let view_camera = PerspectiveCamera::new(
-            Point3::new(0., 0., -1.),
+            pc.bbox().center(),
             Quaternion::one(),
             PerspectiveProjection::new(
                 Vector2::new(size.width, size.height),
@@ -268,10 +264,14 @@ impl WindowContext {
         // ema fps update
         self.fps = (1. / dt.as_secs_f32()) * 0.05 + self.fps * 0.95;
         if let Some(next_camera) = &mut self.animation {
-            self.camera = next_camera.update(dt);
-            if next_camera.done() {
-                self.animation.take();
-                self.controller.reset_to_camera(self.camera);
+            if self.controller.user_inptut {
+                self.stop_animation()
+            } else {
+                self.camera = next_camera.update(dt);
+                if next_camera.done() {
+                    self.animation.take();
+                    self.controller.reset_to_camera(self.camera);
+                }
             }
         } else {
             self.controller.update_camera(&mut self.camera, dt);
@@ -307,8 +307,7 @@ impl WindowContext {
             stats.rasterization_time,
         ));
         ctx.set_visuals(Visuals {
-            window_rounding: Rounding::ZERO,
-            window_shadow: Shadow::NONE,
+            window_shadow: Shadow::small_light(),
             ..Default::default()
         });
 
@@ -363,17 +362,19 @@ impl WindowContext {
                     });
             });
 
-        egui::Window::new("Controls")
+        egui::Window::new("🎮")
             .default_width(200.)
             .resizable(false)
             .default_height(100.)
             .default_open(false)
+            .movable(false)
+            .anchor(Align2::LEFT_BOTTOM, Vec2::new(10., -10.))
             .show(ctx, |ui| {
-                egui::Grid::new("timing")
+                egui::Grid::new("controls")
                     .num_columns(2)
                     .striped(true)
                     .show(ui, |ui| {
-                        ui.colored_label(egui::Color32::WHITE, "Camera");
+                        ui.strong("Camera");
                         ui.end_row();
                         ui.label("Rotate Camera");
                         ui.label("Left click + drag");
@@ -391,7 +392,11 @@ impl WindowContext {
                         ui.label("Mouse wheel");
                         ui.end_row();
 
-                        ui.colored_label(egui::Color32::WHITE, "Scene Views");
+                        ui.label("Toggle UI");
+                        ui.label("U");
+                        ui.end_row();
+
+                        ui.strong("Scene Views");
                         ui.end_row();
                         ui.label("Views 0-9");
                         ui.label("0-9");
@@ -414,7 +419,7 @@ impl WindowContext {
                     });
             });
 
-        egui::Window::new("Render Settings").show(ctx, |ui| {
+        egui::Window::new("⚙ Render Settings").show(ctx, |ui| {
             egui::Grid::new("render_settings")
                 .num_columns(2)
                 .striped(true)
@@ -428,50 +433,78 @@ impl WindowContext {
                 });
         });
 
-        if let Some(scene) = &self.scene {
-            let mut new_camera = None;
-            let mut toggle_tracking_shot = false;
-            egui::Window::new("Scene")
-                .default_width(200.)
-                .resizable(false)
-                .default_height(100.)
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        let nearest = scene.nearest_camera(self.camera.position, None);
-                        if ui.button("Snap to closest").clicked() {
+        let mut new_camera = None;
+        let mut toggle_tracking_shot = false;
+        egui::Window::new("ℹ Scene")
+            .default_width(200.)
+            .resizable(false)
+            .default_height(100.)
+            .show(ctx, |ui| {
+                egui::Grid::new("scene info")
+                    .num_columns(2)
+                    .striped(false)
+                    .show(ui, |ui| {
+                        ui.strong("Gaussians:");
+                        ui.label(self.pc.num_points().to_string());
+                        ui.end_row();
+                        ui.strong("SH Degree:");
+                        ui.label(self.pc.sh_deg().to_string());
+                        ui.end_row();
+                        ui.strong("Compressed:");
+                        ui.label(self.pc.compressed().to_string());
+                        ui.end_row();
+                    });
+
+                if let Some(scene) = &self.scene {
+                    let nearest = scene.nearest_camera(self.camera.position, None);
+                    ui.separator();
+                    ui.heading("Training Images");
+                    egui::Grid::new("image info")
+                        .num_columns(2)
+                        .striped(true)
+                        .show(ui, |ui| {
+                            ui.strong("Images");
+                            ui.label(scene.num_cameras().to_string());
+                            ui.end_row();
+                            ui.strong("Current");
+
+                            if let Some(c) = &mut self.current_view {
+                                ui.horizontal(|ui| {
+                                    let drag =
+                                        ui.add(egui::DragValue::new(c).clamp_range(
+                                            0..=(scene.num_cameras().saturating_sub(1)),
+                                        ));
+                                    if drag.changed() {
+                                        new_camera = Some(*c);
+                                    }
+                                    ui.label(scene.camera(*c).split.to_string());
+                                });
+                            }
+                        });
+                        if ui.button(format!("Snap to closest ({nearest})")).clicked() {
                             new_camera = Some(nearest);
                         }
-                        if let Some(c) = &mut self.current_view {
-                            let drag = ui.add(
-                                egui::DragValue::new(c)
-                                    .clamp_range(0..=(scene.num_cameras().saturating_sub(1))),
-                            );
-                            if drag.changed() {
-                                new_camera = Some(*c);
-                            }
-                            ui.label(scene.camera(*c).split.to_string());
+                        let text = if self.animation.is_some() {
+                            "Stop tracking shot"
+                        } else {
+                            "Start tracking shot"
+                        };
+                        if ui.button(text).clicked() {
+                            toggle_tracking_shot = true;
                         }
-                    });
-                    let text = if self.animation.is_some() {
-                        "Stop tracking shot"
-                    } else {
-                        "Start tracking shot"
-                    };
-                    if ui.button(text).clicked() {
-                        toggle_tracking_shot = true;
-                    }
-                });
-
-            if let Some(c) = new_camera {
-                self.current_view = new_camera;
-                self.set_camera(scene.camera(c), Duration::from_millis(200));
-            }
-            if toggle_tracking_shot {
-                if self.animation.is_none() {
-                    self.start_tracking_shot(Some(Split::Test))
-                } else {
-                    self.stop_tracking_shot();
                 }
+            });
+
+        if let Some(c) = new_camera {
+            self.current_view = new_camera;
+            let c = self.scene.as_ref().unwrap().camera(c);
+            self.set_camera(c, Duration::from_millis(200));
+        }
+        if toggle_tracking_shot {
+            if self.animation.is_none() {
+                self.start_tracking_shot(Some(Split::Test))
+            } else {
+                self.stop_animation();
             }
         }
     }
@@ -563,7 +596,7 @@ impl WindowContext {
             )));
         }
     }
-    fn stop_tracking_shot(&mut self) {
+    fn stop_animation(&mut self) {
         self.animation.take();
         self.controller.reset_to_camera(self.camera);
     }
@@ -595,7 +628,6 @@ pub fn smoothstep(x: f32) -> f32 {
     return x * x * (3.0 - 2.0 * x);
 }
 
-
 pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
     file: R,
     scene_file: Option<R>,
@@ -605,7 +637,13 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
     env_logger::init();
     let event_loop = EventLoop::new();
 
-    let scene = scene_file.map(|f| Scene::from_json(f).unwrap());
+    let scene = scene_file.and_then(|f| match Scene::from_json(f) {
+        Ok(s) => Some(s),
+        Err(err) => {
+            log::error!("cannot load scene: {:?}", err);
+            None
+        }
+    });
 
     let window_size = if let Some(scene) = &scene {
         let camera = scene.camera(0);
@@ -617,15 +655,10 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
     } else {
         PhysicalSize::new(800, 600)
     };
-    log::info!(
-        "rendering at resolution {}x{}px",
-        window_size.width,
-        window_size.height
-    );
 
     let window = WindowBuilder::new()
         .with_title("web-splats")
-        // .with_inner_size(window_size)
+        .with_inner_size(window_size)
         .build(&event_loop)
         .unwrap();
 
@@ -636,6 +669,9 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
         web_sys::window()
             .and_then(|win| win.document())
             .and_then(|doc| {
+                doc.get_element_by_id("loading-display")
+                    .unwrap()
+                    .set_text_content(Some("Unpacking"));
                 doc.body()
             })
             .and_then(|body| {
@@ -662,14 +698,14 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
 
     #[cfg(target_arch = "wasm32")]
     web_sys::window()
-    .and_then(|win| win.document())
-    .and_then(|doc| {
-        doc.get_element_by_id("spinner")
-            .unwrap()
-            .set_attribute("style", "display:none;")
-            .unwrap();
-        doc.body()
-    });
+        .and_then(|win| win.document())
+        .and_then(|doc| {
+            doc.get_element_by_id("spinner")
+                .unwrap()
+                .set_attribute("style", "display:none;")
+                .unwrap();
+            doc.body()
+        });
 
     let mut last = Instant::now();
 
@@ -692,7 +728,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
             }
             WindowEvent::CloseRequested => {log::info!("close!");*control_flow = ControlFlow::Exit},
             WindowEvent::ModifiersChanged(m)=>{
-                state.controller.alt_pressed = m.alt();
+                state.controller.alt_pressed = m.ctrl();
             }
             WindowEvent::KeyboardInput { input, .. } => {
                 if let Some(key) = input.virtual_keycode {
@@ -702,7 +738,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
                             if state.animation.is_none(){
                                 state.start_tracking_shot(Some(Split::Test));
                             }else{
-                                state.stop_tracking_shot()
+                                state.stop_animation()
                             }
                         }else if key == VirtualKeyCode::U{
                             state.ui_visible = !state.ui_visible;
