@@ -13,7 +13,7 @@ use std::num::NonZeroU64;
 use std::time::Duration;
 use wgpu::{include_wgsl, Extent3d, MultisampleState};
 
-use cgmath::{Matrix4, SquareMatrix, Vector2};
+use cgmath::{Matrix4, SquareMatrix, Vector2, Vector4, VectorSpace};
 
 pub struct GaussianRenderer {
     pipeline: wgpu::RenderPipeline,
@@ -27,6 +27,8 @@ pub struct GaussianRenderer {
     pub stopwatch: GPUStopwatch,
     sorter: GPURSSorter,
     sorter_suff: Option<PointCloudSortStuff>,
+
+    vis_settings:UniformBuffer<VisSettings>
 }
 
 impl GaussianRenderer {
@@ -42,6 +44,7 @@ impl GaussianRenderer {
             bind_group_layouts: &[
                 &PointCloud::bind_group_layout_render(device), // Needed for points_2d (on binding 2)
                 &GPURSSorter::bind_group_layout_rendering(device), // Needed for indices   (on binding 4)
+                &UniformBuffer::<VisSettings>::bind_group_layout(device),
             ],
             push_constant_ranges: &[],
         });
@@ -116,6 +119,7 @@ impl GaussianRenderer {
             stopwatch,
             sorter,
             sorter_suff: None,
+            vis_settings:UniformBuffer::new(device,VisSettings::default(),Some("vis settings"))
         }
     }
 
@@ -126,6 +130,7 @@ impl GaussianRenderer {
         pc: &'a PointCloud,
         camera: PerspectiveCamera,
         viewport: Vector2<u32>,
+        vis_settings: VisSettings,
     ) {
         let mut camera = camera;
         camera.projection.resize(viewport.x, viewport.y);
@@ -134,6 +139,10 @@ impl GaussianRenderer {
         uniform.set_focal(camera.projection.focal(viewport));
         uniform.set_viewport(viewport.cast().unwrap());
         self.camera.sync(queue);
+
+        *self.vis_settings.as_mut() = vis_settings;
+        self.vis_settings.sync(queue);
+
         // TODO perform this in vertex buffer after draw call
         queue.write_buffer(
             &self.draw_indirect_buffer,
@@ -147,7 +156,7 @@ impl GaussianRenderer {
             .as_bytes(),
         );
         let depth_buffer = &self.sorter_suff.as_ref().unwrap().sorter_bg_pre;
-        self.preprocess.run(encoder, pc, &self.camera, depth_buffer);
+        self.preprocess.run(encoder, pc, &self.camera, depth_buffer,&self.vis_settings);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -181,6 +190,7 @@ impl GaussianRenderer {
         viewport: Vector2<u32>,
         target: &wgpu::TextureView,
         background_color: wgpu::Color,
+        vis_settings: VisSettings,
     ) {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
@@ -208,7 +218,7 @@ impl GaussianRenderer {
             // convert 3D gaussian splats to 2D gaussian splats
             #[cfg(not(target_arch = "wasm32"))]
             self.stopwatch.start(&mut encoder, "preprocess").unwrap();
-            self.preprocess(&mut encoder, queue, &pc, camera, viewport);
+            self.preprocess(&mut encoder, queue, &pc, camera, viewport,vis_settings);
             #[cfg(not(target_arch = "wasm32"))]
             self.stopwatch.stop(&mut encoder, "preprocess").unwrap();
 
@@ -255,6 +265,7 @@ impl GaussianRenderer {
                     &self.sorter_suff.as_ref().unwrap().sorter_render_bg,
                     &[],
                 );
+                render_pass.set_bind_group(2, self.vis_settings.bind_group(), &[]);
                 render_pass.set_pipeline(&self.pipeline);
 
                 render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
@@ -375,6 +386,7 @@ impl PreprocessPipeline {
                     PointCloud::bind_group_layout(device)
                 },
                 &GPURSSorter::bind_group_layout_preprocess(device),
+                &UniformBuffer::<VisSettings>::bind_group_layout(device),
             ],
             push_constant_ranges: &[],
         });
@@ -413,6 +425,7 @@ impl PreprocessPipeline {
         pc: &PointCloud,
         camera: &UniformBuffer<CameraUniform>,
         sort_bg: &wgpu::BindGroup,
+        vis_settings: &UniformBuffer<VisSettings>,
     ) {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("preprocess compute pass"),
@@ -422,6 +435,7 @@ impl PreprocessPipeline {
         pass.set_bind_group(0, camera.bind_group(), &[]);
         pass.set_bind_group(1, pc.bind_group(), &[]);
         pass.set_bind_group(2, &sort_bg, &[]);
+        pass.set_bind_group(3, vis_settings.bind_group(), &[]);
 
         let wgs_x = (pc.num_points() as f32 / 256.0).ceil() as u32;
         pass.dispatch_workgroups(wgs_x, 1, 1);
@@ -584,5 +598,31 @@ impl Display {
         render_pass.set_pipeline(&self.pipeline);
 
         render_pass.draw(0..4, 0..1);
+    }
+}
+
+
+#[repr(C)]
+#[derive(Debug,Clone, Copy,bytemuck::Pod, bytemuck::Zeroable)]
+pub struct VisSettings{
+    pub colors:[Vector4<f32>;64],
+    pub scale: f32,
+    pub gaussian: u32,
+    _pad:[u32;2],
+}
+impl Default for VisSettings{
+    fn default()->Self{
+        let mut colors = [Vector4::new(0.,0.,0.,1.);64];
+        let a = Vector4::new(0., 0.,1.,0.);
+        let b = Vector4::new(1., 0.,0.,1.);
+        for i in 0..colors.len(){
+            colors[i] = a.lerp(b, (i as f32/15.).clamp(0., 1.));
+        }
+        Self{
+            scale:1.,
+            colors,
+            gaussian:0,
+            _pad:[0;2]
+        }
     }
 }

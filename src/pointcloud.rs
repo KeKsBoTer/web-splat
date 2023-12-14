@@ -9,6 +9,7 @@ use std::io::{BufReader, Read, Seek};
 use std::mem;
 use wgpu::util::DeviceExt;
 
+use crate::io::dat::DatReader;
 #[cfg(feature = "npz")]
 use crate::npz::NpzReader;
 use crate::ply::PlyReader;
@@ -72,7 +73,8 @@ impl PointCloud {
         } else if signature.starts_with(NpzReader::<R>::magic_bytes()) {
             Ok(Self::load_npz(&device, f)?)
         } else {
-            Err(anyhow::anyhow!("Unknown file format"))
+            log::warn!("no mafig bytes found, asuming dat format");
+            Ok(Self::load_dat(&device, f)?)
         }
     }
 
@@ -198,6 +200,72 @@ impl PointCloud {
         });
 
         let vertices = ply_reader.read()?;
+        let mut bbox = Aabb::unit();
+        for v in &vertices {
+            bbox.grow(v.xyz);
+        }
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("3d gaussians buffer"),
+            contents: bytemuck::cast_slice(vertices.as_slice()),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("point cloud bind group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: vertex_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: splat_2d_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        Ok(Self {
+            splat_2d_buffer,
+
+            bind_group,
+            render_bind_group,
+            num_points: num_points as u32,
+            sh_deg,
+            bbox,
+            compressed: false,
+        })
+    }
+
+
+    pub fn load_dat<R: Read + Seek>(device: &wgpu::Device, f: R) -> Result<Self, anyhow::Error> {
+        let reader = BufReader::new(f);
+
+        let mut dat_reader = DatReader::new(reader).unwrap();
+
+        let sh_deg = dat_reader.file_sh_deg()?;
+        let num_points = dat_reader.num_points()?;
+        log::info!("num_points: {num_points}, sh_deg: {sh_deg}");
+
+        let bind_group_layout = Self::bind_group_layout_float(device);
+
+        let splat_2d_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("2d gaussians buffer"),
+            size: (num_points * mem::size_of::<Splat>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+
+        let render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("point cloud rendering bind group"),
+            layout: &Self::bind_group_layout_render(device),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 2,
+                resource: splat_2d_buffer.as_entire_binding(),
+            }],
+        });
+
+        let vertices = dat_reader.read()?;
         let mut bbox = Aabb::unit();
         for v in &vertices {
             bbox.grow(v.xyz);
@@ -428,6 +496,7 @@ pub struct GaussianSplatFloat {
     pub _pad: [u32; 2],
 }
 
+#[derive(Debug)]
 pub struct Aabb<F: Float + BaseNum> {
     min: Point3<F>,
     max: Point3<F>,
@@ -470,6 +539,11 @@ impl<F: Float + BaseNum> Aabb<F> {
 
     pub fn center(&self) -> Point3<F> {
         self.min.midpoint(self.max)
+    }
+
+
+    pub fn size(&self) -> Vector3<F> {
+        self.max- self.min
     }
 
     pub fn sphere(&self) -> F {

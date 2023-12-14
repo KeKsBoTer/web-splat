@@ -22,10 +22,20 @@ struct Splat {
     color_0: u32,color_1: u32,
 };
 
+
+struct VisSettings{
+    colors:array<vec4<f32>,64>,
+    scale:f32,
+    gaussian:u32,
+}
+
+
 @group(0) @binding(2)
 var<storage, read> points_2d : array<Splat>;
 @group(1) @binding(4)
 var<storage, read> indices : array<u32>;
+@group(2) @binding(0)
+var<uniform> vis_settings : VisSettings;
 
 @vertex
 fn vs_main(
@@ -63,5 +73,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
     let b = min(0.99, exp(-a) * in.color.a);
-    return vec4<f32>(in.color.rgb * b, b);
+    if vis_settings.gaussian == 1u {
+        return vec4<f32>(in.color.rgb * b, b);
+    }else{
+        return vec4<f32>(in.color.rgb * in.color.a, in.color.a);
+    }
 }

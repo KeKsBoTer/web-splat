@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use wgpu::Backends;
 
 use cgmath::{Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, Vector2, Vector3};
-use egui::{epaint::Shadow, Align2, Color32, Vec2, Visuals};
+use egui::{epaint::Shadow, Align2, Color32, Vec2, Visuals, Vec2b};
 #[cfg(not(target_arch = "wasm32"))]
 use egui_plot::{Legend, PlotPoints};
 use num_traits::One;
@@ -35,9 +35,11 @@ pub use controller::CameraController;
 mod pointcloud;
 pub use pointcloud::PointCloud;
 
+
+mod io;
 #[cfg(feature = "npz")]
-mod npz;
-mod ply;
+use io::npz;
+use io::ply;
 
 mod renderer;
 pub use renderer::GaussianRenderer;
@@ -84,8 +86,8 @@ impl WGPUContext {
                     features,
                     #[cfg(not(target_arch = "wasm32"))]
                     limits: wgpu::Limits {
-                        max_storage_buffer_binding_size: (1 << 28) - 1,
-                        max_buffer_size: (1 << 28) - 1,
+                        max_storage_buffer_binding_size: (1 << 30) - 1,
+                        max_buffer_size: (1 << 30) - 1,
                         max_storage_buffers_per_shader_stage: 12,
                         max_compute_workgroup_storage_size: 1 << 15,
                         ..Default::default()
@@ -137,6 +139,7 @@ struct WindowContext {
     display: Display,
 
     background_color: egui::Color32,
+    vis_settings: renderer::VisSettings,
 }
 
 impl WindowContext {
@@ -200,8 +203,10 @@ impl WindowContext {
         .await;
 
         let aspect = size.width as f32 / size.height as f32;
+        let aabb = pc.bbox();
         let view_camera = PerspectiveCamera::new(
-            pc.bbox().center(),
+            aabb.center()-Vector3::new(0.1,0.1,0.1),
+            // Point3::new(0.,0.,-1.),
             Quaternion::one(),
             PerspectiveProjection::new(
                 Vector2::new(size.width, size.height),
@@ -211,7 +216,8 @@ impl WindowContext {
             ),
         );
 
-        let controller = CameraController::new(0.1, 0.05);
+        let mut controller = CameraController::new(0.1, 0.05);
+        controller.center = aabb.center();
         let ui_renderer = ui_renderer::EguiWGPU::new(event_loop, device, surface_format);
         let display = Display::new(
             device,
@@ -240,6 +246,7 @@ impl WindowContext {
             ui_visible: true,
             display,
             background_color: Color32::BLACK,
+            vis_settings:Default::default(),
         }
     }
 
@@ -495,6 +502,34 @@ impl WindowContext {
                 }
             });
 
+        egui::Window::new("Visualization").max_height(400.).scroll2(Vec2b::new(false, true)).show(ctx, |ui|{
+           
+                egui::Grid::new("image info")
+                .num_columns(2)
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.strong("scale");
+                    ui.add(egui::DragValue::new(&mut self.vis_settings.scale).speed(1e-3).clamp_range(1e-5..=10.));
+                    ui.end_row();
+                    ui.strong("Gaussian");
+                    let mut gaussian = self.vis_settings.gaussian != 0;
+                    ui.checkbox(&mut gaussian, "");
+                    self.vis_settings.gaussian = gaussian as u32;
+                    ui.end_row();
+                    for i in 0..64{
+                        ui.label(format!("value {i}"));
+                        let c = &mut self.vis_settings.colors[i];
+                        let mut color = egui::Color32::from_rgba_premultiplied((c[0]*255.) as u8,(c[1]*255.) as u8,(c[2]*255.) as u8,(c[3]*255.) as u8);
+                        ui.color_edit_button_srgba(&mut color);
+                        c.x = color.r() as f32 / 255.;
+                        c.y = color.g() as f32 / 255.;
+                        c.z = color.b() as f32 / 255.;
+                        c.w = color.a() as f32 / 255.;
+                        ui.end_row();
+                    }
+                });
+        });
+
         if let Some(c) = new_camera {
             self.current_view = new_camera;
             let c = self.scene.as_ref().unwrap().camera(c);
@@ -536,6 +571,7 @@ impl WindowContext {
                 b: rgba[2] as f64 / 255.,
                 a: rgba[3] as f64 / 255.,
             },
+            self.vis_settings
         );
 
         let mut encoder =
