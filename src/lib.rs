@@ -7,7 +7,7 @@ use renderer::Display;
 use std::time::{Duration, Instant};
 use wgpu::Backends;
 
-use cgmath::{Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, Vector2, Vector3};
+use cgmath::{Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, Vector2, Vector3, Vector4};
 use egui::{epaint::Shadow, Align2, Color32, Vec2, Visuals, Vec2b};
 #[cfg(not(target_arch = "wasm32"))]
 use egui_plot::{Legend, PlotPoints};
@@ -45,6 +45,8 @@ mod renderer;
 pub use renderer::GaussianRenderer;
 
 mod scene;
+use crate::renderer::ColorSchema;
+
 pub use self::scene::{Scene, SceneCamera, Split};
 
 pub mod gpu_rs;
@@ -90,6 +92,7 @@ impl WGPUContext {
                         max_buffer_size: (1 << 30) - 1,
                         max_storage_buffers_per_shader_stage: 12,
                         max_compute_workgroup_storage_size: 1 << 15,
+                        max_bind_groups: 5,
                         ..Default::default()
                     },
                     #[cfg(target_arch = "wasm32")]
@@ -193,12 +196,16 @@ impl WindowContext {
         let pc = PointCloud::load(&device, pc_file).unwrap();
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
+        let colors = io::colorschema::load_color_schema("particle-data-RAW/colorscheme.txt").unwrap();
+        let color_schema = ColorSchema::new(device, queue, colors.iter().enumerate().map(|(i,c)|Vector4::new(c.x,c.y,c.z,i as f32 / colors.len() as f32)).collect());
+
         let renderer = GaussianRenderer::new(
             &device,
             &queue,
             render_format,
             pc.sh_deg(),
             !pc.compressed(),
+            color_schema
         )
         .await;
 
@@ -516,17 +523,17 @@ impl WindowContext {
                     ui.checkbox(&mut gaussian, "");
                     self.vis_settings.gaussian = gaussian as u32;
                     ui.end_row();
-                    for i in 0..64{
-                        ui.label(format!("value {i}"));
-                        let c = &mut self.vis_settings.colors[i];
-                        let mut color = egui::Color32::from_rgba_premultiplied((c[0]*255.) as u8,(c[1]*255.) as u8,(c[2]*255.) as u8,(c[3]*255.) as u8);
-                        ui.color_edit_button_srgba(&mut color);
-                        c.x = color.r() as f32 / 255.;
-                        c.y = color.g() as f32 / 255.;
-                        c.z = color.b() as f32 / 255.;
-                        c.w = color.a() as f32 / 255.;
-                        ui.end_row();
-                    }
+                    // for i in 0..64{
+                    //     ui.label(format!("value {i}"));
+                    //     let c = &mut self.vis_settings.colors[i];
+                    //     let mut color = egui::Color32::from_rgba_premultiplied((c[0]*255.) as u8,(c[1]*255.) as u8,(c[2]*255.) as u8,(c[3]*255.) as u8);
+                    //     ui.color_edit_button_srgba(&mut color);
+                    //     c.x = color.r() as f32 / 255.;
+                    //     c.y = color.g() as f32 / 255.;
+                    //     c.z = color.b() as f32 / 255.;
+                    //     c.w = color.a() as f32 / 255.;
+                    //     ui.end_row();
+                    // }
                 });
         });
 

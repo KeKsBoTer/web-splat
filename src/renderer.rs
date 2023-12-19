@@ -11,9 +11,10 @@ use std::num::NonZeroU64;
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
+use wgpu::util::DeviceExt;
 use wgpu::{include_wgsl, Extent3d, MultisampleState};
 
-use cgmath::{Matrix4, SquareMatrix, Vector2, Vector4, VectorSpace};
+use cgmath::{Matrix4, SquareMatrix, Vector2, Vector4};
 
 pub struct GaussianRenderer {
     pipeline: wgpu::RenderPipeline,
@@ -28,7 +29,8 @@ pub struct GaussianRenderer {
     sorter: GPURSSorter,
     sorter_suff: Option<PointCloudSortStuff>,
 
-    vis_settings:UniformBuffer<VisSettings>
+    vis_settings: UniformBuffer<VisSettings>,
+    color_schema: ColorSchema,
 }
 
 impl GaussianRenderer {
@@ -38,6 +40,7 @@ impl GaussianRenderer {
         color_format: wgpu::TextureFormat,
         sh_deg: u32,
         float: bool,
+        color_schema: ColorSchema,
     ) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render pipeline layout"),
@@ -119,7 +122,8 @@ impl GaussianRenderer {
             stopwatch,
             sorter,
             sorter_suff: None,
-            vis_settings:UniformBuffer::new(device,VisSettings::default(),Some("vis settings"))
+            vis_settings: UniformBuffer::new(device, VisSettings::default(), Some("vis settings")),
+            color_schema,
         }
     }
 
@@ -156,7 +160,14 @@ impl GaussianRenderer {
             .as_bytes(),
         );
         let depth_buffer = &self.sorter_suff.as_ref().unwrap().sorter_bg_pre;
-        self.preprocess.run(encoder, pc, &self.camera, depth_buffer,&self.vis_settings);
+        self.preprocess.run(
+            encoder,
+            pc,
+            &self.camera,
+            depth_buffer,
+            &self.vis_settings,
+            &self.color_schema,
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -218,7 +229,7 @@ impl GaussianRenderer {
             // convert 3D gaussian splats to 2D gaussian splats
             #[cfg(not(target_arch = "wasm32"))]
             self.stopwatch.start(&mut encoder, "preprocess").unwrap();
-            self.preprocess(&mut encoder, queue, &pc, camera, viewport,vis_settings);
+            self.preprocess(&mut encoder, queue, &pc, camera, viewport, vis_settings);
             #[cfg(not(target_arch = "wasm32"))]
             self.stopwatch.stop(&mut encoder, "preprocess").unwrap();
 
@@ -387,6 +398,7 @@ impl PreprocessPipeline {
                 },
                 &GPURSSorter::bind_group_layout_preprocess(device),
                 &UniformBuffer::<VisSettings>::bind_group_layout(device),
+                &ColorSchema::bind_group_layout(device),
             ],
             push_constant_ranges: &[],
         });
@@ -426,6 +438,7 @@ impl PreprocessPipeline {
         camera: &UniformBuffer<CameraUniform>,
         sort_bg: &wgpu::BindGroup,
         vis_settings: &UniformBuffer<VisSettings>,
+        color_schema: &ColorSchema,
     ) {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("preprocess compute pass"),
@@ -436,6 +449,7 @@ impl PreprocessPipeline {
         pass.set_bind_group(1, pc.bind_group(), &[]);
         pass.set_bind_group(2, &sort_bg, &[]);
         pass.set_bind_group(3, vis_settings.bind_group(), &[]);
+        pass.set_bind_group(4, &color_schema.bind_group, &[]);
 
         let wgs_x = (pc.num_points() as f32 / 256.0).ceil() as u32;
         pass.dispatch_workgroups(wgs_x, 1, 1);
@@ -601,28 +615,90 @@ impl Display {
     }
 }
 
-
 #[repr(C)]
-#[derive(Debug,Clone, Copy,bytemuck::Pod, bytemuck::Zeroable)]
-pub struct VisSettings{
-    pub colors:[Vector4<f32>;64],
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct VisSettings {
     pub scale: f32,
     pub gaussian: u32,
-    _pad:[u32;2],
 }
-impl Default for VisSettings{
-    fn default()->Self{
-        let mut colors = [Vector4::new(0.,0.,0.,1.);64];
-        let a = Vector4::new(0., 0.,1.,0.);
-        let b = Vector4::new(1., 0.,0.,1.);
-        for i in 0..colors.len(){
-            colors[i] = a.lerp(b, (i as f32/15.).clamp(0., 1.));
+impl Default for VisSettings {
+    fn default() -> Self {
+        Self {
+            scale: 1.,
+            gaussian: 0,
         }
-        Self{
-            scale:1.,
-            colors,
-            gaussian:0,
-            _pad:[0;2]
-        }
+    }
+}
+pub struct ColorSchema {
+    bind_group: wgpu::BindGroup,
+}
+
+impl ColorSchema {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, color: Vec<Vector4<f32>>) -> Self {
+        let texture = device.create_texture_with_data(
+            queue,
+            &wgpu::TextureDescriptor {
+                label: Some("color schema texture"),
+                size: wgpu::Extent3d {
+                    width: color.len() as u32,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D1,
+                format: wgpu::TextureFormat::Rgba32Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            bytemuck::cast_slice(color.as_slice()),
+        );
+        let texture_view = texture.create_view(&Default::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("color schema sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("color schema bind group"),
+            layout: &Self::bind_group_layout(device),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        Self { bind_group }
+    }
+
+    pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("color schema bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D1,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        })
     }
 }

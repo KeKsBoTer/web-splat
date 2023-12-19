@@ -76,11 +76,9 @@ struct SortInfos {
     odd_pass: u32,
 }
 
-
-
-struct VisSettings{
-    colors:array<vec4<f32>,64>,
-    scale:f32,
+struct VisSettings {
+    scale: f32,
+    gaussian: u32,
 }
 
 @group(0) @binding(0)
@@ -103,47 +101,11 @@ var<storage, read_write> sort_dispatch: DispatchIndirect;
 
 @group(3) @binding(0)
 var<uniform> vis_settings : VisSettings;
+@group(4) @binding(0)
+var color_schema : texture_1d<f32>;
+@group(4) @binding(1)
+var color_schema_sampler: sampler;
 
-
-/// reads the ith sh coef from the vertex buffer
-fn sh_coef(splat_idx: u32, c_idx: u32) -> vec3<f32> {
-    return vec3<f32>(
-        vertices[splat_idx].sh[c_idx * 3u + 0u], vertices[splat_idx].sh[c_idx * 3u + 1u], vertices[splat_idx].sh[c_idx * 3u + 2u]
-    );
-}
-
-// spherical harmonics evaluation with Condon–Shortley phase
-fn evaluate_sh(dir: vec3<f32>, v_idx: u32, sh_deg: u32) -> vec3<f32> {
-    var result = SH_C0 * sh_coef(v_idx, 0u);
-
-    if sh_deg > 0u {
-
-        let x = dir.x;
-        let y = dir.y;
-        let z = dir.z;
-
-        result += - SH_C1 * y * sh_coef(v_idx, 1u) + SH_C1 * z * sh_coef(v_idx, 2u) - SH_C1 * x * sh_coef(v_idx, 3u);
-
-        if sh_deg > 1u {
-
-            let xx = dir.x * dir.x;
-            let yy = dir.y * dir.y;
-            let zz = dir.z * dir.z;
-            let xy = dir.x * dir.y;
-            let yz = dir.y * dir.z;
-            let xz = dir.x * dir.z;
-
-            result += SH_C2[0] * xy * sh_coef(v_idx, 4u) + SH_C2[1] * yz * sh_coef(v_idx, 5u) + SH_C2[2] * (2.0 * zz - xx - yy) * sh_coef(v_idx, 6u) + SH_C2[3] * xz * sh_coef(v_idx, 7u) + SH_C2[4] * (xx - yy) * sh_coef(v_idx, 8u);
-
-            if sh_deg > 2u {
-                result += SH_C3[0] * y * (3.0 * xx - yy) * sh_coef(v_idx, 9u) + SH_C3[1] * xy * z * sh_coef(v_idx, 10u) + SH_C3[2] * y * (4.0 * zz - xx - yy) * sh_coef(v_idx, 11u) + SH_C3[3] * z * (2.0 * zz - 3.0 * xx - 3.0 * yy) * sh_coef(v_idx, 12u) + SH_C3[4] * x * (4.0 * zz - xx - yy) * sh_coef(v_idx, 13u) + SH_C3[5] * z * (xx - yy) * sh_coef(v_idx, 14u) + SH_C3[6] * x * (xx - 3.0 * yy) * sh_coef(v_idx, 15u);
-            }
-        }
-    }
-    result += 0.5;
-
-    return result;
-}
 
 @compute @workgroup_size(256,1,1)
 fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) wgs: vec3<u32>) {
@@ -179,7 +141,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
         cov_sparse[0], cov_sparse[1], cov_sparse[2],
         cov_sparse[1], cov_sparse[3], cov_sparse[4],
         cov_sparse[2], cov_sparse[4], cov_sparse[5]
-    )* vis_settings.scale* vis_settings.scale;
+    ) * vis_settings.scale * vis_settings.scale;
     let J = mat3x3<f32>(
         focal.x / camspace.z,
         0.,
@@ -215,13 +177,13 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
 
     let camera_pos = camera.view_inv[3].xyz;
     let dir = normalize(xyz - camera_pos);
-    let tension = u32(vertices[idx].sh[0u]);
-    var color = vis_settings.colors[tension];
-    if !visible{
+    let tension = vertices[idx].sh[0u];
+    var color = textureSampleLevel(color_schema, color_schema_sampler, tension, 1.);
+    if !visible {
         color.a = 0.;
     }
 
-atomicAdd(&sort_infos.keys_size, 1u);
+    atomicAdd(&sort_infos.keys_size, 1u);
     let store_idx = idx;//atomicAdd(&sort_infos.keys_size, 1u);
     let v = vec4<f32>(v1 / viewport, v2 / viewport);
     points_2d[store_idx] = Splat(

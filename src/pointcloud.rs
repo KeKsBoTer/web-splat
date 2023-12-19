@@ -69,13 +69,14 @@ impl PointCloud {
         f.read_exact(&mut signature)?;
         f.rewind()?;
         if signature.starts_with(PlyReader::<R>::magic_bytes()) {
-            Ok(Self::load_ply(&device, f)?)
-        } else if signature.starts_with(NpzReader::<R>::magic_bytes()) {
-            Ok(Self::load_npz(&device, f)?)
-        } else {
-            log::warn!("no mafig bytes found, asuming dat format");
-            Ok(Self::load_dat(&device, f)?)
+            return Self::load_ply(&device, f);
         }
+        #[cfg(feature = "npz")]
+        if signature.starts_with(NpzReader::<R>::magic_bytes()) {
+            return Self::load_npz(&device, f);
+        }
+        log::warn!("no mafig bytes found, asuming dat format");
+        return Ok(Self::load_dat(&device, f)?);
     }
 
     pub fn compressed(&self) -> bool {

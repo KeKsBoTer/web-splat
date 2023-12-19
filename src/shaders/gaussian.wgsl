@@ -24,7 +24,6 @@ struct Splat {
 
 
 struct VisSettings{
-    colors:array<vec4<f32>,64>,
     scale:f32,
     gaussian:u32,
 }
