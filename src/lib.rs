@@ -79,8 +79,8 @@ impl WGPUContext {
                 &wgpu::DeviceDescriptor {
                     features,
                     limits: wgpu::Limits {
-                        max_storage_buffer_binding_size: (1 << 31) - 1,
-                        max_buffer_size: (1 << 31) - 1,
+                        max_storage_buffer_binding_size: (1 << 30) - 1,
+                        max_buffer_size: (1 << 30) - 1,
                         max_storage_buffers_per_shader_stage: 12,
                         max_compute_workgroup_storage_size: 1 << 15,
                         ..Default::default()
