@@ -1,3 +1,4 @@
+use half::f16;
 #[cfg(target_arch = "wasm32")]
 use instant::Instant;
 #[cfg(not(target_arch = "wasm32"))]
@@ -13,7 +14,7 @@ use cgmath::{InnerSpace, Point3, Quaternion, Vector3};
 use log::info;
 
 use crate::{
-    pointcloud::GaussianSplatFloat,
+    pointcloud::GaussianFloat,
     utils::{build_cov, sh_deg_from_num_coefs, sigmoid},
 };
 
@@ -41,7 +42,7 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
         })
     }
 
-    fn read_line<B: ByteOrder>(&mut self) -> GaussianSplatFloat {
+    fn read_line<B: ByteOrder>(&mut self) -> (GaussianFloat,[[f16;3];16]) {
         let mut pos = [0.; 3];
         self.reader.read_f32_into::<B>(&mut pos).unwrap();
 
@@ -78,32 +79,30 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
 
         let cov = build_cov(rot, scale);
 
-        return GaussianSplatFloat {
+        return (GaussianFloat {
             xyz: Point3::from(pos).cast().unwrap(),
-            opacity,
-            cov,
-            sh,
-            _pad: [0; 2],
-        };
+            opacity:f16::from_f32(opacity),
+            cov:cov.map(|x| f16::from_f32(x)),
+        },sh.map(|x| x.map(|y| f16::from_f32(y))));
     }
 
-    pub fn read(&mut self) -> Result<Vec<GaussianSplatFloat>, anyhow::Error> {
+    pub fn read(&mut self) -> Result<(Vec<GaussianFloat>,Vec<[[f16;3];16]>), anyhow::Error> {
         let start = Instant::now();
         let num_points = self.num_points()?;
-        let vertices: Vec<GaussianSplatFloat> = match self.header.encoding {
+        let result = match self.header.encoding {
             ply_rs::ply::Encoding::Ascii => todo!("acsii ply format not supported"),
             ply_rs::ply::Encoding::BinaryBigEndian => (0..num_points)
                 .map(|_| self.read_line::<BigEndian>())
-                .collect(),
+                .unzip(),
             ply_rs::ply::Encoding::BinaryLittleEndian => (0..num_points)
                 .map(|_| self.read_line::<LittleEndian>())
-                .collect(),
+                .unzip(),
         };
         info!(
             "reading ply file took {:}ms",
             (Instant::now() - start).as_millis()
         );
-        return Ok(vertices);
+        return Ok(result);
     }
 
     pub fn file_sh_deg(&self) -> Result<u32, anyhow::Error> {

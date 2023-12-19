@@ -34,11 +34,9 @@ struct CameraUniforms {
     focal: vec2<f32>
 };
 
-struct GaussianSplat {
-    pos: vec3<f32>,
-    opacity: f32,
-    cov: array<f32,6>,
-    sh: array<f32,48>
+struct Gaussian {
+    pos_opacity: array<u32,2>,
+    cov: array<u32,3>
 }
 
 struct Splat {
@@ -51,7 +49,7 @@ struct Splat {
 };
 
 struct DrawIndirect {
-    /// The number of vertices to draw.
+    /// The number of gaussians to draw.
     vertex_count: u32,
     /// The number of instances to draw.
     instance_count: atomic<u32>,
@@ -80,9 +78,11 @@ struct SortInfos {
 var<uniform> camera: CameraUniforms;
 
 @group(1) @binding(0) 
-var<storage,read> vertices : array<GaussianSplat>;
-
+var<storage,read> gaussians : array<Gaussian>;
 @group(1) @binding(1) 
+var<storage,read> sh_coefs : array<array<u32,24>>;
+
+@group(1) @binding(2) 
 var<storage,read_write> points_2d : array<Splat>;
 
 @group(2) @binding(0)
@@ -98,8 +98,11 @@ var<storage, read_write> sort_dispatch: DispatchIndirect;
 
 /// reads the ith sh coef from the vertex buffer
 fn sh_coef(splat_idx: u32, c_idx: u32) -> vec3<f32> {
+    let a = unpack2x16float(sh_coefs[splat_idx][(c_idx * 3u + 0u)/2u])[(c_idx * 3u + 0u)%2u];
+    let b = unpack2x16float(sh_coefs[splat_idx][(c_idx * 3u + 1u)/2u])[(c_idx * 3u + 1u)%2u];
+    let c = unpack2x16float(sh_coefs[splat_idx][(c_idx * 3u + 2u)/2u])[(c_idx * 3u + 2u)%2u];
     return vec3<f32>(
-        vertices[splat_idx].sh[c_idx * 3u + 0u], vertices[splat_idx].sh[c_idx * 3u + 1u], vertices[splat_idx].sh[c_idx * 3u + 2u]
+        a,b,c
     );
 }
 
@@ -136,17 +139,27 @@ fn evaluate_sh(dir: vec3<f32>, v_idx: u32, sh_deg: u32) -> vec3<f32> {
     return result;
 }
 
+fn cov_coefs(v_idx: u32) -> array<f32,6> {
+    let a = unpack2x16float(gaussians[v_idx].cov[0]);
+    let b = unpack2x16float(gaussians[v_idx].cov[1]);
+    let c = unpack2x16float(gaussians[v_idx].cov[2]);
+    return array<f32,6>(a.x, a.y, b.x, b.y, c.x, c.y);
+}
+
 @compute @workgroup_size(256,1,1)
 fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) wgs: vec3<u32>) {
     let idx = gid.x;
-    if idx >= arrayLength(&vertices) {
+    if idx >= arrayLength(&gaussians) {
         return;
     }
 
     let focal = camera.focal;
     let viewport = camera.viewport;
-    let vertex = vertices[idx];
-    let xyz = vertex.pos;
+    let vertex = gaussians[idx];
+    let a = unpack2x16float(vertex.pos_opacity[0]);
+    let b = unpack2x16float(vertex.pos_opacity[1]);
+    let xyz = vec3<f32>(a.x, a.y, b.x);
+    let opacity = b.y;
 
     var camspace = camera.view * vec4<f32>(xyz, 1.);
     let pos2d = camera.proj * camspace;
@@ -161,8 +174,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
         return;
     }
 
-    let opacity = vertex.opacity;
-    let cov_sparse = vertex.cov;
+    let cov_sparse = cov_coefs(idx);
 
     let Vrk = mat3x3<f32>(
         cov_sparse[0], cov_sparse[1], cov_sparse[2],

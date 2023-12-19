@@ -68,12 +68,13 @@ impl PointCloud {
         f.read_exact(&mut signature)?;
         f.rewind()?;
         if signature.starts_with(PlyReader::<R>::magic_bytes()) {
-            Ok(Self::load_ply(&device, f)?)
-        } else if signature.starts_with(NpzReader::<R>::magic_bytes()) {
-            Ok(Self::load_npz(&device, f)?)
-        } else {
-            Err(anyhow::anyhow!("Unknown file format"))
+            return Self::load_ply(&device, f);
         }
+        #[cfg(feature = "npz")]
+        if signature.starts_with(NpzReader::<R>::magic_bytes()) {
+            return Self::load_npz(&device, f);
+        }
+        return Err(anyhow::anyhow!("Unknown file format"));
     }
 
     pub fn compressed(&self) -> bool {
@@ -197,7 +198,7 @@ impl PointCloud {
             }],
         });
 
-        let vertices = ply_reader.read()?;
+        let (vertices, sh_coefs) = ply_reader.read()?;
         let mut bbox = Aabb::unit();
         for v in &vertices {
             bbox.grow(v.xyz);
@@ -205,6 +206,12 @@ impl PointCloud {
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("3d gaussians buffer"),
             contents: bytemuck::cast_slice(vertices.as_slice()),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let sh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("sh coefs buffer"),
+            contents: bytemuck::cast_slice(sh_coefs.as_slice()),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -218,6 +225,10 @@ impl PointCloud {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
+                    resource: sh_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
                     resource: splat_2d_buffer.as_entire_binding(),
                 },
             ],
@@ -230,8 +241,8 @@ impl PointCloud {
             render_bind_group,
             num_points: num_points as u32,
             sh_deg,
-            bbox,
             compressed: false,
+            bbox: bbox.into(),
         })
     }
 
@@ -327,6 +338,16 @@ impl PointCloud {
                     binding: 1,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: false },
                         has_dynamic_offset: false,
                         min_binding_size: None,
@@ -420,12 +441,10 @@ pub struct QuantizationUniform {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct GaussianSplatFloat {
-    pub xyz: Point3<f32>,
-    pub opacity: f32,
-    pub cov: [f32; 6],
-    pub sh: [[f32; 3]; 16],
-    pub _pad: [u32; 2],
+pub struct GaussianFloat {
+    pub xyz: Point3<f16>,
+    pub opacity: f16,
+    pub cov: [f16; 6],
 }
 
 pub struct Aabb<F: Float + BaseNum> {

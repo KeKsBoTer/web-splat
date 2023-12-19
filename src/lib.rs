@@ -84,8 +84,8 @@ impl WGPUContext {
                     features,
                     #[cfg(not(target_arch = "wasm32"))]
                     limits: wgpu::Limits {
-                        max_storage_buffer_binding_size: (1 << 28) - 1,
-                        max_buffer_size: (1 << 28) - 1,
+                        max_storage_buffer_binding_size: (1 << 30) - 1,
+                        max_buffer_size: (1 << 30) - 1,
                         max_storage_buffers_per_shader_stage: 12,
                         max_compute_workgroup_storage_size: 1 << 15,
                         ..Default::default()
@@ -199,9 +199,10 @@ impl WindowContext {
         )
         .await;
 
+        let aabb = pc.bbox();
         let aspect = size.width as f32 / size.height as f32;
         let view_camera = PerspectiveCamera::new(
-            pc.bbox().center(),
+            aabb.center() - Vector3::new(1.,1.,1.)* aabb.sphere()*0.5,
             Quaternion::one(),
             PerspectiveProjection::new(
                 Vector2::new(size.width, size.height),
@@ -211,7 +212,8 @@ impl WindowContext {
             ),
         );
 
-        let controller = CameraController::new(0.1, 0.05);
+        let mut controller = CameraController::new(0.1, 0.05);
+        controller.center = aabb.center();
         let ui_renderer = ui_renderer::EguiWGPU::new(event_loop, device, surface_format);
         let display = Display::new(
             device,
