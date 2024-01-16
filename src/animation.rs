@@ -16,7 +16,11 @@ pub trait Animation {
 
     fn update(&mut self, dt: Duration) -> Self::Animatable;
 
-    fn done(&self) -> bool;
+    fn done(&self) -> bool {
+        self.progress() >= 1.
+    }
+
+    fn progress(&self) -> f32;
 }
 
 pub struct Transition<T: Lerp> {
@@ -59,6 +63,10 @@ impl<T: Lerp + Clone> Animation for Transition<T> {
 
     fn done(&self) -> bool {
         self.time_left.is_zero()
+    }
+
+    fn progress(&self) -> f32 {
+        1. - (self.time_left.as_secs_f32() / self.duration.as_secs_f32())
     }
 }
 
@@ -154,6 +162,21 @@ impl Animation for TrackingShot {
     fn done(&self) -> bool {
         // never ends
         false
+    }
+
+    fn progress(&self) -> f32 {
+        let mut passed = Duration::ZERO;
+        for (start, end) in self
+            .cameras
+            .iter()
+            .take(self.current_idx)
+            .zip(self.cameras.iter().skip(1).take(self.current_idx))
+        {
+            passed += Self::create_transition(start.clone(), end.clone(), self.speed).duration;
+        }
+
+        passed += self.transiton.duration - self.transiton.time_left;
+        return passed.as_secs_f32() / self.duration().as_secs_f32();
     }
 }
 

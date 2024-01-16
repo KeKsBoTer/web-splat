@@ -3,9 +3,9 @@ use std::io::{self, BufReader};
 use cgmath::{Matrix3, MetricSpace, Point3, Vector2};
 use serde::{Deserialize, Serialize};
 
-use crate::camera::{focal2fov, PerspectiveCamera, PerspectiveProjection};
+use crate::camera::{focal2fov, fov2focal, PerspectiveCamera, PerspectiveProjection};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SceneCamera {
     pub img_name: String,
     pub id: u32,
@@ -15,11 +15,49 @@ pub struct SceneCamera {
     pub rotation: [[f32; 3]; 3],
     pub fx: f32,
     pub fy: f32,
-    #[serde(skip_deserializing)]
+    #[serde(skip_deserializing, skip_serializing)]
     pub split: Split,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+impl std::hash::Hash for SceneCamera {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.img_name.hash(state);
+        self.id.hash(state);
+        self.width.hash(state);
+        self.height.hash(state);
+        bytemuck::cast_slice::<_, u8>(&self.position).hash(state);
+        bytemuck::cast_slice::<_, u8>(&self.rotation).hash(state);
+        bytemuck::cast_slice::<_, u8>(&[self.fx, self.fy]).hash(state);
+        self.split.hash(state);
+    }
+}
+
+impl SceneCamera {
+    pub fn from_perspective(
+        cam: PerspectiveCamera,
+        name: String,
+        id: u32,
+        viewport: Vector2<u32>,
+        split: Split,
+    ) -> Self {
+        let fx = fov2focal(cam.projection.fov.x, viewport.x as f32);
+        let fy = fov2focal(cam.projection.fov.y, viewport.y as f32);
+        let rot: Matrix3<f32> = cam.rotation.into();
+        Self {
+            img_name: name,
+            id: id,
+            width: viewport.x,
+            height: viewport.y,
+            position: cam.position.into(),
+            rotation: rot.into(),
+            fx,
+            fy,
+            split,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Hash)]
 pub enum Split {
     Train,
     Test,
@@ -64,6 +102,10 @@ pub struct Scene {
 }
 
 impl Scene {
+    pub fn from_cameras(cameras: Vec<SceneCamera>) -> Self {
+        Self { cameras }
+    }
+
     pub fn from_json<R: io::Read>(file: R) -> Result<Self, anyhow::Error> {
         let mut reader = BufReader::new(file);
         let mut cameras: Vec<SceneCamera> = serde_json::from_reader(&mut reader)?;

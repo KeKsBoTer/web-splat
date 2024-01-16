@@ -1,4 +1,9 @@
-use std::io::{Read, Seek};
+use egui_dnd::dnd;
+use std::{
+    fs::File,
+    io::{Read, Seek},
+    path::Path,
+};
 
 #[cfg(target_arch = "wasm32")]
 use instant::{Duration, Instant};
@@ -8,7 +13,7 @@ use std::time::{Duration, Instant};
 use wgpu::Backends;
 
 use cgmath::{Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, Vector2, Vector3};
-use egui::{epaint::Shadow, Align2, Color32, Vec2, Visuals};
+use egui::{epaint::Shadow, Align2, Color32, Margin, Vec2, Vec2b, Visuals};
 #[cfg(not(target_arch = "wasm32"))]
 use egui_plot::{Legend, PlotPoints};
 use num_traits::One;
@@ -21,8 +26,9 @@ use utils::RingBuffer;
 use wasm_bindgen::prelude::wasm_bindgen;
 use winit::{
     dpi::PhysicalSize,
-    event::{DeviceEvent, ElementState, Event, VirtualKeyCode, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
+    event::{DeviceEvent, ElementState, Event, WindowEvent},
+    event_loop::EventLoop,
+    keyboard::{ PhysicalKey, KeyCode},
     window::{Window, WindowBuilder},
 };
 
@@ -137,16 +143,14 @@ struct WindowContext {
     display: Display,
 
     background_color: egui::Color32,
+
+    saved_cameras: Vec<SceneCamera>,
+    cameras_save_path: String,
 }
 
 impl WindowContext {
     // Creating some of the wgpu types requires async code
-    async fn new<R: Read + Seek>(
-        window: Window,
-        event_loop: &EventLoop<()>,
-        pc_file: R,
-        render_config: RenderConfig,
-    ) -> Self {
+    async fn new<R: Read + Seek>(window: Window, pc_file: R, render_config: RenderConfig) -> Self {
         let size = window.inner_size();
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
@@ -202,7 +206,7 @@ impl WindowContext {
         let aabb = pc.bbox();
         let aspect = size.width as f32 / size.height as f32;
         let view_camera = PerspectiveCamera::new(
-            aabb.center() - Vector3::new(1.,1.,1.)* aabb.sphere()*0.5,
+            aabb.center() - Vector3::new(1., 1., 1.) * aabb.sphere() * 0.5,
             Quaternion::one(),
             PerspectiveProjection::new(
                 Vector2::new(size.width, size.height),
@@ -214,7 +218,7 @@ impl WindowContext {
 
         let mut controller = CameraController::new(0.1, 0.05);
         controller.center = aabb.center();
-        let ui_renderer = ui_renderer::EguiWGPU::new(event_loop, device, surface_format);
+        let ui_renderer = ui_renderer::EguiWGPU::new(device, surface_format, &window);
         let display = Display::new(
             device,
             render_format,
@@ -242,6 +246,8 @@ impl WindowContext {
             ui_visible: true,
             display,
             background_color: Color32::BLACK,
+            saved_cameras: Vec::new(),
+            cameras_save_path: "cameras_saved.json".to_string(),
         }
     }
 
@@ -290,7 +296,7 @@ impl WindowContext {
     }
 
     fn ui(&mut self) {
-        let ctx = &self.ui_renderer.ctx;
+        let ctx = self.ui_renderer.winit.egui_ctx();
         #[cfg(not(target_arch = "wasm32"))]
         let stats = pollster::block_on(
             self.renderer
@@ -343,14 +349,14 @@ impl WindowContext {
                     .allow_scroll(false)
                     .y_axis_width(1)
                     .y_axis_label("ms")
-                    .auto_bounds_y()
-                    .auto_bounds_x()
+                    .auto_bounds(Vec2b::TRUE)
                     .show_axes([false, true])
-                    .legend(Legend {
-                        text_style: TextStyle::Body,
-                        background_alpha: 1.,
-                        position: egui_plot::Corner::LeftBottom,
-                    })
+                    .legend(
+                        Legend::default()
+                            .text_style(TextStyle::Body)
+                            .background_alpha(1.)
+                            .position(egui_plot::Corner::LeftBottom),
+                    )
                     .show(ui, |ui| {
                         let line =
                             egui_plot::Line::new(PlotPoints::from_ys_f32(&pre)).name("preprocess");
@@ -435,7 +441,7 @@ impl WindowContext {
                 });
         });
 
-        let mut new_camera = None;
+        let mut new_camera: Option<SceneCamera> = None;
         let mut toggle_tracking_shot = false;
         egui::Window::new("ℹ Scene")
             .default_width(200.)
@@ -460,7 +466,7 @@ impl WindowContext {
                 if let Some(scene) = &self.scene {
                     let nearest = scene.nearest_camera(self.camera.position, None);
                     ui.separator();
-                    ui.heading("Training Images");
+                    ui.heading("Dataset Images");
                     egui::Grid::new("image info")
                         .num_columns(2)
                         .striped(true)
@@ -477,34 +483,143 @@ impl WindowContext {
                                             0..=(scene.num_cameras().saturating_sub(1)),
                                         ));
                                     if drag.changed() {
-                                        new_camera = Some(*c);
+                                        new_camera = Some(scene.camera(*c).into());
                                     }
                                     ui.label(scene.camera(*c).split.to_string());
                                 });
                             }
                         });
-                        if ui.button(format!("Snap to closest ({nearest})")).clicked() {
-                            new_camera = Some(nearest);
+                    if ui.button(format!("Snap to closest ({nearest})")).clicked() {
+                        new_camera = Some(scene.camera(nearest).into());
+                    }
+                }
+            });
+
+            let mut save_view = false;
+        egui::Window::new("Tracking Shot")
+            .default_width(200.)
+            .resizable(false)
+            .default_height(100.)
+            .max_height(500.)
+            .show(ctx, |ui| {
+                ui.vertical(|ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        if let Some(scene) = &self.scene {
+                            ui.menu_button("Load Cameras", |ui| {
+                                if ui.button("Train").clicked() {
+                                    self.saved_cameras = scene.cameras(Some(Split::Train)).clone();
+                                    ui.close_menu();
+                                }
+                                if ui.button("Test").clicked() {
+                                    self.saved_cameras = scene.cameras(Some(Split::Test)).clone();
+                                    ui.close_menu();
+                                }
+                                if ui.button("All").clicked() {
+                                    self.saved_cameras = scene.cameras(None).clone();
+                                    ui.close_menu();
+                                }
+                            });
                         }
+                        if ui.button("Clear").clicked() {
+                            self.saved_cameras.clear();
+                        }
+                        if ui.button("Add Current View").clicked() {
+                            save_view = true;
+                        }
+                    });
+                    ui.heading("Cameras");
+                    egui::ScrollArea::new(Vec2b::new(false, true))
+                        .max_height(300.)
+                        .show(ui, |ui| {
+                            let mut trash = Vec::new();
+                            ui.add_enabled_ui(self.animation.is_none(), |ui|{
+                            dnd(ui, "dnd_cameras").show_vec(
+                                &mut self.saved_cameras,
+                                |ui, c, handle, state| {
+                                    let style = (*ctx.style()).clone();
+                                    let bg = if state.dragged {
+                                        style.visuals.extreme_bg_color
+                                    } else {
+                                        style.visuals.panel_fill
+                                    };
+                                    egui::Frame::default()
+                                        .fill(bg)
+                                        .inner_margin(Margin::same(3.))
+                                        .show(ui, |ui| {
+                                            ui.horizontal(|ui| {
+                                                handle.ui(ui, |ui| {
+                                                    ui.label("|||");
+                                                });
+                                                ui.horizontal(|ui| {
+                                                    ui.set_width(120.);
+
+                                                    ui.colored_label(
+                                                        style.visuals.strong_text_color(),
+                                                        c.id.to_string(),
+                                                    );
+                                                    ui.colored_label(
+                                                        match c.split {
+                                                            Split::Train => Color32::DARK_GREEN,
+                                                            Split::Test => Color32::LIGHT_GREEN,
+                                                        },
+                                                        c.split.to_string(),
+                                                    );
+                                                    ui.label(c.img_name.clone());
+                                                });
+                                                if ui.button("🗑").clicked() {
+                                                    trash.push(state.index);
+                                                }
+                                                if ui.button("🎥").clicked() {
+                                                    new_camera = Some(c.clone().into());
+                                                }
+                                            });
+                                        });
+                                },
+                            );});
+                            for t in trash {
+                                self.saved_cameras.remove(t);
+                            }
+                        });
+                    ui.separator();
+
+                    ui.add_enabled_ui(self.saved_cameras.len() > 1, |ui| {
                         let text = if self.animation.is_some() {
                             "Stop tracking shot"
                         } else {
                             "Start tracking shot"
                         };
-                        if ui.button(text).clicked() {
+                        if ui.add(egui::Button::new(text).shortcut_text("T")).clicked() {
                             toggle_tracking_shot = true;
                         }
-                }
+
+                        if self.animation.is_some(){
+                            let progress = self.animation.as_ref().unwrap().progress();
+                            ui.label(progress.to_string());
+                        }
+
+                        ui.text_edit_singleline(&mut self.cameras_save_path);
+                        if ui.button("Save").clicked() {
+                            let mut file =
+                                File::create(Path::new(&self.cameras_save_path)).unwrap();
+                            serde_json::to_writer_pretty(&mut file, &self.saved_cameras).unwrap();
+                        }
+                    });
+                });
             });
 
         if let Some(c) = new_camera {
-            self.current_view = new_camera;
-            let c = self.scene.as_ref().unwrap().camera(c);
             self.set_camera(c, Duration::from_millis(200));
+        }
+        if save_view{
+            self.save_view();
         }
         if toggle_tracking_shot {
             if self.animation.is_none() {
-                self.start_tracking_shot(Some(Split::Test))
+                self.animation = Some(Box::new(TrackingShot::from_scene(
+                    self.saved_cameras.clone(),
+                    1.,
+                    Some(self.camera.clone()),
+                )));
             } else {
                 self.stop_animation();
             }
@@ -587,12 +702,20 @@ impl WindowContext {
 
         self.controller.center = center;
         self.scene.replace(scene);
+        if self.saved_cameras.is_empty() {
+            self.saved_cameras = self
+                .scene
+                .as_ref()
+                .unwrap()
+                .cameras(Some(Split::Test))
+                .clone();
+        }
     }
 
-    fn start_tracking_shot(&mut self, split: Option<Split>) {
-        if let Some(scene) = &self.scene {
+    fn start_tracking_shot(&mut self) {
+        if self.saved_cameras.len() > 1 {
             self.animation = Some(Box::new(TrackingShot::from_scene(
-                scene.cameras(split),
+                self.saved_cameras.clone(),
                 1.,
                 Some(self.camera.clone()),
             )));
@@ -624,6 +747,23 @@ impl WindowContext {
     fn update_camera(&mut self, camera: PerspectiveCamera) {
         self.camera = camera;
     }
+
+    fn save_view(&mut self) {
+        let max_scene_id = if let Some(scene) = &self.scene {
+            scene.cameras(None).iter().map(|c| c.id).max().unwrap_or(0)
+        } else {
+            0
+        };
+        let max_id = self.saved_cameras.iter().map(|c| c.id).max().unwrap_or(0);
+        let id = max_id.max(max_scene_id) +1;
+        self.saved_cameras.push(SceneCamera::from_perspective(
+            self.camera,
+            id.to_string(),
+            id as u32,
+            Vector2::new(self.config.width, self.config.height),
+            Split::Test,
+        ));
+    }
 }
 
 pub fn smoothstep(x: f32) -> f32 {
@@ -637,7 +777,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
 ) {
     #[cfg(not(target_arch = "wasm32"))]
     env_logger::init();
-    let event_loop = EventLoop::new();
+    let event_loop = EventLoop::new().unwrap();
 
     let scene = scene_file.and_then(|f| match Scene::from_json(f) {
         Ok(s) => Some(s),
@@ -689,13 +829,13 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
             .expect("couldn't append canvas to document body");
     }
 
-    let mut state = WindowContext::new(window, &event_loop, file, config).await;
+    let mut state = WindowContext::new(window, file, config).await;
 
     if let Some(scene) = scene {
         let init_camera = scene.camera(0);
         state.set_scene(scene);
         state.set_camera(init_camera, Duration::ZERO);
-        state.start_tracking_shot(Some(Split::Test));
+        state.start_tracking_shot();
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -711,71 +851,73 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
 
     let mut last = Instant::now();
 
-    event_loop.run(move |event, _, control_flow| 
+    event_loop.run(move |event,target| 
         
         match event {
         Event::WindowEvent {
             ref event,
             window_id,
-        } if window_id == state.window.id() && !state.ui_renderer.on_event(event) => match event {
+        } if window_id == state.window.id() && !state.ui_renderer.on_event(&state.window,event) => match event {
             WindowEvent::Resized(physical_size) => {
                 state.resize(*physical_size, None);
             }
             WindowEvent::ScaleFactorChanged {
                 scale_factor,
-                new_inner_size,
                 ..
             } => {
-                state.resize(**new_inner_size, Some(*scale_factor as f32));
+                state.scale_factor = *scale_factor as f32;
             }
-            WindowEvent::CloseRequested => {log::info!("close!");*control_flow = ControlFlow::Exit},
+            WindowEvent::CloseRequested => {log::info!("close!");target.exit()},
             WindowEvent::ModifiersChanged(m)=>{
-                state.controller.alt_pressed = m.ctrl();
+                log::debug!("modifiers changed: {:?}",m.state());
+                state.controller.alt_pressed = m.state().alt_key();
             }
-            WindowEvent::KeyboardInput { input, .. } => {
-                if let Some(key) = input.virtual_keycode {
-                    if input.state == ElementState::Released{
+            WindowEvent::KeyboardInput { event, .. } => {
+                if let PhysicalKey::Code(key) = event.physical_key{
+                if event.state == ElementState::Released{
 
-                        if key == VirtualKeyCode::T{
-                            if state.animation.is_none(){
-                                state.start_tracking_shot(Some(Split::Test));
-                            }else{
-                                state.stop_animation()
-                            }
-                        }else if key == VirtualKeyCode::U{
-                            state.ui_visible = !state.ui_visible;
-                            
-                        }else
-                        if let Some(scene) = &state.scene{
+                    if key == KeyCode::KeyT{
+                        if state.animation.is_none(){
+                            state.start_tracking_shot();
+                        }else{
+                            state.stop_animation()
+                        }
+                    }else if key == KeyCode::KeyU{
+                        state.ui_visible = !state.ui_visible;
+                        
+                    }else if key == KeyCode::KeyC{
+                        state.save_view();
+                    }else
+                    if let Some(scene) = &state.scene{
 
-                            let new_camera = 
-                            if let Some(num) = key_to_num(key){
-                                Some(num as usize)
-                            }
-                            else if key == VirtualKeyCode::R{
-                                Some(rand::random::<usize>()%scene.num_cameras())
-                            }else if key == VirtualKeyCode::N{
-                                Some(scene.nearest_camera(state.camera.position,None))
-                            }else if key == VirtualKeyCode::PageUp{
-                                Some(state.current_view.map_or(0, |v|v+1) % scene.num_cameras())
-                            }else if key == VirtualKeyCode::T{
-                                Some(state.current_view.map_or(0, |v|v+1) % scene.num_cameras())
-                            }
-                            else if key == VirtualKeyCode::PageDown{
-                                Some(state.current_view.map_or(0, |v|v-1) % scene.num_cameras())
-                            }else{None};
+                        let new_camera = 
+                        if let Some(num) = key_to_num(key){
+                            Some(num as usize)
+                        }
+                        else if key == KeyCode::KeyR{
+                            Some(rand::random::<usize>()%scene.num_cameras())
+                        }else if key == KeyCode::KeyN{
+                            Some(scene.nearest_camera(state.camera.position,None))
+                        }else if key == KeyCode::PageUp{
+                            Some(state.current_view.map_or(0, |v|v+1) % scene.num_cameras())
+                        }else if key == KeyCode::KeyT{
+                            Some(state.current_view.map_or(0, |v|v+1) % scene.num_cameras())
+                        }
+                        else if key == KeyCode::PageDown{
+                            Some(state.current_view.map_or(0, |v|v-1) % scene.num_cameras())
+                        }else{None};
 
-                            if let Some(new_camera) = new_camera{
-                                state.current_view.replace(new_camera as usize);
-                                log::info!("view moved to camera {new_camera}");
-                                state.set_camera(scene.camera(new_camera as usize),Duration::from_millis(500));
-                            }
+                        if let Some(new_camera) = new_camera{
+                            state.current_view.replace(new_camera as usize);
+                            log::info!("view moved to camera {new_camera}");
+                            state.set_camera(scene.camera(new_camera as usize),Duration::from_millis(500));
                         }
                     }
-                    state
-                        .controller
-                        .process_keyboard(key, input.state == ElementState::Pressed);
                 }
+                state
+                    .controller
+                    .process_keyboard(key, event.state == ElementState::Pressed);
+            }
             }
             WindowEvent::MouseWheel { delta, .. } => match delta {
                 winit::event::MouseScrollDelta::LineDelta(_, dy) => {
@@ -792,6 +934,22 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
                     _=>{}
                 }
             }
+            WindowEvent::RedrawRequested => {
+                let now = Instant::now();
+                let dt = now-last;
+                last = now;
+                state.update(dt);
+    
+                match state.render() {
+                    Ok(_) => {}
+                    // Reconfigure the surface if lost
+                    Err(wgpu::SurfaceError::Lost) => state.resize(state.window.inner_size(), None),
+                    // The system is out of memory, we should probably quit
+                    Err(wgpu::SurfaceError::OutOfMemory) =>target.exit(),
+                    // All other errors (Outdated, Timeout) should be resolved by the next frame
+                    Err(e) => println!("error: {:?}", e),
+                }
+            }
             _ => {}
         },
         Event::DeviceEvent {
@@ -800,29 +958,14 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
         } => {
             state.controller.process_mouse(delta.0 as f32, delta.1 as f32)
         }
-        Event::RedrawRequested(window_id) if window_id == state.window.id() => {
-            let now = Instant::now();
-            let dt = now-last;
-            last = now;
-            state.update(dt);
-
-            match state.render() {
-                Ok(_) => {}
-                // Reconfigure the surface if lost
-                Err(wgpu::SurfaceError::Lost) => state.resize(state.window.inner_size(), None),
-                // The system is out of memory, we should probably quit
-                Err(wgpu::SurfaceError::OutOfMemory) => *control_flow = ControlFlow::Exit,
-                // All other errors (Outdated, Timeout) should be resolved by the next frame
-                Err(e) => println!("error: {:?}", e),
-            }
-        }
-        Event::MainEventsCleared => {
+        
+        Event::AboutToWait => {
             // RedrawRequested will only trigger once, unless we manually
             // request it.
             state.window.request_redraw();
         }
         _ => {},
-    });
+    }).unwrap();
 }
 
 #[cfg(target_arch = "wasm32")]

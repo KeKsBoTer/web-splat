@@ -12,6 +12,7 @@ use wgpu::util::DeviceExt;
 #[cfg(feature = "npz")]
 use crate::npz::NpzReader;
 use crate::ply::PlyReader;
+#[cfg(feature = "npz")]
 use crate::uniform::UniformBuffer;
 
 #[repr(C)]

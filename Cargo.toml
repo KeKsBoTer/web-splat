@@ -3,13 +3,13 @@ name = "web_splats"
 version = "0.1.0"
 edition = "2021"
 authors = ["Simon Niedermayr", "Josef Stumpfegger"]
-description = "3D Gaussian Splatting Viewer"
+description = "3D Gaussian Splatting pewer"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-wgpu = {version = "0.18.0"}
-winit = "0.28.1"
+wgpu = { version = "0.18.0" }
+winit = "0.29.10"
 cgmath = { version = "0.18.0", features = [
     "bytemuck",
 ], git = 'https://github.com/rustgd/cgmath' }
@@ -30,12 +30,16 @@ image = "0.24.6"
 indicatif = "0.17.7"
 
 
-egui = "0.24.0"
-egui-wgpu = "0.24.0"
-egui-winit = { version = "0.24.0", features = [], default-features = false }
-egui_plot = "0.24.0"
+egui = "0.25.0"
+egui-wgpu = "0.25.0"
+egui-winit = { version = "0.25.0", features = [], default-features = false }
+egui_plot = "0.25.0"
+egui_dnd = "0.5.1"
 
-npyz = { version = "0.8.2", features = ["npz", "half"], optional = true,git = "https://github.com/KeKsBoTer/npyz",branch = "npz-wasm" }
+npyz = { version = "0.8.2", features = [
+    "npz",
+    "half",
+], optional = true, git = "https://github.com/KeKsBoTer/npyz", branch = "npz-wasm" }
 futures-intrusive = "0.5.0"
 
 
@@ -61,7 +65,7 @@ wasm-bindgen-futures = "0.4.37"
 console_log = "1"
 log = "0.4"
 instant = "0.1.12"
-web-sys = { version = "0.3.64"}
+web-sys = { version = "0.3.64" }
 
 [profile.web-release]
 inherits = "release"
