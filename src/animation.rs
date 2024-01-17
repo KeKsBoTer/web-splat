@@ -273,6 +273,10 @@ impl<T> Animation<T> {
     pub fn set_progress(&mut self, v: f32) {
         self.time_left = self.duration.mul_f32(1. - v);
     }
+
+    pub fn duration(&self) -> Duration {
+        self.duration
+    }
 }
 
 /// unroll quaternion rotations so that the animation always takes the shortest path

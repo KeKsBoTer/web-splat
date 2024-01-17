@@ -35,7 +35,7 @@ impl GaussianRenderer {
         queue: &wgpu::Queue,
         color_format: wgpu::TextureFormat,
         sh_deg: u32,
-        float: bool,
+        compressed: bool,
     ) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render pipeline layout"),
@@ -104,7 +104,7 @@ impl GaussianRenderer {
         let sorter = GPURSSorter::new(device, queue).await;
 
         let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
-        let preprocess = PreprocessPipeline::new(device, sh_deg, float);
+        let preprocess = PreprocessPipeline::new(device, sh_deg, compressed);
         GaussianRenderer {
             pipeline,
             camera,
@@ -364,12 +364,12 @@ impl CameraUniform {
 struct PreprocessPipeline(wgpu::ComputePipeline);
 
 impl PreprocessPipeline {
-    fn new(device: &wgpu::Device, sh_deg: u32, float: bool) -> Self {
+    fn new(device: &wgpu::Device, sh_deg: u32, compressed: bool) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("preprocess pipeline layout"),
             bind_group_layouts: &[
                 &UniformBuffer::<CameraUniform>::bind_group_layout(device),
-                &if float {
+                &if !compressed {
                     PointCloud::bind_group_layout_float(device)
                 } else {
                     PointCloud::bind_group_layout(device)
@@ -381,7 +381,7 @@ impl PreprocessPipeline {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("preprocess shader"),
-            source: wgpu::ShaderSource::Wgsl(Self::build_shader(sh_deg, float).into()),
+            source: wgpu::ShaderSource::Wgsl(Self::build_shader(sh_deg, compressed).into()),
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("preprocess pipeline"),
@@ -392,8 +392,8 @@ impl PreprocessPipeline {
         Self(pipeline)
     }
 
-    fn build_shader(sh_deg: u32, float: bool) -> String {
-        let shader_src: &str = if float {
+    fn build_shader(sh_deg: u32, compressed: bool) -> String {
+        let shader_src: &str = if !compressed {
             include_str!("shaders/preprocess_f32.wgsl")
         } else {
             include_str!("shaders/preprocess.wgsl")

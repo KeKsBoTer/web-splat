@@ -16,8 +16,8 @@ use std::{
     time::Duration,
 };
 use web_splats::{
-    DiscAnimation, GaussianRenderer, PerspectiveCamera, PointCloud, Sampler, Scene, SceneCamera,
-    Split, TrackingShot, WGPUContext,
+    Animation, GaussianRenderer, PerspectiveCamera, PointCloud, Sampler, Scene, SceneCamera, Split,
+    TrackingShot, WGPUContext,
 };
 
 #[derive(Debug, Parser)]
@@ -65,20 +65,11 @@ async fn render_tracking_shot(
         view_formats: &[],
     });
 
-    let center = Point3::new(0., 3.5, 0.);
-    let radius = 6.;
-    let up: Vector3<f32> = Vector3::new(0.008746162, 0.74420416, 0.6678949).normalize();
-
-    let first_cam: PerspectiveCamera = cameras[0].clone().into();
-    // let rng = rand::SeedableRng::from_seed(0);
-    // let mut animation = TrackingShot::from_scene(
-    //     cameras
-    //         .into_iter()
-    //         .choose_multiple(&mut rand::thread_rng(), 10),
-    //     10.,
-    //     None,
-    // );
-    let mut animation = DiscAnimation::new(center, up, radius, 1. / 5., first_cam.projection);
+    let mut animation = Animation::new(
+        Duration::from_secs_f32(cameras.len() as f32 * 2.),
+        false,
+        Box::new(TrackingShot::from_scene(cameras)),
+    );
 
     let animation_duration = animation.duration();
     println!("{:?}", animation_duration);
@@ -163,7 +154,7 @@ async fn main() {
         queue,
         &mut renderer,
         &mut pc,
-        scene.cameras(Some(Split::Test)),
+        scene.cameras(None),
         &opt.video_out,
     )
     .await;

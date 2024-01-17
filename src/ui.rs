@@ -1,4 +1,8 @@
-use std::{fs::File, path::Path, time::Duration};
+use std::{
+    fs::{create_dir_all, File},
+    path::Path,
+    time::Duration,
+};
 
 use egui::{epaint::Shadow, Align2, Color32, Margin, Vec2, Vec2b, Visuals};
 use egui_dnd::dnd;
@@ -365,7 +369,11 @@ pub(crate) fn ui(state: &mut WindowContext) {
 
                     ui.text_edit_singleline(&mut state.cameras_save_path);
                     if ui.button("Save").clicked() {
-                        let mut file = File::create(Path::new(&state.cameras_save_path)).unwrap();
+                        let path = Path::new(&state.cameras_save_path);
+                        if let Some(parent) = path.parent() {
+                            create_dir_all(parent).unwrap();
+                        }
+                        let mut file = File::create(path).unwrap();
                         serde_json::to_writer_pretty(&mut file, &state.saved_cameras).unwrap();
                     }
                 });

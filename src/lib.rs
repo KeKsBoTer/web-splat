@@ -1,4 +1,3 @@
-use animation::Animation;
 use std::io::{Read, Seek};
 
 #[cfg(target_arch = "wasm32")]
@@ -28,7 +27,7 @@ use winit::{
 
 mod animation;
 mod ui;
-pub use animation::{Sampler, TrackingShot, Transition};
+pub use animation::{Sampler, TrackingShot, Transition,Animation};
 mod camera;
 pub use camera::{Camera, PerspectiveCamera, PerspectiveProjection};
 mod controller;
@@ -194,7 +193,7 @@ impl WindowContext {
             &queue,
             render_format,
             pc.sh_deg(),
-            !pc.compressed(),
+            pc.compressed(),
         )
         .await;
 
