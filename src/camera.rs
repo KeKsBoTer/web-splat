@@ -43,7 +43,8 @@ impl Default for PerspectiveCamera {
             position: Point3::new(0., 0., -1.),
             rotation: Quaternion::new(1., 0., 0., 0.),
             projection: PerspectiveProjection {
-                fov: Vector2::new(Deg(45.).into(), Deg(45.).into()),
+                fovx: Deg(45.).into(),
+                fovy: Deg(45.).into(),
                 znear: 0.1,
                 zfar: 100.,
                 fov2view_ratio: 1.,
@@ -64,12 +65,13 @@ impl Camera for PerspectiveCamera {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PerspectiveProjection {
-    pub fov: Vector2<Rad<f32>>,
+    pub fovx: Rad<f32>,
+    pub fovy: Rad<f32>,
     pub znear: f32,
     pub zfar: f32,
     /// fov ratio to viewport ratio
     /// needed for camera viewport resize
-    fov2view_ratio: f32,
+    pub(crate) fov2view_ratio: f32,
 }
 
 #[rustfmt::skip]
@@ -91,7 +93,8 @@ impl PerspectiveProjection {
         let vr = viewport.x as f32 / viewport.y as f32;
         let fr = fov.x.0 / fov.y.0;
         Self {
-            fov,
+            fovx: fov.x,
+            fovy: fov.y,
             znear,
             zfar,
             fov2view_ratio: vr / fr,
@@ -99,29 +102,26 @@ impl PerspectiveProjection {
     }
 
     pub fn projection_matrix(&self) -> Matrix4<f32> {
-        build_proj(self.znear, self.zfar, self.fov.x, self.fov.y)
+        build_proj(self.znear, self.zfar, self.fovx, self.fovy)
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
         let ratio = width as f32 / height as f32;
-        self.fov.x = self.fov.y * ratio / self.fov2view_ratio;
+        self.fovx = self.fovy * ratio / self.fov2view_ratio;
     }
 
     pub(crate) fn focal(&self, viewport: Vector2<u32>) -> Vector2<f32> {
         let viewport: Vector2<f32> = viewport.cast().unwrap();
         return Vector2::new(
-            fov2focal(self.fov.x, viewport.x),
-            fov2focal(self.fov.y, viewport.y),
+            fov2focal(self.fovx, viewport.x),
+            fov2focal(self.fovy, viewport.y),
         );
     }
 
     pub fn lerp(&self, other: &PerspectiveProjection, amount: f32) -> PerspectiveProjection {
         PerspectiveProjection {
-            fov: self
-                .fov
-                .map(|v| v.0)
-                .lerp(other.fov.map(|v| v.0), amount)
-                .map(|v| Rad(v)),
+            fovx: self.fovx * (1. - amount) + other.fovx * amount,
+            fovy: self.fovy * (1. - amount) + other.fovy * amount,
             znear: self.znear * (1. - amount) + other.znear * amount,
             zfar: self.zfar * (1. - amount) + other.zfar * amount,
             fov2view_ratio: self.fov2view_ratio * (1. - amount) + other.fov2view_ratio * amount,

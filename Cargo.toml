@@ -41,7 +41,9 @@ npyz = { version = "0.8.2", features = [
     "half",
 ], optional = true, git = "https://github.com/KeKsBoTer/npyz", branch = "npz-wasm" }
 futures-intrusive = "0.5.0"
-
+splines = { version = "4.3.1", features = [
+    "cgmath",
+], git = "https://github.com/KeKsBoTer/splines" }
 
 [lib]
 path = "src/lib.rs"

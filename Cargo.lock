@@ -2440,6 +2440,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "splines"
+version = "4.3.1"
+source = "git+https://github.com/KeKsBoTer/splines#cdb1be6c7ffbfc5eee0aca91df405c62b62b2c0a"
+dependencies = [
+ "cgmath",
+]
+
+[[package]]
 name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2929,6 +2937,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "splines",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

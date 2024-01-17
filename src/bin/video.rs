@@ -16,7 +16,7 @@ use std::{
     time::Duration,
 };
 use web_splats::{
-    Animation, DiscAnimation, GaussianRenderer, PerspectiveCamera, PointCloud, Scene, SceneCamera,
+    DiscAnimation, GaussianRenderer, PerspectiveCamera, PointCloud, Sampler, Scene, SceneCamera,
     Split, TrackingShot, WGPUContext,
 };
 
