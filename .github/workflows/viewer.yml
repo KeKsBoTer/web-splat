@@ -36,6 +36,7 @@ jobs:
         with:
           toolchain: stable
           target: wasm32-unknown-unknown
+        run: cargo install wasm-bindgen-cli
       - name: Build
         run: bash build_wasm.sh
       - name: Setup Pages
