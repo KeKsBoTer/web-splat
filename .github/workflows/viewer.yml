@@ -40,6 +40,14 @@ jobs:
         run: |
           cargo install wasm-bindgen-cli
           bash build_wasm.sh
+      - name: Download scenes
+        uses: robinraju/release-downloader@v1.8
+        with: 
+          tag: "v1.0.0"
+          zipBall: true
+          extract: true
+          out-file-path: "./public/scenes"
+
       - name: Setup Pages
         uses: actions/configure-pages@v4
       - name: Upload artifact
