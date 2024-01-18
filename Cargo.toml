@@ -35,9 +35,11 @@ egui-wgpu = "0.24.0"
 egui-winit = { version = "0.24.0", features = [], default-features = false }
 egui_plot = "0.24.0"
 
-npyz = { version = "0.8.2", features = ["npz", "half"], optional = true,git = "https://github.com/KeKsBoTer/npyz",branch = "npz-wasm" }
+npyz = { version = "0.8.3", features = ["npz", "half"], optional = true}
 futures-intrusive = "0.5.0"
 
+[dev-dependencies]
+wasm-bindgen-cli = "0.2.90"
 
 [lib]
 path = "src/lib.rs"
