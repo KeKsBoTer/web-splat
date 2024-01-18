@@ -95,7 +95,7 @@ impl Interpolate<f32> for PerspectiveCamera {
         }
     }
 
-    fn cosine(t: f32, a: Self, b: Self) -> Self {
+    fn cosine(_t: f32, _a: Self, _b: Self) -> Self {
         todo!()
     }
 
@@ -135,15 +135,15 @@ impl Interpolate<f32> for PerspectiveCamera {
         }
     }
 
-    fn quadratic_bezier(t: f32, a: Self, u: Self, b: Self) -> Self {
+    fn quadratic_bezier(_t: f32, _a: Self, _u: Self, _b: Self) -> Self {
         todo!()
     }
 
-    fn cubic_bezier(t: f32, a: Self, u: Self, v: Self, b: Self) -> Self {
+    fn cubic_bezier(_t: f32, _a: Self, _u: Self, _v: Self, _b: Self) -> Self {
         todo!()
     }
 
-    fn cubic_bezier_mirrored(t: f32, a: Self, u: Self, v: Self, b: Self) -> Self {
+    fn cubic_bezier_mirrored(_t: f32, _a: Self, _u: Self, _v: Self, _b: Self) -> Self {
         todo!()
     }
 }
@@ -161,7 +161,7 @@ impl Interpolate<f32> for PerspectiveProjection {
         return a.lerp(&b, t);
     }
 
-    fn cosine(t: f32, a: Self, b: Self) -> Self {
+    fn cosine(_t: f32, _a: Self, _b: Self) -> Self {
         todo!()
     }
 
@@ -211,15 +211,15 @@ impl Interpolate<f32> for PerspectiveProjection {
         }
     }
 
-    fn quadratic_bezier(t: f32, a: Self, u: Self, b: Self) -> Self {
+    fn quadratic_bezier(_t: f32, _a: Self, _u: Self, _b: Self) -> Self {
         todo!()
     }
 
-    fn cubic_bezier(t: f32, a: Self, u: Self, v: Self, b: Self) -> Self {
+    fn cubic_bezier(_t: f32, _a: Self, _u: Self, _v: Self, _b: Self) -> Self {
         todo!()
     }
 
-    fn cubic_bezier_mirrored(t: f32, a: Self, u: Self, v: Self, b: Self) -> Self {
+    fn cubic_bezier_mirrored(_t: f32, _a: Self, _u: Self, _v: Self, _b: Self) -> Self {
         todo!()
     }
 }
@@ -276,6 +276,12 @@ impl<T> Animation<T> {
 
     pub fn duration(&self) -> Duration {
         self.duration
+    }
+
+    pub fn set_duration(&mut self, duration: Duration) {
+        let progress = self.progress();
+        self.duration = duration;
+        self.set_progress(progress);
     }
 }
 

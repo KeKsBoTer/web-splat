@@ -412,6 +412,7 @@ pub struct Quantization {
 }
 
 impl Quantization {
+    #[cfg(feature = "npz")]
     pub fn new(zero_point: i32, scale: f32) -> Self {
         Quantization {
             zero_point,

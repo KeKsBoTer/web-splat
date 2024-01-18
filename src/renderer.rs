@@ -192,7 +192,7 @@ impl GaussianRenderer {
                     .as_ref()
                     .is_some_and(|s| s.num_points != pc.num_points() as usize)
             {
-                log::info!("created sort buffers for {:} points", pc.num_points());
+                log::debug!("created sort buffers for {:} points", pc.num_points());
                 self.sorter_suff = Some(
                     self.sorter
                         .create_sort_stuff(device, pc.num_points() as usize),

@@ -1,23 +1,21 @@
-use cgmath::{InnerSpace, Point3, Vector2, Vector3};
+use cgmath::Vector2;
 use clap::Parser;
-use image::{ImageBuffer, Rgb, Rgba};
-use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
+use core::num;
+use image::{ImageBuffer, Rgb};
+use indicatif::{ProgressIterator, ProgressStyle};
 use minimp4::Mp4Muxer;
 use openh264::{
     encoder::{Encoder, EncoderConfig},
     OpenH264API,
 };
-use rand::{random, seq::IteratorRandom};
 use std::{
-    f32::consts::PI,
-    fs::File,
-    io::{BufWriter, Cursor, Read, Seek, SeekFrom},
+    fs::{create_dir_all, File},
+    io::BufWriter,
     path::PathBuf,
     time::Duration,
 };
 use web_splats::{
-    Animation, GaussianRenderer, PerspectiveCamera, PointCloud, Sampler, Scene, SceneCamera, Split,
-    TrackingShot, WGPUContext,
+    Animation, GaussianRenderer, PointCloud, Scene, SceneCamera, TrackingShot, WGPUContext,
 };
 
 #[derive(Debug, Parser)]
@@ -36,6 +34,14 @@ struct Opt {
     /// maximum allowed Spherical Harmonics (SH) degree
     #[arg(long, default_value_t = 3)]
     max_sh_deg: u32,
+
+    /// duration of animation
+    /// if not set, the duration is determined by the number of cameras in the scene (1 sec per camera)
+    #[arg(long)]
+    duration: Option<f32>,
+
+    #[arg(long, default_value_t = 30)]
+    fps: u32,
 }
 
 async fn render_tracking_shot(
@@ -45,6 +51,8 @@ async fn render_tracking_shot(
     pc: &mut PointCloud,
     cameras: Vec<SceneCamera>,
     video_out: &PathBuf,
+    duration: Option<Duration>,
+    fps: u32,
 ) {
     println!("saving video to '{}'", video_out.to_string_lossy());
 
@@ -65,15 +73,14 @@ async fn render_tracking_shot(
         view_formats: &[],
     });
 
+    let animation_duration = duration.unwrap_or(Duration::from_secs_f32(cameras.len() as f32 * 2.));
+
     let mut animation = Animation::new(
-        Duration::from_secs_f32(cameras.len() as f32 * 2.),
+        animation_duration,
         false,
         Box::new(TrackingShot::from_scene(cameras)),
     );
-
-    let animation_duration = animation.duration();
     println!("{:?}", animation_duration);
-    let fps = 30;
 
     let config = EncoderConfig::new(resolution.x, resolution.y);
     let api = OpenH264API::from_source();
@@ -81,13 +88,20 @@ async fn render_tracking_shot(
 
     let bg = wgpu::Color::BLACK;
 
-    let mut buf = Vec::new();
+    // let mut buf = Vec::new();
 
     let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let num_frames = (animation_duration.as_secs_f32() * fps as f32).ceil() as u32;
-    for i in (0..num_frames).progress() {
-        let cam = animation.update(Duration::from_secs_f32(1. / fps as f32));
-        // let mut resolution: Vector2<u32> = Vector2::new(s.width, s.height);
+
+    let pb_style =
+        ProgressStyle::with_template("rendering {bar:40.cyan/blue} {pos:>7}/{len:7} {eta_precise}")
+            .unwrap();
+
+    create_dir_all(video_out).unwrap();
+
+    for i in (0..num_frames).progress_with_style(pb_style) {
+        animation.set_progress(i as f32 / num_frames as f32);
+        let cam = animation.update(Duration::ZERO);
 
         renderer.render(device, queue, &pc, cam, resolution, &target_view, bg);
 
@@ -95,28 +109,30 @@ async fn render_tracking_shot(
 
         let img = download_texture(&target, device, queue).await;
 
-        let yuv = openh264::formats::YUVBuffer::with_rgb(
-            img.width() as usize,
-            img.height() as usize,
-            img.as_raw(),
-        );
+        // let yuv = openh264::formats::YUVBuffer::with_rgb(
+        //     img.width() as usize,
+        //     img.height() as usize,
+        //     img.as_raw(),
+        // );
 
-        // Encode YUV into H.264.
-        let bitstream = encoder.encode(&yuv).unwrap();
-        bitstream.write_vec(&mut buf);
+        // // Encode YUV into H.264.
+        // let bitstream = encoder.encode(&yuv).unwrap();
+        // bitstream.write_vec(&mut buf);
+        img.save(&video_out.join(format!("frame_{:04}.png", i)))
+            .unwrap();
     }
 
-    let mut out_file = std::fs::File::create(video_out).unwrap();
-    let mut writer = BufWriter::new(&mut out_file);
-    let mut mp4muxer = Mp4Muxer::new(&mut writer);
-    mp4muxer.init_video(
-        resolution.x as i32,
-        resolution.y as i32,
-        false,
-        "scene tracking shot",
-    );
-    mp4muxer.write_video_with_fps(&buf, fps);
-    mp4muxer.close();
+    // let mut out_file = std::fs::File::create(video_out).unwrap();
+    // let mut writer = BufWriter::new(&mut out_file);
+    // let mut mp4muxer = Mp4Muxer::new(&mut writer);
+    // mp4muxer.init_video(
+    //     resolution.x as i32,
+    //     resolution.y as i32,
+    //     false,
+    //     "scene tracking shot",
+    // );
+    // mp4muxer.write_video_with_fps(&buf, fps);
+    // mp4muxer.close();
 }
 
 #[pollster::main]
@@ -156,6 +172,8 @@ async fn main() {
         &mut pc,
         scene.cameras(None),
         &opt.video_out,
+        opt.duration.map(Duration::from_secs_f32),
+        opt.fps,
     )
     .await;
 
@@ -212,7 +230,7 @@ pub async fn download_texture(
                 let r = f32::from_le_bytes(c[0..4].try_into().unwrap()).clamp(0., 1.);
                 let g = f32::from_le_bytes(c[4..8].try_into().unwrap()).clamp(0., 1.);
                 let b = f32::from_le_bytes(c[8..12].try_into().unwrap()).clamp(0., 1.);
-                let a = f32::from_le_bytes(c[12..16].try_into().unwrap()).clamp(0., 1.);
+                let _a = f32::from_le_bytes(c[12..16].try_into().unwrap()).clamp(0., 1.);
                 [(r * 255.) as u8, (g * 255.) as u8, (b * 255.) as u8]
             })
             .collect();

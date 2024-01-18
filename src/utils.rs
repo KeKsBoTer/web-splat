@@ -180,6 +180,7 @@ where
     }
 }
 
+#[cfg(feature = "npz")]
 pub fn sh_num_coefficients(sh_deg: u32) -> u32 {
     (sh_deg + 1) * (sh_deg + 1)
 }

@@ -344,38 +344,69 @@ pub(crate) fn ui(state: &mut WindowContext) {
                     });
                 ui.separator();
 
+                ui.heading("Animation");
                 ui.add_enabled_ui(state.saved_cameras.len() > 1, |ui| {
                     let text = if state.animation.as_ref().is_some()
                         && state.animation.as_ref().unwrap().1
                     {
-                        "Pause tracking shot"
+                        "play"
                     } else {
-                        "Start tracking shot"
+                        "pause"
                     };
-                    if ui.add(egui::Button::new(text).shortcut_text("T")).clicked() {
-                        toggle_tracking_shot = true;
-                    }
+                    ui.horizontal(|ui| {
+                        if ui.add(egui::Button::new(text).shortcut_text("T")).clicked() {
+                            toggle_tracking_shot = true;
+                        }
 
-                    if let Some((animation, playing)) = &mut state.animation {
-                        let mut progress = animation.progress();
                         if ui
-                            .add(egui::Slider::new(&mut progress, (0.)..=(1.)))
-                            .changed()
+                            .add_enabled(state.animation.is_some(), egui::Button::new("cancel"))
+                            .clicked()
                         {
-                            *playing = false;
+                            cancle_animation = true;
                         }
-                        animation.set_progress(progress);
-                    }
+                    });
+                    if let Some((animation, playing)) = &mut state.animation {
+                        egui::Grid::new("animation grid")
+                            .num_columns(2)
+                            .show(ui, |ui| {
+                                ui.strong("Progress");
+                                let mut progress = animation.progress();
+                                if ui
+                                    .add(egui::Slider::new(&mut progress, (0.)..=(1.)))
+                                    .changed()
+                                {
+                                    *playing = false;
+                                }
+                                animation.set_progress(progress);
+                                ui.end_row();
 
-                    ui.text_edit_singleline(&mut state.cameras_save_path);
-                    if ui.button("Save").clicked() {
-                        let path = Path::new(&state.cameras_save_path);
-                        if let Some(parent) = path.parent() {
-                            create_dir_all(parent).unwrap();
-                        }
-                        let mut file = File::create(path).unwrap();
-                        serde_json::to_writer_pretty(&mut file, &state.saved_cameras).unwrap();
+                                let mut duration = animation.duration().as_secs_f32();
+                                ui.strong("Duration");
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut duration)
+                                            .clamp_range(0.1..=1e4)
+                                            .speed(0.5)
+                                            .suffix("s"),
+                                    )
+                                    .changed()
+                                {
+                                    animation.set_duration(Duration::from_secs_f32(duration));
+                                }
+                            });
                     }
+                    ui.heading("Save Animation");
+                    ui.horizontal_wrapped(|ui| {
+                        ui.text_edit_singleline(&mut state.cameras_save_path);
+                        if ui.button("Save").clicked() {
+                            let path = Path::new(&state.cameras_save_path);
+                            if let Some(parent) = path.parent() {
+                                create_dir_all(parent).unwrap();
+                            }
+                            let mut file = File::create(path).unwrap();
+                            serde_json::to_writer_pretty(&mut file, &state.saved_cameras).unwrap();
+                        }
+                    });
                 });
             });
         });
