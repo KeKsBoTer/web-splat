@@ -93,6 +93,11 @@ impl WGPUContext {
                     #[cfg(target_arch = "wasm32")]
                     limits: wgpu::Limits {
                         max_compute_workgroup_storage_size: 1 << 15,
+                        max_texture_dimension_1d: 4096,
+                        max_texture_dimension_2d: 4096,
+                        max_texture_dimension_3d: 1024,
+                        max_uniform_buffer_binding_size: 16384,
+                        max_vertex_buffer_array_stride:0,
                         ..Default::default()
                     },
                     label: None,
