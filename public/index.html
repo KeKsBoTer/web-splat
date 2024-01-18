@@ -1,0 +1,234 @@
+<!doctype html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <title>web-splat</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/normalize.css@8/normalize.css">
+    <style>
+        body {
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            background-color: black;
+            color: white;
+            font-family: Arial, Helvetica, sans-serif;
+        }
+
+        #spinner {
+            position: absolute;
+            top: calc(50% - 48px);
+            left: calc(50% - 48px);
+            z-index: 1000;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        #spinner p {
+            opacity: 0.5;
+            font-size: small;
+        }
+
+        .loader {
+            width: 96px;
+            height: 96px;
+            display: inline-block;
+            position: relative;
+        }
+
+        .loader::after,
+        .loader::before {
+            content: '';
+            box-sizing: border-box;
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            border: 2px solid #FFF;
+            position: absolute;
+            left: 0;
+            top: 0;
+            animation: animloader 2s linear infinite;
+        }
+
+        .loader::after {
+            animation-delay: 1s;
+        }
+
+        @keyframes animloader {
+            0% {
+                transform: scale(0);
+                opacity: 1;
+            }
+
+            100% {
+                transform: scale(1);
+                opacity: 0;
+            }
+        }
+
+        svg {
+            width: 114px;
+            height: 114px;
+            margin: 1em;
+        }
+
+        .bg {
+            fill: none;
+            stroke-width: 10px;
+            stroke: #1A2C34;
+        }
+
+        [class^="meter-"] {
+            fill: none;
+            stroke-width: 5px;
+            stroke-linecap: round;
+            transform: rotate(-90deg);
+            transform-origin: 50% 50%;
+
+        }
+
+        .meter-1 {
+            stroke-dasharray: 360;
+            stroke-dashoffset: 360;
+            stroke: white;
+            animation: progress-1 1s ease-out;
+        }
+
+        .alert {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            height: 100%;
+        }
+    </style>
+    <div id="spinner" style="display: none;">
+        <svg>
+            <circle class="bg" cx="57" cy="57" r="52" />
+            <circle class="meter-1" cx="57" cy="57" r="52" />
+            <text id="loading-display" fill="white" x="50%" y="50%" text-anchor="middle"
+                alignment-baseline="middle">10%</text>
+        </svg>
+    </div>
+    <div id="no-file" class="alert" style="display: none;">
+        <h1>No file specified</h1>
+        <p>There is no file specified in the URL.</p>
+    </div>
+    <div id="no-webgpu" class="alert" style="display: none;">
+        <h1>WebGPU not supported</h1>
+        <p>Your browser does not support WebGPU.<br><a
+                href="https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API#browser_compatibility">Please use a
+                browser that supports WebGPU.</a></p>
+    </div>
+    <div id="loading-error" class="alert" style="display: none;">
+        <h1>An error occured</h1>
+        <p></p>
+    </div>
+</head>
+
+<body>
+    <script type="module">
+
+        async function checkWebGPU() {
+            if (!navigator.gpu) {
+                return false;
+            }
+            try {
+                let adapter = await navigator.gpu.requestAdapter()
+                let device = await adapter.requestDevice();
+                return true
+            } catch (e) {
+                return false;
+            }
+        }
+
+        if (!await checkWebGPU()) {
+            document.getElementById("no-webgpu").style.display = "flex";
+            throw Error("WebGPU not supported.");
+        }
+
+        import init, { run_wasm } from "./web_splats.js";
+        let init_promise = init();
+
+        let params = new URLSearchParams(window.location.search);
+        let scene_file = params.get("scene");
+        let pc_file = params.get("file");
+
+
+        function wihtProgress(response) {
+            if (!response.ok) {
+                throw new Error("Cannot download file", { cause: response });
+            }
+            const contentEncoding = response.headers.get('content-encoding');
+            const contentLength = response.headers.get(contentEncoding ? 'x-file-size' : 'content-length');
+            if (contentLength === null) {
+                throw Error('Response size header unavailable');
+            }
+            const total = parseInt(contentLength, 10);
+            let loaded = 0;
+            return new Response(
+                new ReadableStream({
+                    start(controller) {
+                        const reader = response.body.getReader();
+
+                        read();
+                        function read() {
+                            reader.read().then(({ done, value }) => {
+                                if (done) {
+                                    controller.close();
+                                    return;
+                                }
+                                loaded += value.byteLength;
+                                document.querySelector('.meter-1').style.strokeDashoffset = 360 - Math.round(loaded / total * 360);
+                                document.querySelector('#loading-display').innerHTML = Math.round(loaded / (1024 * 1024) * 10) / 10 + " MB"
+                                controller.enqueue(value);
+                                read();
+                            }).catch(error => {
+                                console.error(error);
+                                controller.error(error)
+                            })
+                        }
+                    }
+                })
+            );
+        }
+        if (!pc_file) {
+            document.getElementById("no-file").style.display = "flex";
+        } else {
+            try {
+                document.getElementById("spinner").style.display = "flex";
+                let pc_promise = fetch(pc_file).then(wihtProgress).then(response => response.arrayBuffer()).then(data => new Uint8Array(data));
+                var scene_promise = Promise.resolve(null);
+                if (scene_file) {
+                    scene_promise = fetch(scene_file, {
+                        headers: {
+                            'Accept': 'application/json',
+                        }
+                    }).then(r => r.arrayBuffer()).then(data => new Uint8Array(data))
+                }
+
+                let [pc_data, scene_data] = await Promise.all([pc_promise, scene_promise]);
+                await init_promise;
+                run_wasm(pc_data, scene_data);
+            } catch (e) {
+                document.getElementById("spinner").style.display = "none";
+                let errorPane = document.getElementById("loading-error");
+                errorPane.style.display = "flex";
+                errorPane.getElementsByTagName("p")[0].innerHTML = e.message + ("cause" in e ? ": " + e.cause.statusText : "") + "<pre>" + pc_file + "</pre>";
+                console.error(e.cause.statusText);
+            }
+            window.addEventListener('resize', function (event) {
+                document.getElementById("window-canvas").width = window.innerWidth;
+                document.getElementById("window-canvas").height = window.innerHeight;
+            }, true);
+
+            document.addEventListener('contextmenu', event => event.preventDefault());
+        }
+    </script>
+</body>
+
+</html>
