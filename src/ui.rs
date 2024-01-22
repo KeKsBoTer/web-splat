@@ -252,6 +252,7 @@ pub(crate) fn ui(state: &mut WindowContext) {
         .resizable(false)
         .default_height(100.)
         .max_height(500.)
+        .default_open(false)
         .show(ctx, |ui| {
             ui.vertical(|ui| {
                 ui.horizontal_wrapped(|ui| {
@@ -346,12 +347,15 @@ pub(crate) fn ui(state: &mut WindowContext) {
 
                 ui.heading("Animation");
                 ui.add_enabled_ui(state.saved_cameras.len() > 1, |ui| {
-                    let text = if state.animation.as_ref().is_some()
-                        && state.animation.as_ref().unwrap().1
+                    let text = if state
+                        .animation
+                        .as_ref()
+                        .and_then(|(_, playing)| Some(!*playing))
+                        .unwrap_or(true)
                     {
-                        "play"
+                        "Play"
                     } else {
-                        "pause"
+                        "Pause"
                     };
                     ui.horizontal(|ui| {
                         if ui.add(egui::Button::new(text).shortcut_text("T")).clicked() {
@@ -359,7 +363,7 @@ pub(crate) fn ui(state: &mut WindowContext) {
                         }
 
                         if ui
-                            .add_enabled(state.animation.is_some(), egui::Button::new("cancel"))
+                            .add_enabled(state.animation.is_some(), egui::Button::new("Cancel"))
                             .clicked()
                         {
                             cancle_animation = true;
