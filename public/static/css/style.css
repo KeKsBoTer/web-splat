@@ -1,0 +1,22 @@
+@import "https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css";
+@import "https://cdn.jsdelivr.net/npm/bulma-carousel@4.0.24/dist/css/bulma-carousel.min.css";
+
+.demo-card {
+    min-width: 200px;
+    min-width: 300px;
+    flex-grow: 0;
+}
+
+.demo-card .card-image img {
+    height: 200px;
+    object-fit: cover;
+
+}
+
+.demo-card .card {
+    transition: box-shadow .2s;
+}
+
+.demo-card .card:hover {
+    box-shadow: 0 .5em 1em -.125em rgba(10, 10, 10, .3);
+}

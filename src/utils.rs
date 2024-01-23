@@ -133,7 +133,6 @@ impl GPUStopwatch {
         );
         device.poll(wgpu::Maintain::Wait);
         let durations: HashMap<String, Duration> = rx.receive().await.unwrap();
-        // self.query_buffer.unmap();
         return durations;
     }
 }

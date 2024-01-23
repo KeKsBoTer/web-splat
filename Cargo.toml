@@ -13,7 +13,7 @@ winit = "0.29.10"
 cgmath = { version = "0.18.0", features = [
     "bytemuck",
 ], git = 'https://github.com/rustgd/cgmath' }
-env_logger = "0.10"
+env_logger = "0.11"
 clap = { version = "4.4.6", features = ["derive"] }
 bytemuck = { version = "1.13.0", features = ["derive"] }
 anyhow = "1.0.70"
@@ -34,7 +34,7 @@ egui = "0.25.0"
 egui-wgpu = "0.25.0"
 egui-winit = { version = "0.25.0", features = [], default-features = false }
 egui_plot = "0.25.0"
-egui_dnd = "0.5.1"
+egui_dnd = "0.6.0"
 
 npyz = { version = "0.8.3", features = ["npz", "half"], optional = true }
 futures-intrusive = "0.5.0"
@@ -46,6 +46,8 @@ imageproc = { version = "0.23.0", optional = true }
 minimp4 = { version = "0.2.0", optional = true, git = "https://github.com/darkskygit/minimp4.rs.git", branch = "master" }
 openh264 = { version = "0.5.0", optional = true }
 
+[dev-dependencies]
+wasm-bindgen-cli = "0.2.90"
 
 [lib]
 path = "src/lib.rs"
