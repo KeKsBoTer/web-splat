@@ -6,13 +6,15 @@ This code implements a renderer for the reconstructions obtained with [3D Gaussi
 
 [👉 Click to run the web demo 👈](https://keksboter.github.io/web-splat/demo.html)
 
+
 ## Build
+
+First, install the Rust compiler (e.g. with [rustup](https://rustup.rs/)) 
 
 Clone the repository and run
 
 ```bash
 cargo build --release --bin viewer 
-
 ```
 
 ## Run
@@ -44,7 +46,6 @@ cargo run --release --features npz --bin viewer point_cloud.npz cameras.json
       -h, --help      Print help
       -V, --version   Print version
 </details>
-king shot that visits the test views
 
 ## About
 
