@@ -1,5 +1,5 @@
-pub mod ply;
+pub mod colorschema;
+pub mod dat;
 #[cfg(feature = "npz")]
 pub mod npz;
-pub mod dat;
-pub mod colorschema;
+pub mod ply;

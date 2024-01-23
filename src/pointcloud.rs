@@ -52,6 +52,7 @@ pub struct PointCloud {
     sh_deg: u32,
     bbox: Aabb<f32>,
     compressed: bool,
+    pub histogram: Option<Vec<(f32, u32)>>,
 }
 
 impl Debug for PointCloud {
@@ -163,7 +164,7 @@ impl PointCloud {
 
         Ok(Self {
             splat_2d_buffer,
-
+            histogram: None,
             bind_group,
             render_bind_group,
             num_points: num_points as u32,
@@ -228,7 +229,7 @@ impl PointCloud {
 
         Ok(Self {
             splat_2d_buffer,
-
+            histogram: None,
             bind_group,
             render_bind_group,
             num_points: num_points as u32,
@@ -237,7 +238,6 @@ impl PointCloud {
             compressed: false,
         })
     }
-
 
     pub fn load_dat<R: Read + Seek>(device: &wgpu::Device, f: R) -> Result<Self, anyhow::Error> {
         let reader = BufReader::new(f);
@@ -267,7 +267,10 @@ impl PointCloud {
         });
 
         let vertices = dat_reader.read()?;
-        let mut bbox = Aabb::unit();
+
+        let histogram = histogram(vertices.iter().map(|g| g.sh[0][0]).collect(), 100);
+
+        let mut bbox = Aabb::zero();
         for v in &vertices {
             bbox.grow(v.xyz);
         }
@@ -294,7 +297,7 @@ impl PointCloud {
 
         Ok(Self {
             splat_2d_buffer,
-
+            histogram: Some(histogram),
             bind_group,
             render_bind_group,
             num_points: num_points as u32,
@@ -538,13 +541,19 @@ impl<F: Float + BaseNum> Aabb<F> {
         }
     }
 
+    pub fn zero() -> Self {
+        Self {
+            min: Point3::new(-F::zero(), -F::zero(), -F::zero()),
+            max: Point3::new(F::zero(), F::zero(), F::zero()),
+        }
+    }
+
     pub fn center(&self) -> Point3<F> {
         self.min.midpoint(self.max)
     }
 
-
     pub fn size(&self) -> Vector3<F> {
-        self.max- self.min
+        self.max - self.min
     }
 
     pub fn sphere(&self) -> F {
@@ -559,4 +568,19 @@ impl Into<Aabb<f32>> for Aabb<f16> {
             max: self.max.map(|v| v.into()),
         }
     }
+}
+
+fn histogram(values: Vec<f32>, bins: usize) -> Vec<(f32, u32)> {
+    let min = values.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+    let max = values.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+    let range = max - min;
+    let bin_size = range / (bins as f32);
+    let mut hist = (0..bins + 1)
+        .map(|i| ((i as f32 / bins as f32) * (max - min) - min, 0))
+        .collect::<Vec<_>>();
+    for v in values {
+        let bin = ((v - min) / bin_size) as usize;
+        hist[bin].1 += 1;
+    }
+    hist
 }

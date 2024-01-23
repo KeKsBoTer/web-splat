@@ -1,16 +1,9 @@
-use std::{
-    io::{self},
-    marker::PhantomData,
-};
+use std::io::{self};
 
 use cgmath::{InnerSpace, Point3, Quaternion, Vector3};
-use log::info;
 use num_traits::One;
 
-use crate::{
-    pointcloud::GaussianSplatFloat,
-    utils::{build_cov, sh_deg_from_num_coefs, sigmoid},
-};
+use crate::{pointcloud::GaussianSplatFloat, utils::build_cov};
 
 pub struct DatReader<R> {
     num_points: usize,
@@ -43,8 +36,8 @@ impl<R: io::BufRead + io::Seek> DatReader<R> {
             .split(" ")
             .map(|v| v.parse::<f32>().unwrap())
             .collect();
-        let pos = Point3::new(parts[0], parts[1], parts[2]);
-        let tension = parts[4];
+        let pos = Point3::new(parts[0], -parts[1], parts[2]);
+        let tension = parts[4].ln();
 
         let mut sh = [[0.; 3]; 16];
         sh[0][0] = tension;
@@ -71,11 +64,15 @@ impl<R: io::BufRead + io::Seek> DatReader<R> {
         let num_points = self.num_points()?;
         let mut vertices: Vec<GaussianSplatFloat> =
             (0..num_points).map(|_| self.read_line()).collect();
-        let max_v = vertices.iter().map(|v| (v.sh[0][0]) as u32).max().unwrap();
+        let max_v = vertices
+            .iter()
+            .fold(f32::NEG_INFINITY, |a, &b| a.max(b.sh[0][0]));
+        let min_v = vertices
+            .iter()
+            .fold(f32::INFINITY, |a, &b| a.min(b.sh[0][0]));
         for v in &mut vertices {
-            v.sh[0][0] /= max_v as f32;
+            v.sh[0][0] = (v.sh[0][0] - min_v) / (max_v - min_v)
         }
-        println!("max_v: {}", max_v);
         return Ok(vertices);
     }
 

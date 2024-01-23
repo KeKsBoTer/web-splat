@@ -1,5 +1,9 @@
-use std::io::{Read, Seek};
+use std::{
+    fmt::format,
+    io::{Read, Seek},
+};
 
+use egui_plot::{format_number, Bar};
 #[cfg(target_arch = "wasm32")]
 use instant::{Duration, Instant};
 use renderer::Display;
@@ -7,8 +11,10 @@ use renderer::Display;
 use std::time::{Duration, Instant};
 use wgpu::Backends;
 
-use cgmath::{Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, Vector2, Vector3, Vector4};
-use egui::{epaint::Shadow, Align2, Color32, Vec2, Visuals, Vec2b};
+use cgmath::{
+    Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, Rotation, Vector2, Vector3, Vector4, VectorSpace
+};
+use egui::{epaint::Shadow, Align2, Color32, Stroke, Vec2, Vec2b, Visuals};
 #[cfg(not(target_arch = "wasm32"))]
 use egui_plot::{Legend, PlotPoints};
 use num_traits::One;
@@ -34,7 +40,6 @@ mod controller;
 pub use controller::CameraController;
 mod pointcloud;
 pub use pointcloud::PointCloud;
-
 
 mod io;
 #[cfg(feature = "npz")]
@@ -196,8 +201,11 @@ impl WindowContext {
         let pc = PointCloud::load(&device, pc_file).unwrap();
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
-        let colors = io::colorschema::load_color_schema("particle-data-RAW/colorscheme.txt").unwrap();
-        let color_schema = ColorSchema::new(device, queue, colors.iter().enumerate().map(|(i,c)|Vector4::new(c.x,c.y,c.z,i as f32 / colors.len() as f32)).collect());
+        let a = Vector4::new(1., 0., 0., 1.);
+        let b = Vector4::new(1., 1., 1., 0.1);
+        let c = Vector4::new(0., 0., 1., 1.);
+        let colors: Vec<Vector4<f32>> = (0..5).map(|i| a.lerp(b, i as f32 / 4.)).chain((0..5).map(|i| b.lerp(c, i as f32 / 4.))).collect();
+        let color_schema = ColorSchema::new(device, queue, colors);
 
         let renderer = GaussianRenderer::new(
             &device,
@@ -205,16 +213,18 @@ impl WindowContext {
             render_format,
             pc.sh_deg(),
             !pc.compressed(),
-            color_schema
+            color_schema,
         )
         .await;
 
         let aspect = size.width as f32 / size.height as f32;
         let aabb = pc.bbox();
+        println!("aabb: {:?}", aabb);
+        let cam_pos = aabb.center()-aabb.size()/2.;
+        let look_at = aabb.center();
         let view_camera = PerspectiveCamera::new(
-            aabb.center()-Vector3::new(0.1,0.1,0.1),
-            // Point3::new(0.,0.,-1.),
-            Quaternion::one(),
+            cam_pos,
+            Quaternion::look_at(look_at-cam_pos, Vector3::unit_y()),
             PerspectiveProjection::new(
                 Vector2::new(size.width, size.height),
                 Vector2::new(Deg(45.), Deg(45. / aspect)),
@@ -224,7 +234,7 @@ impl WindowContext {
         );
 
         let mut controller = CameraController::new(0.1, 0.05);
-        controller.center = aabb.center();
+        controller.center = look_at;
         let ui_renderer = ui_renderer::EguiWGPU::new(event_loop, device, surface_format);
         let display = Display::new(
             device,
@@ -253,7 +263,7 @@ impl WindowContext {
             ui_visible: true,
             display,
             background_color: Color32::BLACK,
-            vis_settings:Default::default(),
+            vis_settings: Default::default(),
         }
     }
 
@@ -495,47 +505,86 @@ impl WindowContext {
                                 });
                             }
                         });
-                        if ui.button(format!("Snap to closest ({nearest})")).clicked() {
-                            new_camera = Some(nearest);
-                        }
-                        let text = if self.animation.is_some() {
-                            "Stop tracking shot"
-                        } else {
-                            "Start tracking shot"
-                        };
-                        if ui.button(text).clicked() {
-                            toggle_tracking_shot = true;
-                        }
+                    if ui.button(format!("Snap to closest ({nearest})")).clicked() {
+                        new_camera = Some(nearest);
+                    }
+                    let text = if self.animation.is_some() {
+                        "Stop tracking shot"
+                    } else {
+                        "Start tracking shot"
+                    };
+                    if ui.button(text).clicked() {
+                        toggle_tracking_shot = true;
+                    }
                 }
             });
 
-        egui::Window::new("Visualization").max_height(400.).scroll2(Vec2b::new(false, true)).show(ctx, |ui|{
-           
+        egui::Window::new("Visualization")
+            .max_height(400.)
+            .scroll2(Vec2b::new(false, true))
+            .show(ctx, |ui| {
                 egui::Grid::new("image info")
-                .num_columns(2)
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.strong("scale");
-                    ui.add(egui::DragValue::new(&mut self.vis_settings.scale).speed(1e-3).clamp_range(1e-5..=10.));
-                    ui.end_row();
-                    ui.strong("Gaussian");
-                    let mut gaussian = self.vis_settings.gaussian != 0;
-                    ui.checkbox(&mut gaussian, "");
-                    self.vis_settings.gaussian = gaussian as u32;
-                    ui.end_row();
-                    // for i in 0..64{
-                    //     ui.label(format!("value {i}"));
-                    //     let c = &mut self.vis_settings.colors[i];
-                    //     let mut color = egui::Color32::from_rgba_premultiplied((c[0]*255.) as u8,(c[1]*255.) as u8,(c[2]*255.) as u8,(c[3]*255.) as u8);
-                    //     ui.color_edit_button_srgba(&mut color);
-                    //     c.x = color.r() as f32 / 255.;
-                    //     c.y = color.g() as f32 / 255.;
-                    //     c.z = color.b() as f32 / 255.;
-                    //     c.w = color.a() as f32 / 255.;
-                    //     ui.end_row();
-                    // }
-                });
-        });
+                    .num_columns(2)
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.strong("scale");
+                        ui.add(
+                            egui::DragValue::new(&mut self.vis_settings.scale)
+                                .speed(1e-3)
+                                .clamp_range(1e-5..=10.),
+                        );
+                        ui.end_row();
+                        ui.strong("Gaussian");
+                        let mut gaussian = self.vis_settings.gaussian != 0;
+                        ui.checkbox(&mut gaussian, "");
+                        self.vis_settings.gaussian = gaussian as u32;
+                        ui.end_row();
+                        let n_colors = self.renderer.color_schema.colors().len();
+                        for (i, c) in self.renderer.color_schema.colors().iter_mut().enumerate() {
+                            ui.label(format!("Color {}", i as f32 / n_colors as f32));
+                            let mut color = [c.x, c.y, c.z, c.w];
+                            ui.color_edit_button_rgba_unmultiplied(&mut color);
+                            c.x = color[0];
+                            c.y = color[1];
+                            c.z = color[2];
+                            c.w = color[3];
+                            ui.end_row();
+                        }
+                    });
+
+                if let Some(histogram) = &self.pc.histogram {
+                    ui.heading("Histogram");
+                    egui_plot::Plot::new("histogram")
+                        .auto_bounds_x()
+                        .auto_bounds_y()
+                        .y_axis_formatter(  |v,n,_|format_number(v.exp().round(), n))
+                        .y_axis_label("num")
+                        .show(ui, |ui| {
+                            let bar_chart = egui_plot::BarChart::new(
+                                histogram
+                                    .iter()
+                                    .map(|(x, y)| {
+                                        let color = self.renderer.color_schema.sample(*x as f32);
+                                        let y = if *y != 0 { (*y as f64).ln() } else { 0. };
+                                        Bar::new(*x as f64, y)
+                                            .stroke(Stroke::new(
+                                                1.,
+                                                egui::Rgba::from_rgba_unmultiplied(
+                                                    color.x, color.y, color.z, color.w,
+                                                ),
+                                            ))
+                                            .fill(egui::Rgba::from_rgba_unmultiplied(
+                                                color.x, color.y, color.z, color.w,
+                                            ))
+                                            .width(1. / histogram.len() as f64)
+                                    })
+                                    .collect(),
+                            )
+                            .vertical();
+                            ui.bar_chart(bar_chart);
+                        });
+                }
+            });
 
         if let Some(c) = new_camera {
             self.current_view = new_camera;
@@ -578,7 +627,7 @@ impl WindowContext {
                 b: rgba[2] as f64 / 255.,
                 a: rgba[3] as f64 / 255.,
             },
-            self.vis_settings
+            self.vis_settings,
         );
 
         let mut encoder =

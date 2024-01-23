@@ -14,7 +14,7 @@ use std::time::Duration;
 use wgpu::util::DeviceExt;
 use wgpu::{include_wgsl, Extent3d, MultisampleState};
 
-use cgmath::{Matrix4, SquareMatrix, Vector2, Vector4};
+use cgmath::{Matrix4, SquareMatrix, Vector2, Vector4, VectorSpace};
 
 pub struct GaussianRenderer {
     pipeline: wgpu::RenderPipeline,
@@ -30,7 +30,7 @@ pub struct GaussianRenderer {
     sorter_suff: Option<PointCloudSortStuff>,
 
     vis_settings: UniformBuffer<VisSettings>,
-    color_schema: ColorSchema,
+    pub color_schema: ColorSchema,
 }
 
 impl GaussianRenderer {
@@ -203,6 +203,7 @@ impl GaussianRenderer {
         background_color: wgpu::Color,
         vis_settings: VisSettings,
     ) {
+        self.color_schema.update(queue);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
         });
@@ -631,16 +632,18 @@ impl Default for VisSettings {
 }
 pub struct ColorSchema {
     bind_group: wgpu::BindGroup,
+    texture: wgpu::Texture,
+    colors: Vec<Vector4<f32>>,
 }
 
 impl ColorSchema {
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, color: Vec<Vector4<f32>>) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, colors: Vec<Vector4<f32>>) -> Self {
         let texture = device.create_texture_with_data(
             queue,
             &wgpu::TextureDescriptor {
                 label: Some("color schema texture"),
                 size: wgpu::Extent3d {
-                    width: color.len() as u32,
+                    width: colors.len() as u32,
                     height: 1,
                     depth_or_array_layers: 1,
                 },
@@ -651,7 +654,7 @@ impl ColorSchema {
                 usage: wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             },
-            bytemuck::cast_slice(color.as_slice()),
+            bytemuck::cast_slice(colors.as_slice()),
         );
         let texture_view = texture.create_view(&Default::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -675,7 +678,24 @@ impl ColorSchema {
                 },
             ],
         });
-        Self { bind_group }
+        Self {
+            bind_group,
+            texture,
+            colors,
+        }
+    }
+
+    pub fn colors(&mut self) -> &mut [Vector4<f32>] {
+        self.colors.as_mut_slice()
+    }
+
+    pub fn update(&mut self, queue: &wgpu::Queue) {
+        queue.write_texture(
+            self.texture.as_image_copy(),
+            bytemuck::cast_slice(self.colors.as_slice()),
+            wgpu::ImageDataLayout::default(),
+            self.texture.size(),
+        )
     }
 
     pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -700,5 +720,17 @@ impl ColorSchema {
                 },
             ],
         })
+    }
+
+    pub fn sample(&self, f: f32) -> Vector4<f32> {
+        let f = f.min(1.).max(0.);
+        let a = f * (self.colors.len() - 1) as f32;
+        let idx = a.floor() as usize;
+        let v = a.fract();
+        if idx < self.colors.len() - 1 {
+            self.colors[idx].lerp(self.colors[idx + 1], v)
+        } else {
+            self.colors[idx]
+        }
     }
 }
