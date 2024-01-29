@@ -1,3 +1,4 @@
+use std::hash::{Hash, Hasher};
 use cgmath::*;
 
 use crate::animation::Lerp;
@@ -20,6 +21,14 @@ impl PerspectiveCamera {
             rotation,
             projection: projection,
         }
+    }
+}
+
+impl Hash for PerspectiveCamera {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        bytemuck::bytes_of(&self.position).hash(state);
+        bytemuck::bytes_of(&self.rotation).hash(state);
+        self.projection.hash(state);
     }
 }
 
@@ -70,6 +79,16 @@ pub struct PerspectiveProjection {
     /// fov ratio to viewport ratio
     /// needed for camera viewport resize
     fov2view_ratio: f32,
+}
+
+impl Hash for PerspectiveProjection {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.fov.x.0.to_bits().hash(state);
+        self.fov.y.0.to_bits().hash(state);
+        self.znear.to_bits().hash(state);
+        self.zfar.to_bits().hash(state);
+        self.fov2view_ratio.to_bits().hash(state);
+    }
 }
 
 #[rustfmt::skip]

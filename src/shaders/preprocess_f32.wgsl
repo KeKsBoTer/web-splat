@@ -74,6 +74,10 @@ struct SortInfos {
     odd_pass: u32,
 }
 
+struct RenderSettings{
+    gaussian_scaling:f32
+}
+
 @group(0) @binding(0)
 var<uniform> camera: CameraUniforms;
 
@@ -94,6 +98,8 @@ var<storage, read_write> sort_indices : array<u32>;
 @group(2) @binding(3)
 var<storage, read_write> sort_dispatch: DispatchIndirect;
 
+@group(3) @binding(0)
+var<uniform> render_settings: RenderSettings;
 
 
 /// reads the ith sh coef from the vertex buffer
@@ -176,11 +182,12 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
 
     let cov_sparse = cov_coefs(idx);
 
+    let scaling = render_settings.gaussian_scaling;
     let Vrk = mat3x3<f32>(
         cov_sparse[0], cov_sparse[1], cov_sparse[2],
         cov_sparse[1], cov_sparse[3], cov_sparse[4],
         cov_sparse[2], cov_sparse[4], cov_sparse[5]
-    );
+    )*scaling*scaling;
     let J = mat3x3<f32>(
         focal.x / camspace.z,
         0.,

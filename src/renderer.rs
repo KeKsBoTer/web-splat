@@ -7,6 +7,7 @@ use crate::{
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::utils::GPUStopwatch;
+use std::hash::{Hash, Hasher};
 use std::num::NonZeroU64;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -18,6 +19,7 @@ use cgmath::{Matrix4, SquareMatrix, Vector2};
 pub struct GaussianRenderer {
     pipeline: wgpu::RenderPipeline,
     camera: UniformBuffer<CameraUniform>,
+    render_settings:UniformBuffer<RenderSettingsUniform>,
     preprocess: PreprocessPipeline,
     draw_indirect_buffer: wgpu::Buffer,
     #[allow(dead_code)]
@@ -116,6 +118,7 @@ impl GaussianRenderer {
             stopwatch,
             sorter,
             sorter_suff: None,
+            render_settings:UniformBuffer::new_default(device,Some("render settings uniform buffer")),
         }
     }
 
@@ -124,16 +127,21 @@ impl GaussianRenderer {
         encoder: &'a mut wgpu::CommandEncoder,
         queue: &wgpu::Queue,
         pc: &'a PointCloud,
-        camera: PerspectiveCamera,
-        viewport: Vector2<u32>,
+        render_settings:RenderSettings,
     ) {
-        let mut camera = camera;
-        camera.projection.resize(viewport.x, viewport.y);
+        let mut camera = render_settings.camera;
+        camera.projection.resize(render_settings.viewport.x, render_settings.viewport.y);
         let uniform = self.camera.as_mut();
         uniform.set_camera(camera);
-        uniform.set_focal(camera.projection.focal(viewport));
-        uniform.set_viewport(viewport.cast().unwrap());
+        uniform.set_focal(camera.projection.focal(render_settings.viewport));
+        uniform.set_viewport(render_settings.viewport.cast().unwrap());
         self.camera.sync(queue);
+
+
+        let settings_uniform = self.render_settings.as_mut();
+        settings_uniform.gaussian_scaling = render_settings.gaussian_scaling;
+        self.render_settings.sync(queue);
+
         // TODO perform this in vertex buffer after draw call
         queue.write_buffer(
             &self.draw_indirect_buffer,
@@ -147,7 +155,7 @@ impl GaussianRenderer {
             .as_bytes(),
         );
         let depth_buffer = &self.sorter_suff.as_ref().unwrap().sorter_bg_pre;
-        self.preprocess.run(encoder, pc, &self.camera, depth_buffer);
+        self.preprocess.run(encoder, pc, &self.camera,&self.render_settings, depth_buffer);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -177,10 +185,8 @@ impl GaussianRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         pc: &'a PointCloud,
-        camera: PerspectiveCamera,
-        viewport: Vector2<u32>,
         target: &wgpu::TextureView,
-        background_color: wgpu::Color,
+        render_settings:RenderSettings,
     ) {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
@@ -208,7 +214,7 @@ impl GaussianRenderer {
             // convert 3D gaussian splats to 2D gaussian splats
             #[cfg(not(target_arch = "wasm32"))]
             self.stopwatch.start(&mut encoder, "preprocess").unwrap();
-            self.preprocess(&mut encoder, queue, &pc, camera, viewport);
+            self.preprocess(&mut encoder, queue, &pc, render_settings);
             #[cfg(not(target_arch = "wasm32"))]
             self.stopwatch.stop(&mut encoder, "preprocess").unwrap();
 
@@ -242,7 +248,7 @@ impl GaussianRenderer {
                         view: target,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(background_color),
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                             store: wgpu::StoreOp::Store,
                         },
                     })],
@@ -275,10 +281,11 @@ impl GaussianRenderer {
         queue: &wgpu::Queue,
     ) -> RenderStatistics {
         let durations = self.stopwatch.take_measurements(device, queue).await;
+        self.stopwatch.reset();
         RenderStatistics {
-            preprocess_time: durations["preprocess"],
-            sort_time: durations["sorting"],
-            rasterization_time: durations["rasterization"],
+            preprocess_time: *durations.get("preprocess").unwrap_or(&Duration::ZERO),
+            sort_time:*durations.get("sorting").unwrap_or(&Duration::ZERO),
+            rasterization_time: *durations.get("rasterization").unwrap_or(&Duration::ZERO),
         }
     }
 
@@ -375,6 +382,7 @@ impl PreprocessPipeline {
                     PointCloud::bind_group_layout(device)
                 },
                 &GPURSSorter::bind_group_layout_preprocess(device),
+                &UniformBuffer::<RenderSettingsUniform>::bind_group_layout(device),
             ],
             push_constant_ranges: &[],
         });
@@ -412,6 +420,7 @@ impl PreprocessPipeline {
         encoder: &'a mut wgpu::CommandEncoder,
         pc: &PointCloud,
         camera: &UniformBuffer<CameraUniform>,
+        render_settings: &UniformBuffer<RenderSettingsUniform>,
         sort_bg: &wgpu::BindGroup,
     ) {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -422,6 +431,7 @@ impl PreprocessPipeline {
         pass.set_bind_group(0, camera.bind_group(), &[]);
         pass.set_bind_group(1, pc.bind_group(), &[]);
         pass.set_bind_group(2, &sort_bg, &[]);
+        pass.set_bind_group(3, render_settings.bind_group(), &[]);
 
         let wgs_x = (pc.num_points() as f32 / 256.0).ceil() as u32;
         pass.dispatch_workgroups(wgs_x, 1, 1);
@@ -475,7 +485,7 @@ impl Display {
                 entry_point: "fs_main",
                 targets: &[Some(wgpu::ColorTargetState {
                     format: target_format,
-                    blend: None,
+                    blend:  Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -567,14 +577,14 @@ impl Display {
         self.view = view;
     }
 
-    pub fn render(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
+    pub fn render(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView,background_color:wgpu::Color) {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("render pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
+                    load: wgpu::LoadOp::Clear(background_color),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -584,5 +594,35 @@ impl Display {
         render_pass.set_pipeline(&self.pipeline);
 
         render_pass.draw(0..4, 0..1);
+    }
+}
+
+
+#[repr(C)]
+#[derive(Copy, Clone,Debug) ]
+pub struct RenderSettings{
+    pub camera:PerspectiveCamera,
+    pub viewport:Vector2<u32>,
+    pub gaussian_scaling:f32,
+}
+
+impl Hash for RenderSettings {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.camera.hash(state);
+        self.viewport.hash(state);
+        self.gaussian_scaling.to_bits().hash(state);
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone,Debug,bytemuck::Pod,bytemuck::Zeroable) ]
+struct RenderSettingsUniform{
+    gaussian_scaling:f32
+}
+impl Default for RenderSettingsUniform{
+    fn default() -> Self {
+        Self{
+            gaussian_scaling:1.0
+        }
     }
 }

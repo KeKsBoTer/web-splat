@@ -93,6 +93,11 @@ struct SortInfos {
     odd_pass: u32,
 }
 
+struct RenderSettings{
+    gaussian_scaling:f32
+}
+
+
 @group(0) @binding(0)
 var<uniform> camera: CameraUniforms;
 
@@ -120,6 +125,8 @@ var<storage, read_write> sort_indices : array<u32>;
 @group(2) @binding(3)
 var<storage, read_write> sort_dispatch: DispatchIndirect;
 
+@group(3) @binding(0)
+var<uniform> render_settings: RenderSettings;
 
 fn dequantize(value: i32, quantization: Quantization) -> f32 {
     return (f32(value) - f32(quantization.zero_point)) * quantization.scaling;
@@ -223,11 +230,14 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let cov1: vec2<f32> = unpack2x16float(geometric_info.cov[0]) * s2;
     let cov2: vec2<f32> = unpack2x16float(geometric_info.cov[1]) * s2;
     let cov3: vec2<f32> = unpack2x16float(geometric_info.cov[2]) * s2;
+
+
+    let scaling = render_settings.gaussian_scaling;
     let Vrk = mat3x3<f32>(
         cov1[0], cov1[1], cov2[0],
         cov1[1], cov2[1], cov3[0],
         cov2[0], cov3[0], cov3[1]
-    );
+    )*scaling*scaling;
     let J = mat3x3<f32>(
         focal.x / camspace.z,
         0.,

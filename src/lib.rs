@@ -1,8 +1,8 @@
-use std::io::{Read, Seek};
+use std::{collections::hash_map::DefaultHasher, hash::{Hash, Hasher}, io::{Read, Seek}};
 
 #[cfg(target_arch = "wasm32")]
 use instant::{Duration, Instant};
-use renderer::Display;
+use renderer::{Display, RenderSettings};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 use wgpu::Backends;
@@ -142,6 +142,11 @@ struct WindowContext {
     display: Display,
 
     background_color: egui::Color32,
+    gaussian_scale_factor: f32,
+
+    /// hash for the render settings
+    /// if render settings dont change we dont have to rerender
+    render_settings_hash:Option<u64>
 }
 
 impl WindowContext {
@@ -247,6 +252,8 @@ impl WindowContext {
             ui_visible: true,
             display,
             background_color: Color32::BLACK,
+            render_settings_hash:None,
+            gaussian_scale_factor: 1.,
         }
     }
 
@@ -437,6 +444,9 @@ impl WindowContext {
                         &mut self.background_color,
                         egui::color_picker::Alpha::BlendOrAdditive,
                     );
+                    ui.end_row();
+                    ui.label("Gaussian Scaling");
+                    ui.add(egui::DragValue::new(&mut self.gaussian_scale_factor).clamp_range(1e-4..=1.).speed(1e-2));
                 });
         });
 
@@ -528,22 +538,28 @@ impl WindowContext {
             ..Default::default()
         });
         let view_srgb = output.texture.create_view(&Default::default());
-        let viewport = Vector2::new(output.texture.size().width, output.texture.size().height);
         let rgba = self.background_color.to_srgba_unmultiplied();
-        self.renderer.render(
-            &self.wgpu_context.device,
-            &self.wgpu_context.queue,
-            &self.pc,
-            self.camera,
-            viewport,
-            self.display.texture(),
-            wgpu::Color {
-                r: rgba[0] as f64 / 255.,
-                g: rgba[1] as f64 / 255.,
-                b: rgba[2] as f64 / 255.,
-                a: rgba[3] as f64 / 255.,
-            },
-        );
+
+        let render_settings = RenderSettings {
+            camera: self.camera,
+            viewport:Vector2::new(output.texture.size().width, output.texture.size().height),
+            gaussian_scaling: self.gaussian_scale_factor,
+        };  
+        let mut hasher = DefaultHasher::new();
+        render_settings.hash(&mut hasher);
+        let settings_hash = hasher.finish();
+        
+        if self.render_settings_hash.and_then(|v|Some(v!=settings_hash)).unwrap_or(true){
+            self.renderer.render(
+                &self.wgpu_context.device,
+                &self.wgpu_context.queue,
+                &self.pc,
+                self.display.texture(),
+                render_settings,
+            );
+            self.render_settings_hash.replace(settings_hash);
+        }
+        
 
         let mut encoder =
             self.wgpu_context
@@ -552,7 +568,12 @@ impl WindowContext {
                     label: Some("display"),
                 });
 
-        self.display.render(&mut encoder, &view_rgb);
+        self.display.render(&mut encoder, &view_rgb, wgpu::Color {
+            r: rgba[0] as f64 / 255.,
+            g: rgba[1] as f64 / 255.,
+            b: rgba[2] as f64 / 255.,
+            a: rgba[3] as f64 / 255.,
+        },);
         self.wgpu_context.queue.submit([encoder.finish()]);
 
         if self.ui_visible {
@@ -573,9 +594,6 @@ impl WindowContext {
                 &view_srgb,
                 shapes,
             );
-        } else {
-            #[cfg(not(target_arch = "wasm32"))]
-            self.renderer.stopwatch.reset();
         }
 
         output.present();
