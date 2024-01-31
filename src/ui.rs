@@ -146,24 +146,33 @@ pub(crate) fn ui(state: &mut WindowContext) {
             .num_columns(2)
             .striped(true)
             .show(ui, |ui| {
-                ui.label("Background Color");
-                egui::color_picker::color_edit_button_srgba(
-                    ui,
-                    &mut state.background_color,
-                    egui::color_picker::Alpha::BlendOrAdditive,
-                );
-                ui.end_row();
                 ui.label("Gaussian Scaling");
                 ui.add(
-                    egui::DragValue::new(&mut state.gaussian_scale_factor)
+                    egui::DragValue::new(&mut state.splatting_args.gaussian_scaling)
                         .clamp_range(1e-4..=1.)
                         .speed(1e-2),
                 );
                 ui.end_row();
                 ui.label("Directional Color");
-                let mut dir_color = state.max_sh_deg > 0;
+                let mut dir_color = state.splatting_args.max_sh_deg > 0;
                 ui.checkbox(&mut dir_color, "");
-                state.max_sh_deg = if dir_color { state.pc.sh_deg() } else { 0 };
+                state.splatting_args.max_sh_deg = if dir_color { state.pc.sh_deg() } else { 0 };
+                ui.end_row();
+                ui.label("Show Env Map");
+                ui.add_enabled(
+                    state.display.has_env_map(),
+                    egui::Checkbox::new(&mut state.splatting_args.show_env_map, ""),
+                );
+                ui.end_row();
+                let enable_bg = !state.splatting_args.show_env_map && !state.display.has_env_map();
+                ui.add_enabled(enable_bg, egui::Label::new("Background Color"));
+                ui.add_enabled_ui(enable_bg, |ui| {
+                    egui::color_picker::color_edit_button_srgba(
+                        ui,
+                        &mut state.background_color,
+                        egui::color_picker::Alpha::BlendOrAdditive,
+                    )
+                });
             });
     });
 
@@ -191,7 +200,7 @@ pub(crate) fn ui(state: &mut WindowContext) {
                 });
 
             if let Some(scene) = &state.scene {
-                let nearest = scene.nearest_camera(state.camera.position, None);
+                let nearest = scene.nearest_camera(state.splatting_args.camera.position, None);
                 ui.separator();
                 ui.collapsing("Dataset Images", |ui| {
                     egui::Grid::new("image info")

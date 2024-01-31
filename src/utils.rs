@@ -1,5 +1,4 @@
 use cgmath::{BaseFloat, Matrix, Matrix3, Quaternion, SquareMatrix, Vector3};
-use std::mem;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
@@ -214,44 +213,4 @@ pub fn sigmoid(x: f32) -> f32 {
     } else {
         x.exp() / (1. + x.exp())
     }
-}
-
-pub(crate) async fn download_buffer<T: Clone>(
-    buffer: &wgpu::Buffer,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    len: Option<u64>,
-) -> Vec<T> {
-    // copy buffer data
-    let download_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Download buffer"),
-        size: buffer.size(),
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("Copy encoder"),
-    });
-    encoder.copy_buffer_to_buffer(buffer, 0, &download_buffer, 0, buffer.size());
-    queue.submit([encoder.finish()]);
-
-    // download buffer
-    let download_range = match len {
-        Some(len) => ..mem::size_of::<T>() as u64 * len,
-        None => ..buffer.size(),
-    };
-    let buffer_slice = download_buffer.slice(download_range);
-    let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
-    buffer_slice.map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
-    device.poll(wgpu::Maintain::Wait);
-    rx.receive().await.unwrap().unwrap();
-    let data = buffer_slice.get_mapped_range();
-    let r;
-
-    unsafe {
-        let (_, d, _) = data.align_to::<T>();
-        r = d.to_vec();
-    }
-
-    return r;
 }

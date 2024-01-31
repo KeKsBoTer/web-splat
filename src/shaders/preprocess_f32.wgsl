@@ -77,6 +77,7 @@ struct SortInfos {
 struct RenderSettings {
     gaussian_scaling: f32,
     max_sh_deg: u32,
+    show_env_map: u32,
 }
 
 @group(0) @binding(0)

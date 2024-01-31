@@ -13,6 +13,10 @@ struct Opt {
 
     #[arg(long, default_value_t = false)]
     no_vsync: bool,
+
+    /// Sky box image
+    #[arg(long)]
+    skybox: Option<PathBuf>,
 }
 
 #[pollster::main]
@@ -31,6 +35,7 @@ async fn main() {
         scene_file,
         RenderConfig {
             no_vsync: opt.no_vsync,
+            skybox: opt.skybox,
         },
     )
     .await;

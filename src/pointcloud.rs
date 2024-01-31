@@ -14,7 +14,6 @@ use crate::npz::NpzReader;
 use crate::ply::PlyReader;
 #[cfg(feature = "npz")]
 use crate::uniform::UniformBuffer;
-use crate::utils::download_buffer;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]

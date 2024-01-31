@@ -1,18 +1,17 @@
 use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
-    io::{Read, Seek},
+     collections::hash_map::DefaultHasher, hash::{Hash, Hasher}, io::{Read, Seek}, path::{Path, PathBuf}
 };
 
+use image::Pixel;
 #[cfg(target_arch = "wasm32")]
 use instant::{Duration, Instant};
 use renderer::Display;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
-use wgpu::Backends;
+use wgpu::{util::DeviceExt, Backends, Extent3d};
 
 use cgmath::{
-    Deg, EuclideanSpace, InnerSpace, Matrix2, Matrix3, MetricSpace, Point3, Quaternion, Transform,
+    Deg, EuclideanSpace,  MetricSpace, Point3, Quaternion,
     Vector2, Vector3,
 };
 use egui::Color32;
@@ -59,6 +58,7 @@ mod utils;
 
 pub struct RenderConfig {
     pub no_vsync: bool,
+    pub skybox: Option<PathBuf>,
 }
 
 pub struct WGPUContext {
@@ -135,7 +135,6 @@ pub struct WindowContext {
 
     pc: PointCloud,
     renderer: GaussianRenderer,
-    camera: PerspectiveCamera,
     animation: Option<(Animation<PerspectiveCamera>, bool)>,
     controller: CameraController,
     scene: Option<Scene>,
@@ -149,12 +148,11 @@ pub struct WindowContext {
     display: Display,
 
     background_color: egui::Color32,
-    gaussian_scale_factor: f32,
-    max_sh_deg: u32,
 
     /// hash for the render settings
     /// if render settings dont change we dont have to rerender
     render_settings_hash: Option<u64>,
+    splatting_args:SplattingArgs,
 
     saved_cameras: Vec<SceneCamera>,
     #[cfg(feature = "video")]
@@ -163,7 +161,7 @@ pub struct WindowContext {
 
 impl WindowContext {
     // Creating some of the wgpu types requires async code
-    async fn new<R: Read + Seek>(window: Window, pc_file: R, render_config: RenderConfig) -> Self {
+    async fn new<R: Read + Seek>(window: Window, pc_file: R, render_config: &RenderConfig) -> Self {
         let size = window.inner_size();
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
@@ -227,12 +225,14 @@ impl WindowContext {
         let mut controller = CameraController::new(0.1, 0.05);
         controller.center = aabb.center();
         let ui_renderer = ui_renderer::EguiWGPU::new(device, surface_format, &window);
+
+
         let display = Display::new(
             device,
             render_format,
             surface_format.remove_srgb_suffix(),
             size.width,
-            size.height,
+            size.height
         );
         Self {
             wgpu_context,
@@ -241,9 +241,15 @@ impl WindowContext {
             surface,
             config,
             renderer,
-            max_sh_deg: pc.sh_deg(),
+            splatting_args:SplattingArgs{
+                camera: view_camera,
+                viewport: Vector2::new(size.width, size.height),
+                gaussian_scaling: 1.,
+                max_sh_deg: pc.sh_deg(),
+                show_env_map:false,
+            },
             pc,
-            camera: view_camera,
+            // camera: view_camera,
             controller,
             ui_renderer,
             fps: 0.,
@@ -258,8 +264,8 @@ impl WindowContext {
             animation: None,
             scene: None,
             current_view: None,
-            gaussian_scale_factor: 1.,
             render_settings_hash: None,
+           
         }
     }
 
@@ -267,11 +273,11 @@ impl WindowContext {
         if new_size.width > 0 && new_size.height > 0 {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
-
             self.surface
                 .configure(&self.wgpu_context.device, &self.config);
             self.display
                 .resize(&self.wgpu_context.device, new_size.width, new_size.height);
+            self.splatting_args.viewport = Vector2::new(new_size.width, new_size.height);
         }
         if let Some(scale_factor) = scale_factor {
             if scale_factor > 0. {
@@ -288,24 +294,24 @@ impl WindowContext {
                 self.cancle_animation()
             } else {
                 let dt = if *playing { dt } else { Duration::ZERO };
-                self.camera = next_camera.update(dt);
+                self.splatting_args.camera = next_camera.update(dt);
                 if next_camera.done() {
                     self.animation.take();
-                    self.controller.reset_to_camera(self.camera);
+                    self.controller.reset_to_camera(self.splatting_args.camera);
                 }
             }
         } else {
-            self.controller.update_camera(&mut self.camera, dt);
+            self.controller.update_camera(&mut self.splatting_args.camera, dt);
         }
 
         // set camera near and far plane
         let center = self.pc.bbox().center();
         let radius = self.pc.bbox().sphere();
-        let distance = self.camera.position.distance(center);
+        let distance = self.splatting_args.camera.position.distance(center);
         let zfar = distance + radius;
         let znear = (distance - radius).max(zfar / 1000.);
-        self.camera.projection.zfar = zfar;
-        self.camera.projection.znear = znear;
+        self.splatting_args.camera.projection.zfar = zfar;
+        self.splatting_args.camera.projection.znear = znear;
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -322,14 +328,8 @@ impl WindowContext {
         let view_srgb = output.texture.create_view(&Default::default());
         let rgba = self.background_color.to_srgba_unmultiplied();
 
-        let render_settings = SplattingArgs {
-            camera: self.camera,
-            viewport: Vector2::new(output.texture.size().width, output.texture.size().height),
-            gaussian_scaling: self.gaussian_scale_factor,
-            max_sh_deg: self.max_sh_deg,
-        };
         let mut hasher = DefaultHasher::new();
-        render_settings.hash(&mut hasher);
+        self.splatting_args.hash(&mut hasher);
         let settings_hash = hasher.finish();
 
         if self
@@ -342,7 +342,7 @@ impl WindowContext {
                 &self.wgpu_context.queue,
                 &self.pc,
                 self.display.texture(),
-                render_settings,
+                self.splatting_args,
             );
             self.render_settings_hash.replace(settings_hash);
         }
@@ -363,6 +363,8 @@ impl WindowContext {
                 b: rgba[2] as f64 / 255.,
                 a: rgba[3] as f64 / 255.,
             },
+            self.renderer.camera(),
+            &self.renderer.render_settings()
         );
         self.wgpu_context.queue.submit([encoder.finish()]);
 
@@ -410,6 +412,38 @@ impl WindowContext {
         }
     }
 
+    fn set_env_map<P:AsRef<Path>>(&mut self,path:P) -> anyhow::Result<()>{
+        let env_map_exr = image::open(path)?;
+        let env_map_data: Vec<[f32; 4]> = env_map_exr
+            .as_rgb32f().ok_or(anyhow::anyhow!("env map must be rgb"))?
+            .pixels()
+            .map(|p| p.to_rgba().0)
+            .collect();
+
+
+        let env_texture = self.wgpu_context.device.create_texture_with_data(
+            &self.wgpu_context.queue,
+            &wgpu::TextureDescriptor {
+                label: Some("env map texture"),
+                size: Extent3d {
+                    width: env_map_exr.width(),
+                    height: env_map_exr.height(),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba32Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            bytemuck::cast_slice(&env_map_data.as_slice()),
+        );
+        self.display.set_env_map(&self.wgpu_context.device,Some(&env_texture.create_view(&Default::default())));
+        self.splatting_args.show_env_map = true;
+        Ok(())
+    }
+
     fn start_tracking_shot(&mut self) {
         if self.saved_cameras.len() > 1 {
             let a = Animation::new(
@@ -423,14 +457,14 @@ impl WindowContext {
 
     fn cancle_animation(&mut self) {
         self.animation.take();
-        self.controller.reset_to_camera(self.camera);
+        self.controller.reset_to_camera(self.splatting_args.camera);
     }
 
     fn stop_animation(&mut self) {
         if let Some((_animation, playing)) = &mut self.animation {
             *playing = false;
         }
-        self.controller.reset_to_camera(self.camera);
+        self.controller.reset_to_camera(self.splatting_args.camera);
     }
 
     fn set_scene_camera(&mut self, i: usize) {
@@ -454,7 +488,7 @@ impl WindowContext {
                 animation_duration,
                 false,
                 Box::new(Transition::new(
-                    self.camera.clone(),
+                    self.splatting_args.camera.clone(),
                     target_camera,
                     smoothstep,
                 )),
@@ -464,7 +498,7 @@ impl WindowContext {
     }
 
     fn update_camera(&mut self, camera: PerspectiveCamera) {
-        self.camera = camera;
+        self.splatting_args.camera = camera;
     }
 
     fn save_view(&mut self) {
@@ -476,7 +510,7 @@ impl WindowContext {
         let max_id = self.saved_cameras.iter().map(|c| c.id).max().unwrap_or(0);
         let id = max_id.max(max_scene_id) + 1;
         self.saved_cameras.push(SceneCamera::from_perspective(
-            self.camera,
+            self.splatting_args.camera,
             id.to_string(),
             id,
             Vector2::new(self.config.width, self.config.height),
@@ -548,13 +582,19 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
             .expect("couldn't append canvas to document body");
     }
 
-    let mut state = WindowContext::new(window, file, config).await;
+    let mut state = WindowContext::new(window, file, &config).await;
 
     if let Some(scene) = scene {
         let init_camera = scene.camera(0).unwrap();
         state.set_scene(scene);
         state.set_camera(init_camera, Duration::ZERO);
         state.start_tracking_shot();
+    }
+
+    if let Some(skybox) = &config.skybox {
+        if let Err(e) = state.set_env_map(skybox.as_path()){
+            log::error!("failed do set skybox: {e}");
+        }
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -615,7 +655,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
                         else if key == KeyCode::KeyR{
                             Some(rand::random::<usize>()%scene.num_cameras())
                         }else if key == KeyCode::KeyN{
-                            scene.nearest_camera(state.camera.position,None)
+                            scene.nearest_camera(state.splatting_args.camera.position,None)
                         }else if key == KeyCode::PageUp{
                             Some(state.current_view.map_or(0, |v|v+1) % scene.num_cameras())
                         }else if key == KeyCode::KeyT{
