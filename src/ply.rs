@@ -42,7 +42,7 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
         })
     }
 
-    fn read_line<B: ByteOrder>(&mut self) -> (GaussianFloat,[[f16;3];16]) {
+    fn read_line<B: ByteOrder>(&mut self) -> (GaussianFloat, [[f16; 3]; 16]) {
         let mut pos = [0.; 3];
         self.reader.read_f32_into::<B>(&mut pos).unwrap();
 
@@ -79,14 +79,17 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
 
         let cov = build_cov(rot, scale);
 
-        return (GaussianFloat {
-            xyz: Point3::from(pos).cast().unwrap(),
-            opacity:f16::from_f32(opacity),
-            cov:cov.map(|x| f16::from_f32(x)),
-        },sh.map(|x| x.map(|y| f16::from_f32(y))));
+        return (
+            GaussianFloat {
+                xyz: Point3::from(pos).cast().unwrap(),
+                opacity: f16::from_f32(opacity),
+                cov: cov.map(|x| f16::from_f32(x)),
+            },
+            sh.map(|x| x.map(|y| f16::from_f32(y))),
+        );
     }
 
-    pub fn read(&mut self) -> Result<(Vec<GaussianFloat>,Vec<[[f16;3];16]>), anyhow::Error> {
+    pub fn read(&mut self) -> Result<(Vec<GaussianFloat>, Vec<[[f16; 3]; 16]>), anyhow::Error> {
         let start = Instant::now();
         let num_points = self.num_points()?;
         let result = match self.header.encoding {

@@ -5,7 +5,7 @@ use num_traits::Float;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
-use winit::event::VirtualKeyCode;
+use winit::keyboard::KeyCode;
 
 use crate::camera::{Camera, PerspectiveCamera};
 
@@ -42,38 +42,38 @@ impl CameraController {
         }
     }
 
-    pub fn process_keyboard(&mut self, key: VirtualKeyCode, pressed: bool) -> bool {
+    pub fn process_keyboard(&mut self, key: KeyCode, pressed: bool) -> bool {
         let amount = if pressed { 1.0 } else { 0.0 };
         let processed = match key {
-            VirtualKeyCode::W | VirtualKeyCode::Up => {
+            KeyCode::KeyW | KeyCode::ArrowUp => {
                 self.amount.z += amount;
                 true
             }
-            VirtualKeyCode::S | VirtualKeyCode::Down => {
+            KeyCode::KeyS | KeyCode::ArrowDown => {
                 self.amount.z += -amount;
                 true
             }
-            VirtualKeyCode::A | VirtualKeyCode::Left => {
+            KeyCode::KeyA | KeyCode::ArrowLeft => {
                 self.amount.x += -amount;
                 true
             }
-            VirtualKeyCode::D | VirtualKeyCode::Right => {
+            KeyCode::KeyD | KeyCode::ArrowRight => {
                 self.amount.x += amount;
                 true
             }
-            VirtualKeyCode::Q => {
+            KeyCode::KeyQ => {
                 self.rotation.z += amount / self.sensitivity;
                 true
             }
-            VirtualKeyCode::E => {
+            KeyCode::KeyE => {
                 self.rotation.z += -amount / self.sensitivity;
                 true
             }
-            VirtualKeyCode::Space => {
+            KeyCode::Space => {
                 self.amount.y += amount;
                 true
             }
-            VirtualKeyCode::LShift => {
+            KeyCode::ShiftLeft => {
                 self.amount.y += -amount;
                 true
             }
@@ -149,7 +149,7 @@ impl CameraController {
 
         // decay based on fps
         let mut decay = (0.8).powf(dt * 60.);
-        if decay < 1e-4{
+        if decay < 1e-4 {
             decay = 0.;
         }
         self.rotation *= decay;

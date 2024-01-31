@@ -1,4 +1,5 @@
 use crate::gpu_rs::{GPURSSorter, PointCloudSortStuff};
+use crate::pointcloud::Splat;
 use crate::{
     camera::{Camera, PerspectiveCamera, VIEWPORT_Y_FLIP},
     pointcloud::PointCloud,
@@ -19,14 +20,14 @@ use cgmath::{Matrix4, SquareMatrix, Vector2};
 pub struct GaussianRenderer {
     pipeline: wgpu::RenderPipeline,
     camera: UniformBuffer<CameraUniform>,
-    render_settings:UniformBuffer<RenderSettingsUniform>,
+    render_settings: UniformBuffer<SplattingArgsUniform>,
     preprocess: PreprocessPipeline,
     draw_indirect_buffer: wgpu::Buffer,
     #[allow(dead_code)]
     draw_indirect: wgpu::BindGroup,
     color_format: wgpu::TextureFormat,
     #[cfg(not(target_arch = "wasm32"))]
-    pub stopwatch: GPUStopwatch,
+    stopwatch: GPUStopwatch,
     sorter: GPURSSorter,
     sorter_suff: Option<PointCloudSortStuff>,
 }
@@ -37,7 +38,7 @@ impl GaussianRenderer {
         queue: &wgpu::Queue,
         color_format: wgpu::TextureFormat,
         sh_deg: u32,
-        float: bool,
+        compressed: bool,
     ) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render pipeline layout"),
@@ -106,7 +107,7 @@ impl GaussianRenderer {
         let sorter = GPURSSorter::new(device, queue).await;
 
         let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
-        let preprocess = PreprocessPipeline::new(device, sh_deg, float);
+        let preprocess = PreprocessPipeline::new(device, sh_deg, compressed);
         GaussianRenderer {
             pipeline,
             camera,
@@ -118,7 +119,10 @@ impl GaussianRenderer {
             stopwatch,
             sorter,
             sorter_suff: None,
-            render_settings:UniformBuffer::new_default(device,Some("render settings uniform buffer")),
+            render_settings: UniformBuffer::new_default(
+                device,
+                Some("render settings uniform buffer"),
+            ),
         }
     }
 
@@ -127,19 +131,21 @@ impl GaussianRenderer {
         encoder: &'a mut wgpu::CommandEncoder,
         queue: &wgpu::Queue,
         pc: &'a PointCloud,
-        render_settings:RenderSettings,
+        render_settings: SplattingArgs,
     ) {
         let mut camera = render_settings.camera;
-        camera.projection.resize(render_settings.viewport.x, render_settings.viewport.y);
+        camera
+            .projection
+            .resize(render_settings.viewport.x, render_settings.viewport.y);
         let uniform = self.camera.as_mut();
         uniform.set_camera(camera);
         uniform.set_focal(camera.projection.focal(render_settings.viewport));
         uniform.set_viewport(render_settings.viewport.cast().unwrap());
         self.camera.sync(queue);
 
-
         let settings_uniform = self.render_settings.as_mut();
         settings_uniform.gaussian_scaling = render_settings.gaussian_scaling;
+        settings_uniform.max_sh_deg = render_settings.max_sh_deg;
         self.render_settings.sync(queue);
 
         // TODO perform this in vertex buffer after draw call
@@ -155,7 +161,13 @@ impl GaussianRenderer {
             .as_bytes(),
         );
         let depth_buffer = &self.sorter_suff.as_ref().unwrap().sorter_bg_pre;
-        self.preprocess.run(encoder, pc, &self.camera,&self.render_settings, depth_buffer);
+        self.preprocess.run(
+            encoder,
+            pc,
+            &self.camera,
+            &self.render_settings,
+            depth_buffer,
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -186,7 +198,7 @@ impl GaussianRenderer {
         queue: &wgpu::Queue,
         pc: &'a PointCloud,
         target: &wgpu::TextureView,
-        render_settings:RenderSettings,
+        render_settings: SplattingArgs,
     ) {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
@@ -198,7 +210,7 @@ impl GaussianRenderer {
                     .as_ref()
                     .is_some_and(|s| s.num_points != pc.num_points() as usize)
             {
-                log::info!("created sort buffers for {:} points", pc.num_points());
+                log::debug!("created sort buffers for {:} points", pc.num_points());
                 self.sorter_suff = Some(
                     self.sorter
                         .create_sort_stuff(device, pc.num_points() as usize),
@@ -284,7 +296,7 @@ impl GaussianRenderer {
         self.stopwatch.reset();
         RenderStatistics {
             preprocess_time: *durations.get("preprocess").unwrap_or(&Duration::ZERO),
-            sort_time:*durations.get("sorting").unwrap_or(&Duration::ZERO),
+            sort_time: *durations.get("sorting").unwrap_or(&Duration::ZERO),
             rasterization_time: *durations.get("rasterization").unwrap_or(&Duration::ZERO),
         }
     }
@@ -371,25 +383,25 @@ impl CameraUniform {
 struct PreprocessPipeline(wgpu::ComputePipeline);
 
 impl PreprocessPipeline {
-    fn new(device: &wgpu::Device, sh_deg: u32, float: bool) -> Self {
+    fn new(device: &wgpu::Device, sh_deg: u32, compressed: bool) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("preprocess pipeline layout"),
             bind_group_layouts: &[
                 &UniformBuffer::<CameraUniform>::bind_group_layout(device),
-                &if float {
+                &if !compressed {
                     PointCloud::bind_group_layout_float(device)
                 } else {
                     PointCloud::bind_group_layout(device)
                 },
                 &GPURSSorter::bind_group_layout_preprocess(device),
-                &UniformBuffer::<RenderSettingsUniform>::bind_group_layout(device),
+                &UniformBuffer::<SplattingArgsUniform>::bind_group_layout(device),
             ],
             push_constant_ranges: &[],
         });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("preprocess shader"),
-            source: wgpu::ShaderSource::Wgsl(Self::build_shader(sh_deg, float).into()),
+            source: wgpu::ShaderSource::Wgsl(Self::build_shader(sh_deg, compressed).into()),
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("preprocess pipeline"),
@@ -400,8 +412,8 @@ impl PreprocessPipeline {
         Self(pipeline)
     }
 
-    fn build_shader(sh_deg: u32, float: bool) -> String {
-        let shader_src: &str = if float {
+    fn build_shader(sh_deg: u32, compressed: bool) -> String {
+        let shader_src: &str = if !compressed {
             include_str!("shaders/preprocess_f32.wgsl")
         } else {
             include_str!("shaders/preprocess.wgsl")
@@ -420,7 +432,7 @@ impl PreprocessPipeline {
         encoder: &'a mut wgpu::CommandEncoder,
         pc: &PointCloud,
         camera: &UniformBuffer<CameraUniform>,
-        render_settings: &UniformBuffer<RenderSettingsUniform>,
+        render_settings: &UniformBuffer<SplattingArgsUniform>,
         sort_bg: &wgpu::BindGroup,
     ) {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -485,7 +497,7 @@ impl Display {
                 entry_point: "fs_main",
                 targets: &[Some(wgpu::ColorTargetState {
                     format: target_format,
-                    blend:  Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -577,7 +589,12 @@ impl Display {
         self.view = view;
     }
 
-    pub fn render(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView,background_color:wgpu::Color) {
+    pub fn render(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        background_color: wgpu::Color,
+    ) {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("render pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -597,32 +614,35 @@ impl Display {
     }
 }
 
-
 #[repr(C)]
-#[derive(Copy, Clone,Debug) ]
-pub struct RenderSettings{
-    pub camera:PerspectiveCamera,
-    pub viewport:Vector2<u32>,
-    pub gaussian_scaling:f32,
+#[derive(Copy, Clone, Debug)]
+pub struct SplattingArgs {
+    pub camera: PerspectiveCamera,
+    pub viewport: Vector2<u32>,
+    pub gaussian_scaling: f32,
+    pub max_sh_deg: u32,
 }
 
-impl Hash for RenderSettings {
+impl Hash for SplattingArgs {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.camera.hash(state);
         self.viewport.hash(state);
+        self.max_sh_deg.hash(state);
         self.gaussian_scaling.to_bits().hash(state);
     }
 }
 
 #[repr(C)]
-#[derive(Copy, Clone,Debug,bytemuck::Pod,bytemuck::Zeroable) ]
-struct RenderSettingsUniform{
-    gaussian_scaling:f32
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct SplattingArgsUniform {
+    gaussian_scaling: f32,
+    max_sh_deg: u32,
 }
-impl Default for RenderSettingsUniform{
+impl Default for SplattingArgsUniform {
     fn default() -> Self {
-        Self{
-            gaussian_scaling:1.0
+        Self {
+            gaussian_scaling: 1.0,
+            max_sh_deg: 3,
         }
     }
 }

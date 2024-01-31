@@ -1,26 +1,27 @@
 use cgmath::{BaseFloat, Matrix, Matrix3, Quaternion, SquareMatrix, Vector3};
+use std::mem;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::{fmt::Debug, mem::MaybeUninit};
-use winit::event::VirtualKeyCode;
+use winit::keyboard::KeyCode;
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::{collections::HashMap, mem::size_of};
 
-pub fn key_to_num(key: VirtualKeyCode) -> Option<u32> {
+pub fn key_to_num(key: KeyCode) -> Option<u32> {
     match key {
-        VirtualKeyCode::Key0 => Some(0),
-        VirtualKeyCode::Key1 => Some(1),
-        VirtualKeyCode::Key2 => Some(2),
-        VirtualKeyCode::Key3 => Some(3),
-        VirtualKeyCode::Key4 => Some(4),
-        VirtualKeyCode::Key5 => Some(5),
-        VirtualKeyCode::Key6 => Some(6),
-        VirtualKeyCode::Key7 => Some(7),
-        VirtualKeyCode::Key8 => Some(8),
-        VirtualKeyCode::Key9 => Some(9),
+        KeyCode::Digit0 => Some(0),
+        KeyCode::Digit1 => Some(1),
+        KeyCode::Digit2 => Some(2),
+        KeyCode::Digit3 => Some(3),
+        KeyCode::Digit4 => Some(4),
+        KeyCode::Digit5 => Some(5),
+        KeyCode::Digit6 => Some(6),
+        KeyCode::Digit7 => Some(7),
+        KeyCode::Digit8 => Some(8),
+        KeyCode::Digit9 => Some(9),
         _ => None,
     }
 }
@@ -133,7 +134,6 @@ impl GPUStopwatch {
         );
         device.poll(wgpu::Maintain::Wait);
         let durations: HashMap<String, Duration> = rx.receive().await.unwrap();
-        // self.query_buffer.unmap();
         return durations;
     }
 }
@@ -180,6 +180,7 @@ where
     }
 }
 
+#[cfg(feature = "npz")]
 pub fn sh_num_coefficients(sh_deg: u32) -> u32 {
     (sh_deg + 1) * (sh_deg + 1)
 }
@@ -213,4 +214,44 @@ pub fn sigmoid(x: f32) -> f32 {
     } else {
         x.exp() / (1. + x.exp())
     }
+}
+
+pub(crate) async fn download_buffer<T: Clone>(
+    buffer: &wgpu::Buffer,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    len: Option<u64>,
+) -> Vec<T> {
+    // copy buffer data
+    let download_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Download buffer"),
+        size: buffer.size(),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("Copy encoder"),
+    });
+    encoder.copy_buffer_to_buffer(buffer, 0, &download_buffer, 0, buffer.size());
+    queue.submit([encoder.finish()]);
+
+    // download buffer
+    let download_range = match len {
+        Some(len) => ..mem::size_of::<T>() as u64 * len,
+        None => ..buffer.size(),
+    };
+    let buffer_slice = download_buffer.slice(download_range);
+    let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
+    buffer_slice.map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
+    device.poll(wgpu::Maintain::Wait);
+    rx.receive().await.unwrap().unwrap();
+    let data = buffer_slice.get_mapped_range();
+    let r;
+
+    unsafe {
+        let (_, d, _) = data.align_to::<T>();
+        r = d.to_vec();
+    }
+
+    return r;
 }

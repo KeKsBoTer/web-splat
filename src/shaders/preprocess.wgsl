@@ -93,8 +93,9 @@ struct SortInfos {
     odd_pass: u32,
 }
 
-struct RenderSettings{
-    gaussian_scaling:f32
+struct RenderSettings {
+    gaussian_scaling: f32,
+    max_sh_deg: u32,
 }
 
 
@@ -237,7 +238,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
         cov1[0], cov1[1], cov2[0],
         cov1[1], cov2[1], cov3[0],
         cov2[0], cov3[0], cov3[1]
-    )*scaling*scaling;
+    ) * scaling * scaling;
     let J = mat3x3<f32>(
         focal.x / camspace.z,
         0.,
@@ -274,7 +275,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let camera_pos = camera.view_inv[3].xyz;
     let dir = normalize(xyz - camera_pos);
     let color = vec4<f32>(
-        max(vec3<f32>(0.), evaluate_sh(dir, vertex.sh_idx, MAX_SH_DEG)),
+        max(vec3<f32>(0.), evaluate_sh(dir, vertex.sh_idx, render_settings.max_sh_deg)),
         opacity
     );
 

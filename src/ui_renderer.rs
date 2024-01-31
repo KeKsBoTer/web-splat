@@ -1,22 +1,21 @@
 use egui::{FullOutput, ViewportId};
 // adapted from https://github.com/niklaskorz/linon/blob/main/src/egui_wgpu.rs
-use winit::{dpi::PhysicalSize, event_loop::EventLoop};
+use winit::dpi::PhysicalSize;
 
 pub struct EguiWGPU {
-    pub ctx: egui::Context,
     pub winit: egui_winit::State,
     pub renderer: egui_wgpu::Renderer,
 }
 
 impl EguiWGPU {
     pub fn new(
-        event_loop: &EventLoop<()>,
         device: &wgpu::Device,
         output_format: wgpu::TextureFormat,
+        window: &winit::window::Window,
     ) -> Self {
+        let ctx = Default::default();
         Self {
-            ctx: Default::default(),
-            winit: egui_winit::State::new(ViewportId::ROOT, event_loop, None, None),
+            winit: egui_winit::State::new(ctx, ViewportId::ROOT, window, None, None),
             renderer: egui_wgpu::Renderer::new(device, output_format, None, 1),
         }
     }
@@ -27,20 +26,25 @@ impl EguiWGPU {
     /// and only when this returns `false` pass on the events to your game.
     ///
     /// Note that egui uses `tab` to move focus between elements, so this will always return `true` for tabs.
-    pub fn on_event(&mut self, event: &winit::event::WindowEvent<'_>) -> bool {
-        self.winit.on_window_event(&self.ctx, event).consumed
+    pub fn on_event(
+        &mut self,
+        window: &winit::window::Window,
+        event: &winit::event::WindowEvent,
+    ) -> bool {
+        let resp = self.winit.on_window_event(window, event);
+        return resp.consumed;
     }
 
     pub fn begin_frame(&mut self, window: &winit::window::Window) {
         let raw_input = self.winit.take_egui_input(window);
-        self.ctx.begin_frame(raw_input);
+        self.winit.egui_ctx().begin_frame(raw_input);
     }
 
     /// Returns `needs_repaint` and shapes to draw.
     pub fn end_frame(&mut self, window: &winit::window::Window) -> FullOutput {
-        let output = self.ctx.end_frame();
+        let output = self.winit.egui_ctx().end_frame();
         self.winit
-            .handle_platform_output(window, &self.ctx, output.platform_output.clone());
+            .handle_platform_output(window, output.platform_output.clone());
         output
     }
 
@@ -53,12 +57,15 @@ impl EguiWGPU {
         color_attachment: &wgpu::TextureView,
         output: FullOutput,
     ) {
-        let clipped_meshes = self.ctx.tessellate(output.shapes, scale_factor);
+        let clipped_meshes = self
+            .winit
+            .egui_ctx()
+            .tessellate(output.shapes, scale_factor);
 
         // let size = window.inner_size();l
         let screen_descriptor = egui_wgpu::renderer::ScreenDescriptor {
             size_in_pixels: [size.width, size.height],
-            pixels_per_point: self.ctx.pixels_per_point(),
+            pixels_per_point: self.winit.egui_ctx().pixels_per_point(),
         };
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {

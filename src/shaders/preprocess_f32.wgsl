@@ -74,8 +74,9 @@ struct SortInfos {
     odd_pass: u32,
 }
 
-struct RenderSettings{
-    gaussian_scaling:f32
+struct RenderSettings {
+    gaussian_scaling: f32,
+    max_sh_deg: u32,
 }
 
 @group(0) @binding(0)
@@ -104,11 +105,11 @@ var<uniform> render_settings: RenderSettings;
 
 /// reads the ith sh coef from the vertex buffer
 fn sh_coef(splat_idx: u32, c_idx: u32) -> vec3<f32> {
-    let a = unpack2x16float(sh_coefs[splat_idx][(c_idx * 3u + 0u)/2u])[(c_idx * 3u + 0u)%2u];
-    let b = unpack2x16float(sh_coefs[splat_idx][(c_idx * 3u + 1u)/2u])[(c_idx * 3u + 1u)%2u];
-    let c = unpack2x16float(sh_coefs[splat_idx][(c_idx * 3u + 2u)/2u])[(c_idx * 3u + 2u)%2u];
+    let a = unpack2x16float(sh_coefs[splat_idx][(c_idx * 3u + 0u) / 2u])[(c_idx * 3u + 0u) % 2u];
+    let b = unpack2x16float(sh_coefs[splat_idx][(c_idx * 3u + 1u) / 2u])[(c_idx * 3u + 1u) % 2u];
+    let c = unpack2x16float(sh_coefs[splat_idx][(c_idx * 3u + 2u) / 2u])[(c_idx * 3u + 2u) % 2u];
     return vec3<f32>(
-        a,b,c
+        a, b, c
     );
 }
 
@@ -187,7 +188,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
         cov_sparse[0], cov_sparse[1], cov_sparse[2],
         cov_sparse[1], cov_sparse[3], cov_sparse[4],
         cov_sparse[2], cov_sparse[4], cov_sparse[5]
-    )*scaling*scaling;
+    ) * scaling * scaling;
     let J = mat3x3<f32>(
         focal.x / camspace.z,
         0.,
@@ -224,7 +225,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let camera_pos = camera.view_inv[3].xyz;
     let dir = normalize(xyz - camera_pos);
     let color = vec4<f32>(
-        max(vec3<f32>(0.), evaluate_sh(dir, idx, MAX_SH_DEG)),
+        max(vec3<f32>(0.), evaluate_sh(dir, idx, render_settings.max_sh_deg)),
         opacity
     );
 

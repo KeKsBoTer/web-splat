@@ -6,6 +6,11 @@ use half::f16;
 use image::EncodableLayout;
 use npyz::npz::{self, NpzArchive};
 
+#[cfg(target_arch = "wasm32")]
+use instant::Instant;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+
 use crate::{
     pointcloud::{Gaussian, GeometricInfo, PointCloudReader, Quantization, QuantizationUniform},
     utils::{build_cov, sh_deg_from_num_coefs, sh_num_coefficients},
@@ -93,6 +98,7 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
         let scaling_factor_zero_point: i32 =
             get_npz_const(&mut self.npz_file, "scaling_factor_zero_point").unwrap_or(0);
 
+        let now = Instant::now();
         let xyz: Vec<Point3<f16>> = self
             .npz_file
             .by_name("xyz")
@@ -214,6 +220,9 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
                 }
             })
             .collect();
+
+        let duration = now.elapsed();
+        log::info!("reading took {:?}", duration);
 
         let quantization = QuantizationUniform {
             color_dc: Quantization::new(features_dc_zero_point, features_dc_scale),

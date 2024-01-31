@@ -1,16 +1,21 @@
-use std::{collections::hash_map::DefaultHasher, hash::{Hash, Hasher}, io::{Read, Seek}};
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+    io::{Read, Seek},
+};
 
 #[cfg(target_arch = "wasm32")]
 use instant::{Duration, Instant};
-use renderer::{Display, RenderSettings};
+use renderer::Display;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 use wgpu::Backends;
 
-use cgmath::{Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, Vector2, Vector3};
-use egui::{epaint::Shadow, Align2, Color32, Vec2, Visuals};
-#[cfg(not(target_arch = "wasm32"))]
-use egui_plot::{Legend, PlotPoints};
+use cgmath::{
+    Deg, EuclideanSpace, InnerSpace, Matrix2, Matrix3, MetricSpace, Point3, Quaternion, Transform,
+    Vector2, Vector3,
+};
+use egui::Color32;
 use num_traits::One;
 
 use utils::key_to_num;
@@ -21,13 +26,15 @@ use utils::RingBuffer;
 use wasm_bindgen::prelude::wasm_bindgen;
 use winit::{
     dpi::PhysicalSize,
-    event::{DeviceEvent, ElementState, Event, VirtualKeyCode, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
+    event::{DeviceEvent, ElementState, Event, WindowEvent},
+    event_loop::EventLoop,
+    keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowBuilder},
 };
 
 mod animation;
-pub use animation::{Animation, TrackingShot, Transition};
+mod ui;
+pub use animation::{Animation, Sampler, TrackingShot, Transition};
 mod camera;
 pub use camera::{Camera, PerspectiveCamera, PerspectiveProjection};
 mod controller;
@@ -40,7 +47,7 @@ mod npz;
 mod ply;
 
 mod renderer;
-pub use renderer::GaussianRenderer;
+pub use renderer::{GaussianRenderer, SplattingArgs};
 
 mod scene;
 pub use self::scene::{Scene, SceneCamera, Split};
@@ -49,6 +56,10 @@ pub mod gpu_rs;
 mod ui_renderer;
 mod uniform;
 mod utils;
+
+pub struct RenderConfig {
+    pub no_vsync: bool,
+}
 
 pub struct WGPUContext {
     pub device: wgpu::Device,
@@ -97,7 +108,7 @@ impl WGPUContext {
                         max_texture_dimension_2d: 4096,
                         max_texture_dimension_3d: 1024,
                         max_uniform_buffer_binding_size: 16384,
-                        max_vertex_buffer_array_stride:0,
+                        max_vertex_buffer_array_stride: 0,
                         ..Default::default()
                     },
                     label: None,
@@ -115,11 +126,7 @@ impl WGPUContext {
     }
 }
 
-pub struct RenderConfig {
-    pub no_vsync: bool,
-}
-
-struct WindowContext {
+pub struct WindowContext {
     wgpu_context: WGPUContext,
     surface: wgpu::Surface,
     config: wgpu::SurfaceConfiguration,
@@ -129,7 +136,7 @@ struct WindowContext {
     pc: PointCloud,
     renderer: GaussianRenderer,
     camera: PerspectiveCamera,
-    animation: Option<Box<dyn Animation<Animatable = PerspectiveCamera>>>,
+    animation: Option<(Animation<PerspectiveCamera>, bool)>,
     controller: CameraController,
     scene: Option<Scene>,
     current_view: Option<usize>,
@@ -143,20 +150,20 @@ struct WindowContext {
 
     background_color: egui::Color32,
     gaussian_scale_factor: f32,
+    max_sh_deg: u32,
 
     /// hash for the render settings
     /// if render settings dont change we dont have to rerender
-    render_settings_hash:Option<u64>
+    render_settings_hash: Option<u64>,
+
+    saved_cameras: Vec<SceneCamera>,
+    #[cfg(feature = "video")]
+    cameras_save_path: String,
 }
 
 impl WindowContext {
     // Creating some of the wgpu types requires async code
-    async fn new<R: Read + Seek>(
-        window: Window,
-        event_loop: &EventLoop<()>,
-        pc_file: R,
-        render_config: RenderConfig,
-    ) -> Self {
+    async fn new<R: Read + Seek>(window: Window, pc_file: R, render_config: RenderConfig) -> Self {
         let size = window.inner_size();
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
@@ -200,19 +207,14 @@ impl WindowContext {
         let pc = PointCloud::load(&device, pc_file).unwrap();
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
-        let renderer = GaussianRenderer::new(
-            &device,
-            &queue,
-            render_format,
-            pc.sh_deg(),
-            !pc.compressed(),
-        )
-        .await;
+        let renderer =
+            GaussianRenderer::new(&device, &queue, render_format, pc.sh_deg(), pc.compressed())
+                .await;
 
         let aabb = pc.bbox();
         let aspect = size.width as f32 / size.height as f32;
         let view_camera = PerspectiveCamera::new(
-            aabb.center() - Vector3::new(1.,1.,1.)* aabb.sphere()*0.5,
+            aabb.center() - Vector3::new(1., 1., 1.) * aabb.sphere() * 0.5,
             Quaternion::one(),
             PerspectiveProjection::new(
                 Vector2::new(size.width, size.height),
@@ -224,7 +226,7 @@ impl WindowContext {
 
         let mut controller = CameraController::new(0.1, 0.05);
         controller.center = aabb.center();
-        let ui_renderer = ui_renderer::EguiWGPU::new(event_loop, device, surface_format);
+        let ui_renderer = ui_renderer::EguiWGPU::new(device, surface_format, &window);
         let display = Display::new(
             device,
             render_format,
@@ -239,12 +241,10 @@ impl WindowContext {
             surface,
             config,
             renderer,
+            max_sh_deg: pc.sh_deg(),
             pc,
             camera: view_camera,
-            animation: None,
             controller,
-            scene: None,
-            current_view: None,
             ui_renderer,
             fps: 0.,
             #[cfg(not(target_arch = "wasm32"))]
@@ -252,8 +252,14 @@ impl WindowContext {
             ui_visible: true,
             display,
             background_color: Color32::BLACK,
-            render_settings_hash:None,
+            saved_cameras: Vec::new(),
+            #[cfg(feature = "video")]
+            cameras_save_path: "cameras_saved.json".to_string(),
+            animation: None,
+            scene: None,
+            current_view: None,
             gaussian_scale_factor: 1.,
+            render_settings_hash: None,
         }
     }
 
@@ -277,10 +283,11 @@ impl WindowContext {
     fn update(&mut self, dt: Duration) {
         // ema fps update
         self.fps = (1. / dt.as_secs_f32()) * 0.05 + self.fps * 0.95;
-        if let Some(next_camera) = &mut self.animation {
+        if let Some((next_camera, playing)) = &mut self.animation {
             if self.controller.user_inptut {
-                self.stop_animation()
+                self.cancle_animation()
             } else {
+                let dt = if *playing { dt } else { Duration::ZERO };
                 self.camera = next_camera.update(dt);
                 if next_camera.done() {
                     self.animation.take();
@@ -301,231 +308,6 @@ impl WindowContext {
         self.camera.projection.znear = znear;
     }
 
-    fn ui(&mut self) {
-        let ctx = &self.ui_renderer.ctx;
-        #[cfg(not(target_arch = "wasm32"))]
-        let stats = pollster::block_on(
-            self.renderer
-                .render_stats(&self.wgpu_context.device, &self.wgpu_context.queue),
-        );
-        #[cfg(not(target_arch = "wasm32"))]
-        let num_drawn = pollster::block_on(
-            self.renderer
-                .num_visible_points(&self.wgpu_context.device, &self.wgpu_context.queue),
-        );
-
-        #[cfg(not(target_arch = "wasm32"))]
-        self.history.push((
-            stats.preprocess_time,
-            stats.sort_time,
-            stats.rasterization_time,
-        ));
-        ctx.set_visuals(Visuals {
-            window_shadow: Shadow::small_light(),
-            ..Default::default()
-        });
-
-        #[cfg(not(target_arch = "wasm32"))]
-        egui::Window::new("Render Stats")
-            .default_width(200.)
-            .default_height(100.)
-            .show(ctx, |ui| {
-                use egui::TextStyle;
-                egui::Grid::new("timing").num_columns(2).show(ui, |ui| {
-                    ui.colored_label(egui::Color32::WHITE, "FPS");
-                    ui.label(format!("{:}", self.fps as u32));
-                    ui.end_row();
-                    ui.colored_label(egui::Color32::WHITE, "Visible points");
-                    ui.label(format!(
-                        "{:} ({:.2}%)",
-                        num_drawn,
-                        (num_drawn as f32 / self.pc.num_points() as f32) * 100.
-                    ));
-                });
-                let history = self.history.to_vec();
-                let pre: Vec<f32> = history.iter().map(|v| v.0.as_secs_f32() * 1000.).collect();
-                let sort: Vec<f32> = history.iter().map(|v| v.1.as_secs_f32() * 1000.).collect();
-                let rast: Vec<f32> = history.iter().map(|v| v.2.as_secs_f32() * 1000.).collect();
-
-                ui.label("Frame times (ms):");
-                egui_plot::Plot::new("frame times")
-                    .allow_drag(false)
-                    .allow_boxed_zoom(false)
-                    .allow_zoom(false)
-                    .allow_scroll(false)
-                    .y_axis_width(1)
-                    .y_axis_label("ms")
-                    .auto_bounds_y()
-                    .auto_bounds_x()
-                    .show_axes([false, true])
-                    .legend(Legend {
-                        text_style: TextStyle::Body,
-                        background_alpha: 1.,
-                        position: egui_plot::Corner::LeftBottom,
-                    })
-                    .show(ui, |ui| {
-                        let line =
-                            egui_plot::Line::new(PlotPoints::from_ys_f32(&pre)).name("preprocess");
-                        ui.line(line);
-                        let line =
-                            egui_plot::Line::new(PlotPoints::from_ys_f32(&sort)).name("sorting");
-                        ui.line(line);
-                        let line =
-                            egui_plot::Line::new(PlotPoints::from_ys_f32(&rast)).name("rasterize");
-                        ui.line(line);
-                    });
-            });
-
-        egui::Window::new("🎮")
-            .default_width(200.)
-            .resizable(false)
-            .default_height(100.)
-            .default_open(false)
-            .movable(false)
-            .anchor(Align2::LEFT_BOTTOM, Vec2::new(10., -10.))
-            .show(ctx, |ui| {
-                egui::Grid::new("controls")
-                    .num_columns(2)
-                    .striped(true)
-                    .show(ui, |ui| {
-                        ui.strong("Camera");
-                        ui.end_row();
-                        ui.label("Rotate Camera");
-                        ui.label("Left click + drag");
-                        ui.end_row();
-
-                        ui.label("Move Target/Center");
-                        ui.label("Right click + drag");
-                        ui.end_row();
-
-                        ui.label("Tilt Camera");
-                        ui.label("Alt + drag mouse");
-                        ui.end_row();
-
-                        ui.label("Zoom");
-                        ui.label("Mouse wheel");
-                        ui.end_row();
-
-                        ui.label("Toggle UI");
-                        ui.label("U");
-                        ui.end_row();
-
-                        ui.strong("Scene Views");
-                        ui.end_row();
-                        ui.label("Views 0-9");
-                        ui.label("0-9");
-                        ui.end_row();
-                        ui.label("Random view");
-                        ui.label("R");
-                        ui.end_row();
-                        ui.label("Next View");
-                        ui.label("Page Up");
-                        ui.end_row();
-                        ui.label("Previous View");
-                        ui.label("Page Down");
-                        ui.end_row();
-                        ui.label("Snap to nearest view");
-                        ui.label("N");
-                        ui.end_row();
-                        ui.label("Start/Stop Tracking shot");
-                        ui.label("T");
-                        ui.end_row();
-                    });
-            });
-
-        egui::Window::new("⚙ Render Settings").show(ctx, |ui| {
-            egui::Grid::new("render_settings")
-                .num_columns(2)
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.label("Background Color");
-                    egui::color_picker::color_edit_button_srgba(
-                        ui,
-                        &mut self.background_color,
-                        egui::color_picker::Alpha::BlendOrAdditive,
-                    );
-                    ui.end_row();
-                    ui.label("Gaussian Scaling");
-                    ui.add(egui::DragValue::new(&mut self.gaussian_scale_factor).clamp_range(1e-4..=1.).speed(1e-2));
-                });
-        });
-
-        let mut new_camera = None;
-        let mut toggle_tracking_shot = false;
-        egui::Window::new("ℹ Scene")
-            .default_width(200.)
-            .resizable(false)
-            .default_height(100.)
-            .show(ctx, |ui| {
-                egui::Grid::new("scene info")
-                    .num_columns(2)
-                    .striped(false)
-                    .show(ui, |ui| {
-                        ui.strong("Gaussians:");
-                        ui.label(self.pc.num_points().to_string());
-                        ui.end_row();
-                        ui.strong("SH Degree:");
-                        ui.label(self.pc.sh_deg().to_string());
-                        ui.end_row();
-                        ui.strong("Compressed:");
-                        ui.label(self.pc.compressed().to_string());
-                        ui.end_row();
-                    });
-
-                if let Some(scene) = &self.scene {
-                    let nearest = scene.nearest_camera(self.camera.position, None);
-                    ui.separator();
-                    ui.heading("Training Images");
-                    egui::Grid::new("image info")
-                        .num_columns(2)
-                        .striped(true)
-                        .show(ui, |ui| {
-                            ui.strong("Images");
-                            ui.label(scene.num_cameras().to_string());
-                            ui.end_row();
-                            ui.strong("Current");
-
-                            if let Some(c) = &mut self.current_view {
-                                ui.horizontal(|ui| {
-                                    let drag =
-                                        ui.add(egui::DragValue::new(c).clamp_range(
-                                            0..=(scene.num_cameras().saturating_sub(1)),
-                                        ));
-                                    if drag.changed() {
-                                        new_camera = Some(*c);
-                                    }
-                                    ui.label(scene.camera(*c).split.to_string());
-                                });
-                            }
-                        });
-                        if ui.button(format!("Snap to closest ({nearest})")).clicked() {
-                            new_camera = Some(nearest);
-                        }
-                        let text = if self.animation.is_some() {
-                            "Stop tracking shot"
-                        } else {
-                            "Start tracking shot"
-                        };
-                        if ui.button(text).clicked() {
-                            toggle_tracking_shot = true;
-                        }
-                }
-            });
-
-        if let Some(c) = new_camera {
-            self.current_view = new_camera;
-            let c = self.scene.as_ref().unwrap().camera(c);
-            self.set_camera(c, Duration::from_millis(200));
-        }
-        if toggle_tracking_shot {
-            if self.animation.is_none() {
-                self.start_tracking_shot(Some(Split::Test))
-            } else {
-                self.stop_animation();
-            }
-        }
-    }
-
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let window_size = self.window.inner_size();
         if window_size.width != self.config.width || window_size.height != self.config.height {
@@ -540,16 +322,21 @@ impl WindowContext {
         let view_srgb = output.texture.create_view(&Default::default());
         let rgba = self.background_color.to_srgba_unmultiplied();
 
-        let render_settings = RenderSettings {
+        let render_settings = SplattingArgs {
             camera: self.camera,
-            viewport:Vector2::new(output.texture.size().width, output.texture.size().height),
+            viewport: Vector2::new(output.texture.size().width, output.texture.size().height),
             gaussian_scaling: self.gaussian_scale_factor,
-        };  
+            max_sh_deg: self.max_sh_deg,
+        };
         let mut hasher = DefaultHasher::new();
         render_settings.hash(&mut hasher);
         let settings_hash = hasher.finish();
-        
-        if self.render_settings_hash.and_then(|v|Some(v!=settings_hash)).unwrap_or(true){
+
+        if self
+            .render_settings_hash
+            .and_then(|v| Some(v != settings_hash))
+            .unwrap_or(true)
+        {
             self.renderer.render(
                 &self.wgpu_context.device,
                 &self.wgpu_context.queue,
@@ -559,7 +346,6 @@ impl WindowContext {
             );
             self.render_settings_hash.replace(settings_hash);
         }
-        
 
         let mut encoder =
             self.wgpu_context
@@ -568,18 +354,22 @@ impl WindowContext {
                     label: Some("display"),
                 });
 
-        self.display.render(&mut encoder, &view_rgb, wgpu::Color {
-            r: rgba[0] as f64 / 255.,
-            g: rgba[1] as f64 / 255.,
-            b: rgba[2] as f64 / 255.,
-            a: rgba[3] as f64 / 255.,
-        },);
+        self.display.render(
+            &mut encoder,
+            &view_rgb,
+            wgpu::Color {
+                r: rgba[0] as f64 / 255.,
+                g: rgba[1] as f64 / 255.,
+                b: rgba[2] as f64 / 255.,
+                a: rgba[3] as f64 / 255.,
+            },
+        );
         self.wgpu_context.queue.submit([encoder.finish()]);
 
         if self.ui_visible {
             // ui rendering
             self.ui_renderer.begin_frame(&self.window);
-            self.ui();
+            ui::ui(self);
 
             let shapes = self.ui_renderer.end_frame(&self.window);
 
@@ -610,20 +400,45 @@ impl WindowContext {
 
         self.controller.center = center;
         self.scene.replace(scene);
-    }
-
-    fn start_tracking_shot(&mut self, split: Option<Split>) {
-        if let Some(scene) = &self.scene {
-            self.animation = Some(Box::new(TrackingShot::from_scene(
-                scene.cameras(split),
-                1.,
-                Some(self.camera.clone()),
-            )));
+        if self.saved_cameras.is_empty() {
+            self.saved_cameras = self
+                .scene
+                .as_ref()
+                .unwrap()
+                .cameras(Some(Split::Test))
+                .clone();
         }
     }
-    fn stop_animation(&mut self) {
+
+    fn start_tracking_shot(&mut self) {
+        if self.saved_cameras.len() > 1 {
+            let a = Animation::new(
+                Duration::from_secs_f32(self.saved_cameras.len() as f32 * 2.),
+                true,
+                Box::new(TrackingShot::from_scene(self.saved_cameras.clone())),
+            );
+            self.animation = Some((a, true));
+        }
+    }
+
+    fn cancle_animation(&mut self) {
         self.animation.take();
         self.controller.reset_to_camera(self.camera);
+    }
+
+    fn stop_animation(&mut self) {
+        if let Some((_animation, playing)) = &mut self.animation {
+            *playing = false;
+        }
+        self.controller.reset_to_camera(self.camera);
+    }
+
+    fn set_scene_camera(&mut self, i: usize) {
+        if let Some(scene) = &self.scene {
+            self.current_view.replace(i);
+            log::info!("view moved to camera {i}");
+            self.set_camera(scene.camera(i).unwrap(), Duration::from_millis(200));
+        }
     }
 
     pub fn set_camera<C: Into<PerspectiveCamera>>(
@@ -635,17 +450,38 @@ impl WindowContext {
             self.update_camera(camera.into())
         } else {
             let target_camera = camera.into();
-            self.animation = Some(Box::new(Transition::new(
-                self.camera.clone(),
-                target_camera,
+            let a = Animation::new(
                 animation_duration,
-                smoothstep,
-            )));
+                false,
+                Box::new(Transition::new(
+                    self.camera.clone(),
+                    target_camera,
+                    smoothstep,
+                )),
+            );
+            self.animation = Some((a, true));
         }
     }
 
     fn update_camera(&mut self, camera: PerspectiveCamera) {
         self.camera = camera;
+    }
+
+    fn save_view(&mut self) {
+        let max_scene_id = if let Some(scene) = &self.scene {
+            scene.cameras(None).iter().map(|c| c.id).max().unwrap_or(0)
+        } else {
+            0
+        };
+        let max_id = self.saved_cameras.iter().map(|c| c.id).max().unwrap_or(0);
+        let id = max_id.max(max_scene_id) + 1;
+        self.saved_cameras.push(SceneCamera::from_perspective(
+            self.camera,
+            id.to_string(),
+            id,
+            Vector2::new(self.config.width, self.config.height),
+            Split::Test,
+        ));
     }
 }
 
@@ -660,7 +496,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
 ) {
     #[cfg(not(target_arch = "wasm32"))]
     env_logger::init();
-    let event_loop = EventLoop::new();
+    let event_loop = EventLoop::new().unwrap();
 
     let scene = scene_file.and_then(|f| match Scene::from_json(f) {
         Ok(s) => Some(s),
@@ -671,7 +507,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
     });
 
     let window_size = if let Some(scene) = &scene {
-        let camera = scene.camera(0);
+        let camera = scene.camera(0).unwrap();
         let factor = 1200. / camera.width as f32;
         PhysicalSize::new(
             (camera.width as f32 * factor) as u32,
@@ -700,7 +536,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
                 doc.body()
             })
             .and_then(|body| {
-                let canvas = window.canvas();
+                let canvas = window.canvas().unwrap();
                 canvas.set_id("window-canvas");
                 canvas.set_width(body.client_width() as u32);
                 canvas.set_height(body.client_height() as u32);
@@ -712,13 +548,13 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
             .expect("couldn't append canvas to document body");
     }
 
-    let mut state = WindowContext::new(window, &event_loop, file, config).await;
+    let mut state = WindowContext::new(window, file, config).await;
 
     if let Some(scene) = scene {
-        let init_camera = scene.camera(0);
+        let init_camera = scene.camera(0).unwrap();
         state.set_scene(scene);
         state.set_camera(init_camera, Duration::ZERO);
-        state.start_tracking_shot(Some(Split::Test));
+        state.start_tracking_shot();
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -734,71 +570,70 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
 
     let mut last = Instant::now();
 
-    event_loop.run(move |event, _, control_flow| 
+    event_loop.run(move |event,target| 
         
         match event {
         Event::WindowEvent {
             ref event,
             window_id,
-        } if window_id == state.window.id() && !state.ui_renderer.on_event(event) => match event {
+        } if window_id == state.window.id() && !state.ui_renderer.on_event(&state.window,event) => match event {
             WindowEvent::Resized(physical_size) => {
                 state.resize(*physical_size, None);
             }
             WindowEvent::ScaleFactorChanged {
                 scale_factor,
-                new_inner_size,
                 ..
             } => {
-                state.resize(**new_inner_size, Some(*scale_factor as f32));
+                state.scale_factor = *scale_factor as f32;
             }
-            WindowEvent::CloseRequested => {log::info!("close!");*control_flow = ControlFlow::Exit},
+            WindowEvent::CloseRequested => {log::info!("close!");target.exit()},
             WindowEvent::ModifiersChanged(m)=>{
-                state.controller.alt_pressed = m.ctrl();
+                state.controller.alt_pressed = m.state().alt_key();
             }
-            WindowEvent::KeyboardInput { input, .. } => {
-                if let Some(key) = input.virtual_keycode {
-                    if input.state == ElementState::Released{
+            WindowEvent::KeyboardInput { event, .. } => {
+                if let PhysicalKey::Code(key) = event.physical_key{
+                if event.state == ElementState::Released{
 
-                        if key == VirtualKeyCode::T{
-                            if state.animation.is_none(){
-                                state.start_tracking_shot(Some(Split::Test));
-                            }else{
-                                state.stop_animation()
-                            }
-                        }else if key == VirtualKeyCode::U{
-                            state.ui_visible = !state.ui_visible;
-                            
-                        }else
-                        if let Some(scene) = &state.scene{
+                    if key == KeyCode::KeyT{
+                        if state.animation.is_none(){
+                            state.start_tracking_shot();
+                        }else{
+                            state.stop_animation()
+                        }
+                    }else if key == KeyCode::KeyU{
+                        state.ui_visible = !state.ui_visible;
+                        
+                    }else if key == KeyCode::KeyC{
+                        state.save_view();
+                    }else
+                    if let Some(scene) = &state.scene{
 
-                            let new_camera = 
-                            if let Some(num) = key_to_num(key){
-                                Some(num as usize)
-                            }
-                            else if key == VirtualKeyCode::R{
-                                Some(rand::random::<usize>()%scene.num_cameras())
-                            }else if key == VirtualKeyCode::N{
-                                Some(scene.nearest_camera(state.camera.position,None))
-                            }else if key == VirtualKeyCode::PageUp{
-                                Some(state.current_view.map_or(0, |v|v+1) % scene.num_cameras())
-                            }else if key == VirtualKeyCode::T{
-                                Some(state.current_view.map_or(0, |v|v+1) % scene.num_cameras())
-                            }
-                            else if key == VirtualKeyCode::PageDown{
-                                Some(state.current_view.map_or(0, |v|v-1) % scene.num_cameras())
-                            }else{None};
+                        let new_camera = 
+                        if let Some(num) = key_to_num(key){
+                            Some(num as usize)
+                        }
+                        else if key == KeyCode::KeyR{
+                            Some(rand::random::<usize>()%scene.num_cameras())
+                        }else if key == KeyCode::KeyN{
+                            scene.nearest_camera(state.camera.position,None)
+                        }else if key == KeyCode::PageUp{
+                            Some(state.current_view.map_or(0, |v|v+1) % scene.num_cameras())
+                        }else if key == KeyCode::KeyT{
+                            Some(state.current_view.map_or(0, |v|v+1) % scene.num_cameras())
+                        }
+                        else if key == KeyCode::PageDown{
+                            Some(state.current_view.map_or(0, |v|v-1) % scene.num_cameras())
+                        }else{None};
 
-                            if let Some(new_camera) = new_camera{
-                                state.current_view.replace(new_camera as usize);
-                                log::info!("view moved to camera {new_camera}");
-                                state.set_camera(scene.camera(new_camera as usize),Duration::from_millis(500));
-                            }
+                        if let Some(new_camera) = new_camera{
+                            state.set_scene_camera(new_camera);
                         }
                     }
-                    state
-                        .controller
-                        .process_keyboard(key, input.state == ElementState::Pressed);
                 }
+                state
+                    .controller
+                    .process_keyboard(key, event.state == ElementState::Pressed);
+            }
             }
             WindowEvent::MouseWheel { delta, .. } => match delta {
                 winit::event::MouseScrollDelta::LineDelta(_, dy) => {
@@ -810,9 +645,25 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
             },
             WindowEvent::MouseInput { state:button_state, button, .. }=>{
                 match button {
-                    winit::event::MouseButton::Left => state.controller.left_mouse_pressed = *button_state == ElementState::Pressed,
+                    winit::event::MouseButton::Left =>                         state.controller.left_mouse_pressed = *button_state == ElementState::Pressed,
                     winit::event::MouseButton::Right => state.controller.right_mouse_pressed = *button_state == ElementState::Pressed,
                     _=>{}
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                let now = Instant::now();
+                let dt = now-last;
+                last = now;
+                state.update(dt);
+    
+                match state.render() {
+                    Ok(_) => {}
+                    // Reconfigure the surface if lost
+                    Err(wgpu::SurfaceError::Lost) => state.resize(state.window.inner_size(), None),
+                    // The system is out of memory, we should probably quit
+                    Err(wgpu::SurfaceError::OutOfMemory) =>target.exit(),
+                    // All other errors (Outdated, Timeout) should be resolved by the next frame
+                    Err(e) => println!("error: {:?}", e),
                 }
             }
             _ => {}
@@ -823,35 +674,21 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
         } => {
             state.controller.process_mouse(delta.0 as f32, delta.1 as f32)
         }
-        Event::RedrawRequested(window_id) if window_id == state.window.id() => {
-            let now = Instant::now();
-            let dt = now-last;
-            last = now;
-            state.update(dt);
-
-            match state.render() {
-                Ok(_) => {}
-                // Reconfigure the surface if lost
-                Err(wgpu::SurfaceError::Lost) => state.resize(state.window.inner_size(), None),
-                // The system is out of memory, we should probably quit
-                Err(wgpu::SurfaceError::OutOfMemory) => *control_flow = ControlFlow::Exit,
-                // All other errors (Outdated, Timeout) should be resolved by the next frame
-                Err(e) => println!("error: {:?}", e),
-            }
-        }
-        Event::MainEventsCleared => {
+        
+        Event::AboutToWait => {
             // RedrawRequested will only trigger once, unless we manually
             // request it.
             state.window.request_redraw();
         }
         _ => {},
-    });
+    }).unwrap();
 }
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
-pub fn run_wasm(pc: Vec<u8>, scene: Option<Vec<u8>>) {
+pub async fn run_wasm(pc: Vec<u8>, scene: Option<Vec<u8>>) {
     use std::io::Cursor;
+
     std::panic::set_hook(Box::new(console_error_panic_hook::hook));
     console_log::init().expect("could not initialize logger");
     let pc_reader = Cursor::new(pc);

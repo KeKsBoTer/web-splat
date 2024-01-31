@@ -12,7 +12,9 @@ use wgpu::util::DeviceExt;
 #[cfg(feature = "npz")]
 use crate::npz::NpzReader;
 use crate::ply::PlyReader;
+#[cfg(feature = "npz")]
 use crate::uniform::UniformBuffer;
+use crate::utils::download_buffer;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -185,7 +187,9 @@ impl PointCloud {
         let splat_2d_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("2d gaussians buffer"),
             size: (num_points * mem::size_of::<Splat>()) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
@@ -378,9 +382,9 @@ impl PointCloud {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Splat {
-    v: Vector4<f16>,
-    pos: Vector2<f16>,
-    color: Vector4<f16>,
+    pub v: Vector4<f16>,
+    pub pos: Vector2<f16>,
+    pub color: Vector4<f16>,
 }
 
 pub trait PointCloudReader {
@@ -411,6 +415,7 @@ pub struct Quantization {
 }
 
 impl Quantization {
+    #[cfg(feature = "npz")]
     pub fn new(zero_point: i32, scale: f32) -> Self {
         Quantization {
             zero_point,
