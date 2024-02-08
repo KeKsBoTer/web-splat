@@ -2,6 +2,7 @@ use cgmath::*;
 #[cfg(target_arch = "wasm32")]
 use instant::Duration;
 use num_traits::Float;
+use std::f32::consts::PI;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
@@ -12,6 +13,7 @@ use crate::camera::{Camera, PerspectiveCamera};
 #[derive(Debug)]
 pub struct CameraController {
     pub center: Point3<f32>,
+    pub up: Option<Vector3<f32>>,
     amount: Vector3<f32>,
     shift: Vector2<f32>,
     rotation: Vector3<f32>,
@@ -32,6 +34,7 @@ impl CameraController {
             amount: Vector3::zero(),
             shift: Vector2::zero(),
             rotation: Vector3::zero(),
+            up: None,
             scroll: 0.0,
             speed,
             sensitivity,
@@ -101,10 +104,20 @@ impl CameraController {
         self.user_inptut = true;
     }
 
+    /// moves the controller center to the closest point on a line defined by the camera position and rotation
+    /// ajusts the controller up vector by projecting the current up vector onto the plane defined by the camera right vector
     pub fn reset_to_camera(&mut self, camera: PerspectiveCamera) {
-        let inv_view = camera.view_matrix().inverse_transform().unwrap();
-        let forward = inv_view.z.truncate();
+        let inv_view = camera.rotation.invert();
+        let forward = inv_view * Vector3::unit_z();
+        let right = inv_view * Vector3::unit_x();
+
+        // move center point
         self.center = closest_point(camera.position, forward, self.center);
+        // adjust up vector by projecting it onto the plane defined by the right vector of the camera
+        if let Some(up) = &self.up {
+            let new_up = up - up.project_on(right);
+            self.up = Some(new_up.normalize());
+        }
     }
 
     pub fn update_camera(&mut self, camera: &mut PerspectiveCamera, dt: Duration) {
@@ -115,10 +128,10 @@ impl CameraController {
 
         dir = dir.normalize_to((distance.ln() + self.scroll * dt * 10. * self.speed).exp());
 
-        let inv_view = camera.view_matrix().inverse_transform().unwrap();
+        let inv_view = camera.view_matrix().transpose();
 
         let x_axis = inv_view.x.truncate();
-        let y_axis = inv_view.y.truncate();
+        let y_axis = self.up.unwrap_or(inv_view.y.truncate());
         let z_axis = inv_view.z.truncate();
 
         let offset =
@@ -141,8 +154,12 @@ impl CameraController {
         let rot_eta = Quaternion::from_axis_angle(z_axis, eta);
         let rot = rot_theta * rot_phi * rot_eta;
 
-        let up = rot.rotate_vector(y_axis);
-        let new_dir: Vector3<f32> = rot.rotate_vector(dir);
+        let up = y_axis; // rot.rotate_vector(y_axis);
+        let mut new_dir = rot.rotate_vector(dir);
+
+        if angle_short(y_axis, new_dir) < Rad(0.1) {
+            new_dir = dir;
+        }
         camera.position = self.center + new_dir;
 
         camera.rotation = Quaternion::look_at(-new_dir, up);
@@ -175,4 +192,13 @@ fn closest_point(orig: Point3<f32>, dir: Vector3<f32>, point: Point3<f32>) -> Po
     let dot_p = lhs.dot(dir);
     // Return result
     return orig + dir * dot_p;
+}
+
+fn angle_short(a: Vector3<f32>, b: Vector3<f32>) -> Rad<f32> {
+    let angle = a.angle(b);
+    if angle > Rad(PI / 2.) {
+        return Rad(PI) - angle;
+    } else {
+        return angle;
+    }
 }

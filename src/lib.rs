@@ -162,7 +162,11 @@ pub struct WindowContext {
 impl WindowContext {
     // Creating some of the wgpu types requires async code
     async fn new<R: Read + Seek>(window: Window, pc_file: R, render_config: &RenderConfig) -> Self {
-        let size = window.inner_size();
+        
+        let mut size = window.inner_size();
+        if size == PhysicalSize::new(0, 0) {
+            size = PhysicalSize::new(800, 600);
+        }
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
 
@@ -223,7 +227,8 @@ impl WindowContext {
         );
 
         let mut controller = CameraController::new(0.1, 0.05);
-        controller.center = aabb.center();
+        controller.center = pc.center;
+        controller.up = pc.up;
         let ui_renderer = ui_renderer::EguiWGPU::new(device, surface_format, &window);
 
 
@@ -480,6 +485,7 @@ impl WindowContext {
         camera: C,
         animation_duration: Duration,
     ) {
+        let camera:PerspectiveCamera = camera.into();
         if animation_duration.is_zero() {
             self.update_camera(camera.into())
         } else {
@@ -737,6 +743,6 @@ pub async fn run_wasm(pc: Vec<u8>, scene: Option<Vec<u8>>) {
     wasm_bindgen_futures::spawn_local(open_window(
         pc_reader,
         scene_reader,
-        RenderConfig { no_vsync: false },
+        RenderConfig { no_vsync: false,skybox:None },
     ));
 }
