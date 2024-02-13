@@ -63,7 +63,7 @@ impl EguiWGPU {
             .tessellate(output.shapes, scale_factor);
 
         // let size = window.inner_size();l
-        let screen_descriptor = egui_wgpu::renderer::ScreenDescriptor {
+        let screen_descriptor = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [size.width, size.height],
             pixels_per_point: self.winit.egui_ctx().pixels_per_point(),
         };

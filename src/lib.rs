@@ -1,7 +1,7 @@
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
-    io::{Read, Seek},
+    io::{Read, Seek}, sync::Arc,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use wgpu::Backends;
 
 use cgmath::{
-    Deg, EuclideanSpace, InnerSpace, Matrix2, Matrix3, MetricSpace, Point3, Quaternion, Transform,
+    Deg, EuclideanSpace, MetricSpace, Point3, Quaternion,
     Vector2, Vector3,
 };
 use egui::Color32;
@@ -77,32 +77,33 @@ impl WGPUContext {
         return WGPUContext::new(&instance, None).await;
     }
 
-    pub async fn new(instance: &wgpu::Instance, surface: Option<&wgpu::Surface>) -> Self {
+    pub async fn new(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'static>>) -> Self {
         let adapter = wgpu::util::initialize_adapter_from_env_or_default(instance, surface)
             .await
             .unwrap();
 
         #[cfg(target_arch = "wasm32")]
-        let features = wgpu::Features::default();
+        let required_features = wgpu::Features::default();
         #[cfg(not(target_arch = "wasm32"))]
-        let features = wgpu::Features::TIMESTAMP_QUERY
+        let required_features = wgpu::Features::TIMESTAMP_QUERY
             | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
             | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
 
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
-                    features,
+                    required_features,
                     #[cfg(not(target_arch = "wasm32"))]
-                    limits: wgpu::Limits {
+                    required_limits: wgpu::Limits {
                         max_storage_buffer_binding_size: (1 << 30) - 1,
                         max_buffer_size: (1 << 30) - 1,
                         max_storage_buffers_per_shader_stage: 12,
                         max_compute_workgroup_storage_size: 1 << 15,
                         ..Default::default()
                     },
+                
                     #[cfg(target_arch = "wasm32")]
-                    limits: wgpu::Limits {
+                    required_limits: wgpu::Limits {
                         max_compute_workgroup_storage_size: 1 << 15,
                         max_texture_dimension_1d: 4096,
                         max_texture_dimension_2d: 4096,
@@ -128,9 +129,9 @@ impl WGPUContext {
 
 pub struct WindowContext {
     wgpu_context: WGPUContext,
-    surface: wgpu::Surface,
+    surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
-    window: Window,
+    window: Arc<Window>,
     scale_factor: f32,
 
     pc: PointCloud,
@@ -166,9 +167,11 @@ impl WindowContext {
     async fn new<R: Read + Seek>(window: Window, pc_file: R, render_config: RenderConfig) -> Self {
         let size = window.inner_size();
 
+        let window = Arc::new(window);
+
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
 
-        let surface: wgpu::Surface = unsafe { instance.create_surface(&window) }.unwrap();
+        let surface: wgpu::Surface = instance.create_surface(window.clone()).unwrap();
 
         let wgpu_context = WGPUContext::new(&instance, Some(&surface)).await;
 
@@ -194,6 +197,7 @@ impl WindowContext {
             format: surface_format,
             width: size.width,
             height: size.height,
+            desired_maximum_frame_latency: 2,
             present_mode: if render_config.no_vsync {
                 wgpu::PresentMode::AutoNoVsync
             } else {

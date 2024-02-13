@@ -1,5 +1,4 @@
 use crate::gpu_rs::{GPURSSorter, PointCloudSortStuff};
-use crate::pointcloud::Splat;
 use crate::{
     camera::{Camera, PerspectiveCamera, VIEWPORT_Y_FLIP},
     pointcloud::PointCloud,
@@ -84,7 +83,7 @@ impl GaussianRenderer {
 
         let draw_indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("indirect draw buffer"),
-            size: std::mem::size_of::<wgpu::util::DrawIndirect>() as u64,
+            size: std::mem::size_of::<wgpu::util::DrawIndirectArgs>() as u64,
             usage: wgpu::BufferUsages::INDIRECT
                 | wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
@@ -152,11 +151,11 @@ impl GaussianRenderer {
         queue.write_buffer(
             &self.draw_indirect_buffer,
             0,
-            wgpu::util::DrawIndirect {
+            wgpu::util::DrawIndirectArgs {
                 vertex_count: 4,
                 instance_count: 0,
-                base_vertex: 0,
-                base_instance: 0,
+                first_vertex: 0,
+                first_instance: 0,
             }
             .as_bytes(),
         );
@@ -311,7 +310,7 @@ impl GaussianRenderer {
                     ty: wgpu::BufferBindingType::Storage { read_only: false },
                     has_dynamic_offset: false,
                     min_binding_size: Some(
-                        NonZeroU64::new(std::mem::size_of::<wgpu::util::DrawIndirect>() as u64)
+                        NonZeroU64::new(std::mem::size_of::<wgpu::util::DrawIndirectArgs>() as u64)
                             .unwrap(),
                     ),
                 },
