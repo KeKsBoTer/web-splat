@@ -1,6 +1,7 @@
 use bytemuck::Zeroable;
 use cgmath::{
-    BaseNum, ElementWise, EuclideanSpace, MetricSpace, Point3, Vector2, Vector3, Vector4,
+    Array, BaseNum, ElementWise, EuclideanSpace, InnerSpace, MetricSpace, Point3, Vector2, Vector3,
+    Vector4,
 };
 use half::f16;
 use num_traits::Float;
@@ -52,6 +53,9 @@ pub struct PointCloud {
     sh_deg: u32,
     bbox: Aabb<f32>,
     compressed: bool,
+
+    pub center: Point3<f32>,
+    pub up: Option<Vector3<f32>>,
 }
 
 impl Debug for PointCloud {
@@ -109,11 +113,18 @@ impl PointCloud {
         });
 
         let (vertices, sh_coefs, covars, quantization) = npz_reader.read(sh_deg)?;
+        let points: Vec<Point3<f32>> = vertices.iter().map(|g| g.xyz.map(|v| v.to_f32())).collect();
 
         let mut bbox: Aabb<f16> = Aabb::unit();
         for v in &vertices {
             bbox.grow(v.xyz);
         }
+        let (center, mut up) = plane_from_points(points.as_slice());
+
+        if bbox.sphere() < f16::from_f32_const(10.) {
+            up = None;
+        }
+        log::info!("up vector: {:?}", up);
         let sh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("sh coefs buffer"),
             contents: bytemuck::cast_slice(sh_coefs.as_slice()),
@@ -169,6 +180,8 @@ impl PointCloud {
             sh_deg,
             bbox: bbox.into(),
             compressed: true,
+            center,
+            up,
         })
     }
 
@@ -206,6 +219,9 @@ impl PointCloud {
         for v in &vertices {
             bbox.grow(v.xyz);
         }
+        let points: Vec<Point3<f32>> = vertices.iter().map(|g| g.xyz.map(|v| v.to_f32())).collect();
+
+        let (center, up) = plane_from_points(points.as_slice());
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("3d gaussians buffer"),
             contents: bytemuck::cast_slice(vertices.as_slice()),
@@ -214,7 +230,13 @@ impl PointCloud {
 
         let sh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("sh coefs buffer"),
-            contents: bytemuck::cast_slice(sh_coefs.as_slice()),
+            contents: bytemuck::cast_slice(
+                sh_coefs
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<[f16; 3]>>()
+                    .as_slice(),
+            ),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -246,6 +268,8 @@ impl PointCloud {
             sh_deg,
             compressed: false,
             bbox: bbox.into(),
+            center,
+            up,
         })
     }
 
@@ -506,5 +530,110 @@ impl Into<Aabb<f32>> for Aabb<f16> {
             min: self.min.map(|v| v.into()),
             max: self.max.map(|v| v.into()),
         }
+    }
+}
+
+// Fit a plane to a collection of points.
+// Fast, and accurate to within a few degrees.
+// Returns None if the points do not span a plane.
+// see http://www.ilikebigbits.com/2017_09_25_plane_from_points_2.html
+fn plane_from_points(points: &[Point3<f32>]) -> (Point3<f32>, Option<Vector3<f32>>) {
+    let n = points.len();
+
+    let mut sum = Point3 {
+        x: 0.0f32,
+        y: 0.0f32,
+        z: 0.0f32,
+    };
+    for p in points {
+        sum = &sum + p.to_vec();
+    }
+    let centroid = &sum * (1.0 / (n as f32));
+    if n < 3 {
+        return (centroid, None);
+    }
+
+    // Calculate full 3x3 covariance matrix, excluding symmetries:
+    let mut xx = 0.0;
+    let mut xy = 0.0;
+    let mut xz = 0.0;
+    let mut yy = 0.0;
+    let mut yz = 0.0;
+    let mut zz = 0.0;
+
+    for p in points {
+        let r = p - centroid;
+        xx += r.x * r.x;
+        xy += r.x * r.y;
+        xz += r.x * r.z;
+        yy += r.y * r.y;
+        yz += r.y * r.z;
+        zz += r.z * r.z;
+    }
+
+    xx /= n as f32;
+    xy /= n as f32;
+    xz /= n as f32;
+    yy /= n as f32;
+    yz /= n as f32;
+    zz /= n as f32;
+
+    let mut weighted_dir = Vector3 {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
+
+    {
+        let det_x = yy * zz - yz * yz;
+        let axis_dir = Vector3 {
+            x: det_x,
+            y: xz * yz - xy * zz,
+            z: xy * yz - xz * yy,
+        };
+        let mut weight = det_x * det_x;
+        if weighted_dir.dot(axis_dir) < 0.0 {
+            weight = -weight;
+        }
+        weighted_dir += &axis_dir * weight;
+    }
+
+    {
+        let det_y = xx * zz - xz * xz;
+        let axis_dir = Vector3 {
+            x: xz * yz - xy * zz,
+            y: det_y,
+            z: xy * xz - yz * xx,
+        };
+        let mut weight = det_y * det_y;
+        if weighted_dir.dot(axis_dir) < 0.0 {
+            weight = -weight;
+        }
+        weighted_dir += &axis_dir * weight;
+    }
+
+    {
+        let det_z = xx * yy - xy * xy;
+        let axis_dir = Vector3 {
+            x: xy * yz - xz * yy,
+            y: xy * xz - yz * xx,
+            z: det_z,
+        };
+        let mut weight = det_z * det_z;
+        if weighted_dir.dot(axis_dir) < 0.0 {
+            weight = -weight;
+        }
+        weighted_dir += &axis_dir * weight;
+    }
+
+    let mut normal = weighted_dir.normalize();
+
+    if normal.dot(Vector3::unit_y()) < 0. {
+        normal = -normal;
+    }
+    if normal.is_finite() {
+        (centroid, Some(normal))
+    } else {
+        (centroid, None)
     }
 }

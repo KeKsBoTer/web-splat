@@ -1,5 +1,4 @@
 use cgmath::{BaseFloat, Matrix, Matrix3, Quaternion, SquareMatrix, Vector3};
-
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 

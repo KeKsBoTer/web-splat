@@ -1,6 +1,6 @@
 
 //const MAX_SH_DEG:u32 = <injected>u;
-
+const KERNEL_SIZE:f32 = 0.1;
 
 const SH_C0:f32 = 0.28209479177387814;
 
@@ -77,6 +77,7 @@ struct SortInfos {
 struct RenderSettings {
     gaussian_scaling: f32,
     max_sh_deg: u32,
+    show_env_map: u32,
 }
 
 @group(0) @binding(0)
@@ -166,7 +167,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let a = unpack2x16float(vertex.pos_opacity[0]);
     let b = unpack2x16float(vertex.pos_opacity[1]);
     let xyz = vec3<f32>(a.x, a.y, b.x);
-    let opacity = b.y;
+    var opacity = b.y;
 
     var camspace = camera.view * vec4<f32>(xyz, 1.);
     let pos2d = camera.proj * camspace;
@@ -205,9 +206,19 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let T = W * J;
     let cov = transpose(T) * Vrk * T;
 
-    let diagonal1 = cov[0][0] + 0.3;
+    // according to Mip-Splatting by Yu et al. 2023
+    let det_0 = max(1e-6, cov[0][0] * cov[1][1] - cov[0][1] * cov[0][1]);
+    let det_1 = max(1e-6, (cov[0][0] + KERNEL_SIZE) * (cov[1][1] + KERNEL_SIZE) - cov[0][1] * cov[0][1]);
+    var coef = sqrt(det_0 / (det_1 + 1e-6) + 1e-6);
+
+    if det_0 <= 1e-6 || det_1 <= 1e-6 {
+        coef = 0.0;
+    }
+    opacity *= coef;
+
+    let diagonal1 = cov[0][0] + KERNEL_SIZE;
     let offDiagonal = cov[0][1];
-    let diagonal2 = cov[1][1] + 0.3;
+    let diagonal2 = cov[1][1] + KERNEL_SIZE;
 
     let mid = 0.5 * (diagonal1 + diagonal2);
     let radius = length(vec2<f32>((diagonal1 - diagonal2) / 2.0, offDiagonal));

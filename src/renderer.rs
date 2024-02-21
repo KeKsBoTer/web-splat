@@ -125,6 +125,10 @@ impl GaussianRenderer {
         }
     }
 
+    pub(crate) fn camera(&self) -> &UniformBuffer<CameraUniform> {
+        &self.camera
+    }
+
     fn preprocess<'a>(
         &'a mut self,
         encoder: &'a mut wgpu::CommandEncoder,
@@ -145,6 +149,7 @@ impl GaussianRenderer {
         let settings_uniform = self.render_settings.as_mut();
         settings_uniform.gaussian_scaling = render_settings.gaussian_scaling;
         settings_uniform.max_sh_deg = render_settings.max_sh_deg;
+        settings_uniform.show_env_map = render_settings.show_env_map as u32;
         self.render_settings.sync(queue);
 
         // TODO perform this in vertex buffer after draw call
@@ -322,6 +327,10 @@ impl GaussianRenderer {
     pub fn color_format(&self) -> wgpu::TextureFormat {
         self.color_format
     }
+
+    pub(crate) fn render_settings(&self) -> &UniformBuffer<SplattingArgsUniform> {
+        &self.render_settings
+    }
 }
 
 #[repr(C)]
@@ -461,6 +470,8 @@ pub struct Display {
     bind_group: wgpu::BindGroup,
     format: wgpu::TextureFormat,
     view: wgpu::TextureView,
+    env_bg: wgpu::BindGroup,
+    has_env_map: bool,
 }
 
 impl Display {
@@ -473,7 +484,12 @@ impl Display {
     ) -> Self {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("display pipeline layout"),
-            bind_group_layouts: &[&Self::bind_group_layout(device)],
+            bind_group_layouts: &[
+                &Self::bind_group_layout(device),
+                &Self::env_map_bind_group_layout(device),
+                &UniformBuffer::<CameraUniform>::bind_group_layout(device),
+                &UniformBuffer::<SplattingArgsUniform>::bind_group_layout(device),
+            ],
             push_constant_ranges: &[],
         });
         let shader = device.create_shader_module(include_wgsl!("shaders/display.wgsl"));
@@ -502,17 +518,96 @@ impl Display {
             }),
             multiview: None,
         });
+        let env_bg = Self::create_env_map_bg(device, None);
         let (view, bind_group) = Self::create_render_target(device, source_format, width, height);
         Self {
             pipeline,
             view,
             format: source_format,
             bind_group,
+            env_bg,
+            has_env_map: false,
         }
     }
 
     pub fn texture(&self) -> &wgpu::TextureView {
         &self.view
+    }
+
+    fn env_map_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("env map bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        })
+    }
+
+    fn create_env_map_bg(
+        device: &wgpu::Device,
+        env_texture: Option<&wgpu::TextureView>,
+    ) -> wgpu::BindGroup {
+        let env_map_placeholder = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("placeholder"),
+                size: Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&Default::default());
+        let env_texture_view = env_texture.unwrap_or(&env_map_placeholder);
+        let env_map_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("env map sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        return device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("env map bind group"),
+            layout: &Self::env_map_bind_group_layout(device),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(env_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&env_map_sampler),
+                },
+            ],
+        });
+    }
+
+    pub fn set_env_map(&mut self, device: &wgpu::Device, env_texture: Option<&wgpu::TextureView>) {
+        self.env_bg = Self::create_env_map_bg(device, env_texture);
+        self.has_env_map = env_texture.is_some();
+    }
+
+    pub fn has_env_map(&self) -> bool {
+        self.has_env_map
     }
 
     fn create_render_target(
@@ -593,6 +688,8 @@ impl Display {
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         background_color: wgpu::Color,
+        camera: &UniformBuffer<CameraUniform>,
+        render_settings: &UniformBuffer<SplattingArgsUniform>,
     ) {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("render pass"),
@@ -607,6 +704,9 @@ impl Display {
             ..Default::default()
         });
         render_pass.set_bind_group(0, &self.bind_group, &[]);
+        render_pass.set_bind_group(1, &self.env_bg, &[]);
+        render_pass.set_bind_group(2, camera.bind_group(), &[]);
+        render_pass.set_bind_group(3, render_settings.bind_group(), &[]);
         render_pass.set_pipeline(&self.pipeline);
 
         render_pass.draw(0..4, 0..1);
@@ -620,6 +720,7 @@ pub struct SplattingArgs {
     pub viewport: Vector2<u32>,
     pub gaussian_scaling: f32,
     pub max_sh_deg: u32,
+    pub show_env_map: bool,
 }
 
 impl Hash for SplattingArgs {
@@ -628,20 +729,23 @@ impl Hash for SplattingArgs {
         self.viewport.hash(state);
         self.max_sh_deg.hash(state);
         self.gaussian_scaling.to_bits().hash(state);
+        self.show_env_map.hash(state)
     }
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct SplattingArgsUniform {
+pub struct SplattingArgsUniform {
     gaussian_scaling: f32,
     max_sh_deg: u32,
+    show_env_map: u32,
 }
 impl Default for SplattingArgsUniform {
     fn default() -> Self {
         Self {
             gaussian_scaling: 1.0,
             max_sh_deg: 3,
+            show_env_map: 1,
         }
     }
 }
