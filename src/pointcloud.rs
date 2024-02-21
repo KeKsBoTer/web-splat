@@ -230,7 +230,13 @@ impl PointCloud {
 
         let sh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("sh coefs buffer"),
-            contents: bytemuck::cast_slice(sh_coefs.as_slice()),
+            contents: bytemuck::cast_slice(
+                sh_coefs
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<[f16; 3]>>()
+                    .as_slice(),
+            ),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
 

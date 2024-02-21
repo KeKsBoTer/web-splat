@@ -122,7 +122,6 @@ impl CameraController {
 
     pub fn update_camera(&mut self, camera: &mut PerspectiveCamera, dt: Duration) {
         let dt: f32 = dt.as_secs_f32();
-
         let mut dir = camera.position - self.center;
         let distance = dir.magnitude();
 
@@ -138,7 +137,6 @@ impl CameraController {
             (self.shift.y * x_axis - self.shift.x * y_axis) * dt * self.speed * 0.1 * distance;
         self.center += offset;
         camera.position += offset;
-
         let mut theta = Rad((-self.rotation.x) * dt * self.sensitivity);
         let mut phi = Rad((-self.rotation.y) * dt * self.sensitivity);
         let mut eta = Rad::zero();
@@ -160,6 +158,7 @@ impl CameraController {
         if angle_short(y_axis, new_dir) < Rad(0.1) {
             new_dir = dir;
         }
+
         camera.position = self.center + new_dir;
 
         camera.rotation = Quaternion::look_at(-new_dir, up);

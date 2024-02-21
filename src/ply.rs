@@ -42,7 +42,7 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
         })
     }
 
-    fn read_line<B: ByteOrder>(&mut self) -> (GaussianFloat, [[f16; 3]; 16]) {
+    fn read_line<B: ByteOrder>(&mut self, sh_deg: usize) -> (GaussianFloat, [[f16; 3]; 16]) {
         let mut pos = [0.; 3];
         self.reader.read_f32_into::<B>(&mut pos).unwrap();
 
@@ -52,15 +52,18 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
         let mut _normals = [0.; 3];
         self.reader.read_f32_into::<B>(&mut _normals).unwrap();
 
-        let mut sh = [[0.; 3]; 16];
+        let mut sh: [[f32; 3]; 16] = [[0.; 3]; 16];
         self.reader.read_f32_into::<B>(&mut sh[0]).unwrap();
         let mut sh_rest = [0.; 15 * 3];
-        self.reader.read_f32_into::<B>(&mut sh_rest).unwrap();
+        let num_coefs = (sh_deg + 1) * (sh_deg + 1);
+        self.reader
+            .read_f32_into::<B>(&mut sh_rest[..(num_coefs - 1) * 3])
+            .unwrap();
 
         // higher order coefficients are stored with channel first (shape:[N,3,C])
-        for i in 0..15 {
+        for i in 0..(num_coefs - 1) {
             for j in 0..3 {
-                sh[i + 1][j] = sh_rest[j * 15 + i];
+                sh[i + 1][j] = sh_rest[j * (num_coefs - 1) + i];
             }
         }
 
@@ -92,13 +95,14 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
     pub fn read(&mut self) -> Result<(Vec<GaussianFloat>, Vec<[[f16; 3]; 16]>), anyhow::Error> {
         let start = Instant::now();
         let num_points = self.num_points()?;
+        let sh_deg = self.file_sh_deg()? as usize;
         let result = match self.header.encoding {
             ply_rs::ply::Encoding::Ascii => todo!("acsii ply format not supported"),
             ply_rs::ply::Encoding::BinaryBigEndian => (0..num_points)
-                .map(|_| self.read_line::<BigEndian>())
+                .map(|_| self.read_line::<BigEndian>(sh_deg))
                 .unzip(),
             ply_rs::ply::Encoding::BinaryLittleEndian => (0..num_points)
-                .map(|_| self.read_line::<LittleEndian>())
+                .map(|_| self.read_line::<LittleEndian>(sh_deg))
                 .unzip(),
         };
         info!(

@@ -189,13 +189,24 @@ pub(crate) fn ui(state: &mut WindowContext) {
                 .striped(false)
                 .show(ui, |ui| {
                     ui.strong("Gaussians:");
-                    ui.label(state.pc.num_points().to_string());
+                    ui.label(format_thousands(state.pc.num_points()));
                     ui.end_row();
                     ui.strong("SH Degree:");
                     ui.label(state.pc.sh_deg().to_string());
                     ui.end_row();
                     ui.strong("Compressed:");
                     ui.label(state.pc.compressed().to_string());
+                    ui.end_row();
+                    if let Some(path) = &state.pointcloud_file_path {
+                        ui.strong("File:");
+                        let text = path.to_string_lossy().to_string();
+
+                        ui.add(egui::Label::new(
+                            path.file_name().unwrap().to_string_lossy().to_string(),
+                        ))
+                        .on_hover_text(text);
+                        ui.end_row();
+                    }
                     ui.end_row();
                 });
 
@@ -224,18 +235,41 @@ pub(crate) fn ui(state: &mut WindowContext) {
                                     }
                                     ui.label(scene.camera(*c as usize).unwrap().split.to_string());
                                 });
+                            } else {
+                                ui.label("-");
+                            }
+                            if let Some(path) = &state.scene_file_path {
+                                ui.end_row();
+                                ui.strong("File:");
+                                let text = path.to_string_lossy().to_string();
+
+                                ui.add(egui::Label::new(
+                                    path.file_name().unwrap().to_string_lossy().to_string(),
+                                ))
+                                .on_hover_text(text);
                             }
                         });
 
                     egui::ScrollArea::vertical()
                         .max_height(300.)
                         .show(ui, |ui| {
+                            let cameras = scene.cameras(None);
+                            let cameras2 = cameras.clone();
+                            let curr_view = state.current_view;
                             egui::Grid::new("scene views grid")
                                 .num_columns(4)
                                 .striped(true)
+                                .with_row_color(move |idx, _| {
+                                    if let Some(view_id) = curr_view {
+                                        if idx < cameras.len() && (&cameras)[idx].id == view_id {
+                                            return Some(Color32::from_gray(64));
+                                        }
+                                    }
+                                    return None;
+                                })
                                 .show(ui, |ui| {
                                     let style = ui.style().clone();
-                                    for c in scene.cameras(None) {
+                                    for c in cameras2 {
                                         ui.colored_label(
                                             style.visuals.strong_text_color(),
                                             c.id.to_string(),
@@ -247,7 +281,13 @@ pub(crate) fn ui(state: &mut WindowContext) {
                                             },
                                             c.split.to_string(),
                                         );
-                                        ui.label(c.img_name.clone());
+
+                                        let resp = ui.label(c.img_name.clone());
+                                        if let Some(view_id) = curr_view {
+                                            if c.id == view_id {
+                                                resp.scroll_to_me(None);
+                                            }
+                                        }
                                         if ui.button("🎥").clicked() {
                                             new_camera = Some(SetCamera::ID(c.id));
                                         }
@@ -474,4 +514,20 @@ enum SetCamera {
     ID(usize),
     #[allow(dead_code)]
     Camera(SceneCamera),
+}
+
+/// 212312321 -> 212.312.321
+fn format_thousands(n: u32) -> String {
+    let mut n = n;
+    let mut result = String::new();
+    while n > 0 {
+        let rem = n % 1000;
+        n /= 1000;
+        if n > 0 {
+            result = format!(".{:03}", rem) + &result;
+        } else {
+            result = rem.to_string() + &result;
+        }
+    }
+    result
 }

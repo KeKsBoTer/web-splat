@@ -11,8 +11,7 @@ use std::time::{Duration, Instant};
 use wgpu::{util::DeviceExt, Backends, Extent3d};
 
 use cgmath::{
-    Deg, EuclideanSpace,  MetricSpace, Point3, Quaternion,
-    Vector2, Vector3,
+    Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, RelativeEq, UlpsEq, Vector2, Vector3
 };
 use egui::Color32;
 use num_traits::One;
@@ -134,10 +133,12 @@ pub struct WindowContext {
     scale_factor: f32,
 
     pc: PointCloud,
+    pointcloud_file_path: Option<PathBuf>,
     renderer: GaussianRenderer,
     animation: Option<(Animation<PerspectiveCamera>, bool)>,
     controller: CameraController,
     scene: Option<Scene>,
+    scene_file_path: Option<PathBuf>,
     current_view: Option<usize>,
     ui_renderer: ui_renderer::EguiWGPU,
     fps: f32,
@@ -228,7 +229,7 @@ impl WindowContext {
 
         let mut controller = CameraController::new(0.1, 0.05);
         controller.center = pc.center;
-        controller.up = pc.up;
+        // controller.up = pc.up;
         let ui_renderer = ui_renderer::EguiWGPU::new(device, surface_format, &window);
 
 
@@ -270,6 +271,8 @@ impl WindowContext {
             scene: None,
             current_view: None,
             render_settings_hash: None,
+            pointcloud_file_path:None,
+            scene_file_path:None
            
         }
     }
@@ -306,8 +309,22 @@ impl WindowContext {
                 }
             }
         } else {
-            self.controller.update_camera(&mut self.splatting_args.camera, dt);
+            self.controller.update_camera(&mut self.splatting_args.camera, dt); 
+            
+            // check if camera moved out of selected view
+            if let Some(idx) = self.current_view{
+                if let Some(scene) = &self.scene{
+                    if let Some(camera) = scene.camera(idx){
+                        let scene_camera:PerspectiveCamera = camera.into();
+                        if  !self.splatting_args.camera.position.ulps_eq(&scene_camera.position, 1e-4, f32::default_max_ulps())
+                        || !self.splatting_args.camera.rotation.ulps_eq(&scene_camera.rotation, 1e-4, f32::default_max_ulps()){
+                            self.current_view.take();
+                        }
+                    }
+                }
+            }
         }
+       
 
         // set camera near and far plane
         let center = self.pc.bbox().center();
@@ -533,6 +550,8 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
     file: R,
     scene_file: Option<R>,
     config: RenderConfig,
+    pointcloud_file_path: Option<PathBuf>,
+    scene_file_path: Option<PathBuf>,
 ) {
     #[cfg(not(target_arch = "wasm32"))]
     env_logger::init();
@@ -589,12 +608,14 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
     }
 
     let mut state = WindowContext::new(window, file, &config).await;
+    state.pointcloud_file_path = pointcloud_file_path;
 
     if let Some(scene) = scene {
         let init_camera = scene.camera(0).unwrap();
         state.set_scene(scene);
         state.set_camera(init_camera, Duration::ZERO);
         state.start_tracking_shot();
+        state.scene_file_path = scene_file_path;
     }
 
     if let Some(skybox) = &config.skybox {
