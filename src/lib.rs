@@ -11,8 +11,7 @@ use std::time::{Duration, Instant};
 use wgpu::{util::DeviceExt, Backends, Extent3d};
 
 use cgmath::{
-    Deg, EuclideanSpace, MetricSpace, Point3, Quaternion,
-    Vector2, Vector3,
+    Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, UlpsEq, Vector2, Vector3
 };
 use egui::Color32;
 use num_traits::One;
@@ -49,6 +48,8 @@ mod renderer;
 pub use renderer::{GaussianRenderer, SplattingArgs};
 
 mod scene;
+use crate::renderer::DEFAULT_KERNEL_SIZE;
+
 pub use self::scene::{Scene, SceneCamera, Split};
 
 pub mod gpu_rs;
@@ -257,7 +258,9 @@ impl WindowContext {
                 viewport: Vector2::new(size.width, size.height),
                 gaussian_scaling: 1.,
                 max_sh_deg: pc.sh_deg(),
-                show_env_map:false,
+                show_env_map: false,
+                mip_splatting: pc.mip_splatting().unwrap_or(false),
+                kernel_size: pc.dilation_kernel_size().unwrap_or(DEFAULT_KERNEL_SIZE),
             },
             pc,
             // camera: view_camera,
@@ -464,6 +467,7 @@ impl WindowContext {
                 usage: wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             },
+            wgpu::util::TextureDataOrder::LayerMajor,
             bytemuck::cast_slice(&env_map_data.as_slice()),
         );
         self.display.set_env_map(&self.wgpu_context.device,Some(&env_texture.create_view(&Default::default())));

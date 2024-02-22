@@ -149,7 +149,7 @@ pub(crate) fn ui(state: &mut WindowContext) {
                 ui.label("Gaussian Scaling");
                 ui.add(
                     egui::DragValue::new(&mut state.splatting_args.gaussian_scaling)
-                        .clamp_range(1e-4..=1.)
+                        .clamp_range((0.)..=1.)
                         .speed(1e-2),
                 );
                 ui.end_row();
@@ -173,6 +173,17 @@ pub(crate) fn ui(state: &mut WindowContext) {
                         egui::color_picker::Alpha::BlendOrAdditive,
                     )
                 });
+                ui.end_row();
+                ui.label("Dilation Kernel Size");
+                ui.add(
+                    egui::DragValue::new(&mut state.splatting_args.kernel_size)
+                        .clamp_range((0.)..=10.)
+                        .speed(1e-2),
+                );
+                ui.end_row();
+                ui.label("Mip Splatting");
+                ui.checkbox(&mut state.splatting_args.mip_splatting, "");
+                ui.end_row();
             });
     });
 
@@ -196,6 +207,24 @@ pub(crate) fn ui(state: &mut WindowContext) {
                     ui.end_row();
                     ui.strong("Compressed:");
                     ui.label(state.pc.compressed().to_string());
+                    ui.end_row();
+                    ui.strong("Mip Splatting:");
+                    ui.label(
+                        state
+                            .pc
+                            .mip_splatting()
+                            .map(|v| v.to_string())
+                            .unwrap_or("-".to_string()),
+                    );
+                    ui.end_row();
+                    ui.strong("Dislation Kernel Size:");
+                    ui.label(
+                        state
+                            .pc
+                            .dilation_kernel_size()
+                            .map(|v| v.to_string())
+                            .unwrap_or("-".to_string()),
+                    );
                     ui.end_row();
                     if let Some(path) = &state.pointcloud_file_path {
                         ui.strong("File:");

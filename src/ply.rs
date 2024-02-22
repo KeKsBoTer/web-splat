@@ -3,11 +3,9 @@ use half::f16;
 use instant::Instant;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
+use wgpu::Color;
 
-use std::{
-    io::{self},
-    marker::PhantomData,
-};
+use std::{io, marker::PhantomData};
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt};
 use cgmath::{InnerSpace, Point3, Quaternion, Vector3};
@@ -132,5 +130,58 @@ impl<R: io::BufRead + io::Seek> PlyReader<R> {
             .get("vertex")
             .ok_or(anyhow::anyhow!("missing element vertex"))?
             .count as usize)
+    }
+
+    pub fn mip_splatting(&self) -> Result<bool, anyhow::Error> {
+        self.header
+            .comments
+            .iter()
+            .find(|c| c.contains("mip"))
+            .map(|c| c.split('=').last().unwrap().parse::<bool>())
+            .map_or_else(
+                || Err(anyhow::anyhow!("no information present")),
+                |x| x.map_err(|e| anyhow::anyhow!("could not parse mip: {}", e)),
+            )
+    }
+    pub fn kernel_size(&self) -> Result<f32, anyhow::Error> {
+        self.header
+            .comments
+            .iter()
+            .find(|c| c.contains("kernel_size"))
+            .map(|c| c.split('=').last().unwrap().parse::<f32>())
+            .map_or_else(
+                || Err(anyhow::anyhow!("no information present")),
+                |x| x.map_err(|e| anyhow::anyhow!("could not parse kernel_size: {}", e)),
+            )
+    }
+
+    pub fn background_color(&self) -> anyhow::Result<Color> {
+        self.header
+            .comments
+            .iter()
+            .find(|c| c.contains("background_color"))
+            .map(|c| {
+                let parts = c.split('=').last().map(|c| {
+                    c.split(",")
+                        .map(|v| v.parse::<f32>())
+                        .collect::<Result<Vec<f32>, _>>()
+                });
+                parts.map_or_else(
+                    || Err(anyhow::anyhow!("could not parse background_color")),
+                    |x| {
+                        x.map_err(|e| anyhow::anyhow!("could not parse background_color: {}", e))
+                            .map(|x| Color {
+                                r: x[0] as f64,
+                                g: x[1] as f64,
+                                b: x[2] as f64,
+                                a: 1.0,
+                            })
+                    },
+                )
+            })
+            .map_or_else(
+                || Err(anyhow::anyhow!("no information present")),
+                |x| x.map_err(|e| anyhow::anyhow!("could not parse background_color: {}", e)),
+            )
     }
 }

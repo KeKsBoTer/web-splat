@@ -1,6 +1,5 @@
 
 //const MAX_SH_DEG:u32 = <injected>u;
-const KERNEL_SIZE:f32 = 0.1;
 
 const SH_C0:f32 = 0.28209479177387814;
 
@@ -78,6 +77,8 @@ struct RenderSettings {
     gaussian_scaling: f32,
     max_sh_deg: u32,
     show_env_map: u32,
+    mip_spatting: u32,
+    kernel_size: f32
 }
 
 @group(0) @binding(0)
@@ -206,19 +207,22 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let T = W * J;
     let cov = transpose(T) * Vrk * T;
 
-    // according to Mip-Splatting by Yu et al. 2023
-    let det_0 = max(1e-6, cov[0][0] * cov[1][1] - cov[0][1] * cov[0][1]);
-    let det_1 = max(1e-6, (cov[0][0] + KERNEL_SIZE) * (cov[1][1] + KERNEL_SIZE) - cov[0][1] * cov[0][1]);
-    var coef = sqrt(det_0 / (det_1 + 1e-6) + 1e-6);
+    let kernel_size = render_settings.kernel_size;
+    if bool(render_settings.mip_spatting) {
+        // according to Mip-Splatting by Yu et al. 2023
+        let det_0 = max(1e-6, cov[0][0] * cov[1][1] - cov[0][1] * cov[0][1]);
+        let det_1 = max(1e-6, (cov[0][0] + kernel_size) * (cov[1][1] + kernel_size) - cov[0][1] * cov[0][1]);
+        var coef = sqrt(det_0 / (det_1 + 1e-6) + 1e-6);
 
-    if det_0 <= 1e-6 || det_1 <= 1e-6 {
-        coef = 0.0;
+        if det_0 <= 1e-6 || det_1 <= 1e-6 {
+            coef = 0.0;
+        }
+        opacity *= coef;
     }
-    opacity *= coef;
 
-    let diagonal1 = cov[0][0] + KERNEL_SIZE;
+    let diagonal1 = cov[0][0] + kernel_size;
     let offDiagonal = cov[0][1];
-    let diagonal2 = cov[1][1] + KERNEL_SIZE;
+    let diagonal2 = cov[1][1] + kernel_size;
 
     let mid = 0.5 * (diagonal1 + diagonal2);
     let radius = length(vec2<f32>((diagonal1 - diagonal2) / 2.0, offDiagonal));

@@ -56,6 +56,10 @@ pub struct PointCloud {
 
     pub center: Point3<f32>,
     pub up: Option<Vector3<f32>>,
+
+    mip_splatting: Option<bool>,
+    kernel_size: Option<f32>,
+    background_color: Option<wgpu::Color>,
 }
 
 impl Debug for PointCloud {
@@ -182,6 +186,9 @@ impl PointCloud {
             compressed: true,
             center,
             up,
+            mip_splatting: None,
+            kernel_size: None,
+            background_color: None,
         })
     }
 
@@ -270,6 +277,18 @@ impl PointCloud {
             bbox: bbox.into(),
             center,
             up,
+            mip_splatting: ply_reader
+                .mip_splatting()
+                .inspect_err(|e| log::warn!("cannot read parameter mip_splatting: {e:?}"))
+                .ok(),
+            kernel_size: ply_reader
+                .kernel_size()
+                .inspect_err(|e| log::warn!("cannot read kernel size: {e:?}"))
+                .ok(),
+            background_color: ply_reader
+                .background_color()
+                .inspect_err(|e| log::warn!("cannot read background color: {e:?}"))
+                .ok(),
         })
     }
 
@@ -399,6 +418,13 @@ impl PointCloud {
                 count: None,
             }],
         })
+    }
+
+    pub fn mip_splatting(&self) -> Option<bool> {
+        self.mip_splatting
+    }
+    pub fn dilation_kernel_size(&self) -> Option<f32> {
+        self.kernel_size
     }
 }
 

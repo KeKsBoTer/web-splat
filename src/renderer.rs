@@ -147,9 +147,7 @@ impl GaussianRenderer {
         self.camera.sync(queue);
 
         let settings_uniform = self.render_settings.as_mut();
-        settings_uniform.gaussian_scaling = render_settings.gaussian_scaling;
-        settings_uniform.max_sh_deg = render_settings.max_sh_deg;
-        settings_uniform.show_env_map = render_settings.show_env_map as u32;
+        *settings_uniform = render_settings.into();
         self.render_settings.sync(queue);
 
         // TODO perform this in vertex buffer after draw call
@@ -721,6 +719,8 @@ pub struct SplattingArgs {
     pub gaussian_scaling: f32,
     pub max_sh_deg: u32,
     pub show_env_map: bool,
+    pub mip_splatting: bool,
+    pub kernel_size: f32,
 }
 
 impl Hash for SplattingArgs {
@@ -729,7 +729,9 @@ impl Hash for SplattingArgs {
         self.viewport.hash(state);
         self.max_sh_deg.hash(state);
         self.gaussian_scaling.to_bits().hash(state);
-        self.show_env_map.hash(state)
+        self.show_env_map.hash(state);
+        self.mip_splatting.hash(state);
+        self.kernel_size.to_bits().hash(state);
     }
 }
 
@@ -739,13 +741,31 @@ pub struct SplattingArgsUniform {
     gaussian_scaling: f32,
     max_sh_deg: u32,
     show_env_map: u32,
+    mip_splatting: u32,
+    kernel_size: f32,
 }
 impl Default for SplattingArgsUniform {
     fn default() -> Self {
         Self {
             gaussian_scaling: 1.0,
             max_sh_deg: 3,
-            show_env_map: 1,
+            show_env_map: true as u32,
+            mip_splatting: false as u32,
+            kernel_size: DEFAULT_KERNEL_SIZE,
         }
     }
 }
+
+impl From<SplattingArgs> for SplattingArgsUniform {
+    fn from(value: SplattingArgs) -> Self {
+        Self {
+            gaussian_scaling: value.gaussian_scaling,
+            max_sh_deg: value.max_sh_deg,
+            show_env_map: value.show_env_map as u32,
+            mip_splatting: value.mip_splatting as u32,
+            kernel_size: value.kernel_size,
+        }
+    }
+}
+
+pub const DEFAULT_KERNEL_SIZE: f32 = 0.3;
