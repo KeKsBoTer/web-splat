@@ -1,14 +1,11 @@
 use std::{ops::RangeInclusive, time::Duration};
 
+use crate::{renderer::DEFAULT_KERNEL_SIZE, SceneCamera, Split, WindowContext};
 #[cfg(not(target_arch = "wasm32"))]
 use egui::Vec2b;
 use egui::{emath::Numeric, epaint::Shadow, Align2, Color32, Vec2, Visuals};
 #[cfg(not(target_arch = "wasm32"))]
 use egui_plot::{Legend, PlotPoints};
-use rayon::option;
-use serde::de;
-
-use crate::{renderer::DEFAULT_KERNEL_SIZE, SceneCamera, Split, WindowContext};
 
 pub(crate) fn ui(state: &mut WindowContext) {
     let ctx = state.ui_renderer.winit.egui_ctx();

@@ -269,7 +269,7 @@ impl GaussianRenderer {
                     ..Default::default()
                 });
 
-                render_pass.set_bind_group(0, &pc.render_bind_group, &[]);
+                render_pass.set_bind_group(0, pc.render_bind_group(), &[]);
                 render_pass.set_bind_group(
                     1,
                     &self.sorter_suff.as_ref().unwrap().sorter_render_bg,
@@ -395,9 +395,9 @@ impl PreprocessPipeline {
             bind_group_layouts: &[
                 &UniformBuffer::<CameraUniform>::bind_group_layout(device),
                 &if !compressed {
-                    PointCloud::bind_group_layout_float(device)
-                } else {
                     PointCloud::bind_group_layout(device)
+                } else {
+                    PointCloud::bind_group_layout_compressed(device)
                 },
                 &GPURSSorter::bind_group_layout_preprocess(device),
                 &UniformBuffer::<SplattingArgsUniform>::bind_group_layout(device),
@@ -420,9 +420,9 @@ impl PreprocessPipeline {
 
     fn build_shader(sh_deg: u32, compressed: bool) -> String {
         let shader_src: &str = if !compressed {
-            include_str!("shaders/preprocess_f32.wgsl")
-        } else {
             include_str!("shaders/preprocess.wgsl")
+        } else {
+            include_str!("shaders/preprocess_compressed.wgsl")
         };
         let shader = format!(
             "

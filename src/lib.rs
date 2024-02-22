@@ -40,9 +40,9 @@ pub use controller::CameraController;
 mod pointcloud;
 pub use pointcloud::PointCloud;
 
-#[cfg(feature = "npz")]
-mod npz;
-mod ply;
+mod io;
+// #[cfg(feature = "npz")]
+// use mod::npz;
 
 mod renderer;
 pub use renderer::{GaussianRenderer, SplattingArgs};
@@ -212,7 +212,8 @@ impl WindowContext {
         };
         surface.configure(&device, &config);
 
-        let pc = PointCloud::load(&device, pc_file).unwrap();
+        let pc_raw = io::GenericGaussianPointCloud::load(pc_file).unwrap();
+        let pc = PointCloud::new(&device, pc_raw).unwrap();
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
         let renderer =
@@ -233,7 +234,7 @@ impl WindowContext {
         );
 
         let mut controller = CameraController::new(0.1, 0.05);
-        controller.center = pc.center;
+        controller.center = pc.center();
         // controller.up = pc.up;
         let ui_renderer = ui_renderer::EguiWGPU::new(device, surface_format, &window);
 
