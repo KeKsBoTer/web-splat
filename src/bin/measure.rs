@@ -52,6 +52,10 @@ async fn render_views(
             camera: cameras[0].clone().into(),
             viewport: resolution,
             gaussian_scaling: 1.,
+            max_sh_deg: pc.sh_deg(),
+            show_env_map: false,
+            mip_splatting: None,
+            kernel_size: None,
         },
     );
     device.poll(wgpu::MaintainBase::Wait);
@@ -68,6 +72,10 @@ async fn render_views(
                     camera: s.clone().into(),
                     viewport: resolution,
                     gaussian_scaling: 1.,
+                    max_sh_deg: pc.sh_deg(),
+                    show_env_map: false,
+                    mip_splatting: None,
+                    kernel_size: None,
                 },
             );
         }

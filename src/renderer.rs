@@ -147,7 +147,7 @@ impl GaussianRenderer {
         self.camera.sync(queue);
 
         let settings_uniform = self.render_settings.as_mut();
-        *settings_uniform = render_settings.into();
+        *settings_uniform = SplattingArgsUniform::from_args_and_pc(render_settings, pc);
         self.render_settings.sync(queue);
 
         // TODO perform this in vertex buffer after draw call
@@ -719,8 +719,8 @@ pub struct SplattingArgs {
     pub gaussian_scaling: f32,
     pub max_sh_deg: u32,
     pub show_env_map: bool,
-    pub mip_splatting: bool,
-    pub kernel_size: f32,
+    pub mip_splatting: Option<bool>,
+    pub kernel_size: Option<f32>,
 }
 
 impl Hash for SplattingArgs {
@@ -731,7 +731,7 @@ impl Hash for SplattingArgs {
         self.gaussian_scaling.to_bits().hash(state);
         self.show_env_map.hash(state);
         self.mip_splatting.hash(state);
-        self.kernel_size.to_bits().hash(state);
+        self.kernel_size.map(f32::to_bits).hash(state);
     }
 }
 
@@ -744,6 +744,26 @@ pub struct SplattingArgsUniform {
     mip_splatting: u32,
     kernel_size: f32,
 }
+
+impl SplattingArgsUniform {
+    /// replaces values with default values for point cloud
+    pub fn from_args_and_pc(args: SplattingArgs, pc: &PointCloud) -> Self {
+        Self {
+            gaussian_scaling: args.gaussian_scaling,
+            max_sh_deg: args.max_sh_deg,
+            show_env_map: args.show_env_map as u32,
+            mip_splatting: pc.mip_splatting().map(|v| v as u32).unwrap_or(
+                args.mip_splatting
+                    .map(|v| v as u32)
+                    .unwrap_or(Self::default().mip_splatting),
+            ),
+            kernel_size: pc
+                .dilation_kernel_size()
+                .unwrap_or(args.kernel_size.unwrap_or(Self::default().kernel_size)),
+        }
+    }
+}
+
 impl Default for SplattingArgsUniform {
     fn default() -> Self {
         Self {
@@ -755,17 +775,4 @@ impl Default for SplattingArgsUniform {
         }
     }
 }
-
-impl From<SplattingArgs> for SplattingArgsUniform {
-    fn from(value: SplattingArgs) -> Self {
-        Self {
-            gaussian_scaling: value.gaussian_scaling,
-            max_sh_deg: value.max_sh_deg,
-            show_env_map: value.show_env_map as u32,
-            mip_splatting: value.mip_splatting as u32,
-            kernel_size: value.kernel_size,
-        }
-    }
-}
-
 pub const DEFAULT_KERNEL_SIZE: f32 = 0.3;

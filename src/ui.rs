@@ -1,12 +1,14 @@
-use std::time::Duration;
+use std::{ops::RangeInclusive, time::Duration};
 
 #[cfg(not(target_arch = "wasm32"))]
 use egui::Vec2b;
-use egui::{epaint::Shadow, Align2, Color32, Vec2, Visuals};
+use egui::{emath::Numeric, epaint::Shadow, Align2, Color32, Vec2, Visuals};
 #[cfg(not(target_arch = "wasm32"))]
 use egui_plot::{Legend, PlotPoints};
+use rayon::option;
+use serde::de;
 
-use crate::{SceneCamera, Split, WindowContext};
+use crate::{renderer::DEFAULT_KERNEL_SIZE, SceneCamera, Split, WindowContext};
 
 pub(crate) fn ui(state: &mut WindowContext) {
     let ctx = state.ui_renderer.winit.egui_ctx();
@@ -175,14 +177,25 @@ pub(crate) fn ui(state: &mut WindowContext) {
                 });
                 ui.end_row();
                 ui.label("Dilation Kernel Size");
-                ui.add(
-                    egui::DragValue::new(&mut state.splatting_args.kernel_size)
-                        .clamp_range((0.)..=10.)
-                        .speed(1e-2),
+                optional_drag(
+                    ui,
+                    &mut state.splatting_args.kernel_size,
+                    Some(0.0..=10.0),
+                    Some(0.1),
+                    Some(
+                        state
+                            .pc
+                            .dilation_kernel_size()
+                            .unwrap_or(DEFAULT_KERNEL_SIZE),
+                    ),
                 );
                 ui.end_row();
                 ui.label("Mip Splatting");
-                ui.checkbox(&mut state.splatting_args.mip_splatting, "");
+                optional_checkbox(
+                    ui,
+                    &mut state.splatting_args.mip_splatting,
+                    state.pc.mip_splatting().unwrap_or(false),
+                );
                 ui.end_row();
             });
     });
@@ -559,4 +572,62 @@ fn format_thousands(n: u32) -> String {
         }
     }
     result
+}
+
+fn optional_drag<T: Numeric>(
+    ui: &mut egui::Ui,
+    opt: &mut Option<T>,
+    range: Option<RangeInclusive<T>>,
+    speed: Option<impl Into<f64>>,
+    default: Option<T>,
+) {
+    let mut placeholder = default.unwrap_or(T::from_f64(0.));
+    let mut drag = if let Some(ref mut val) = opt {
+        egui_winit::egui::DragValue::new(val)
+    } else {
+        egui_winit::egui::DragValue::new(&mut placeholder).custom_formatter(|_, _| {
+            if let Some(v) = default {
+                format!("{:.2}", v.to_f64())
+            } else {
+                "—".into()
+            }
+        })
+    };
+    if let Some(range) = range {
+        drag = drag.clamp_range(range);
+    }
+    if let Some(speed) = speed {
+        drag = drag.speed(speed);
+    }
+    let changed = ui.add(drag).changed();
+    if ui
+        .add_enabled(opt.is_some(), egui::Button::new("↺"))
+        .on_hover_text("Reset to default")
+        .clicked()
+    {
+        *opt = None;
+    }
+    if changed && opt.is_none() {
+        *opt = Some(placeholder);
+    }
+}
+
+fn optional_checkbox(ui: &mut egui::Ui, opt: &mut Option<bool>, default: bool) {
+    let mut val = default;
+    let checkbox = if let Some(ref mut val) = opt {
+        egui::Checkbox::new(val, "")
+    } else {
+        egui::Checkbox::new(&mut val, "")
+    };
+    let changed = ui.add(checkbox).changed();
+    if ui
+        .add_enabled(opt.is_some(), egui::Button::new("↺"))
+        .on_hover_text("Reset to default")
+        .clicked()
+    {
+        *opt = None;
+    }
+    if changed && opt.is_none() {
+        *opt = Some(val);
+    }
 }

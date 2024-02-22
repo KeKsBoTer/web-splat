@@ -48,7 +48,6 @@ mod renderer;
 pub use renderer::{GaussianRenderer, SplattingArgs};
 
 mod scene;
-use crate::renderer::DEFAULT_KERNEL_SIZE;
 
 pub use self::scene::{Scene, SceneCamera, Split};
 
@@ -259,8 +258,8 @@ impl WindowContext {
                 gaussian_scaling: 1.,
                 max_sh_deg: pc.sh_deg(),
                 show_env_map: false,
-                mip_splatting: pc.mip_splatting().unwrap_or(false),
-                kernel_size: pc.dilation_kernel_size().unwrap_or(DEFAULT_KERNEL_SIZE),
+                mip_splatting: None,
+                kernel_size: None
             },
             pc,
             // camera: view_camera,
