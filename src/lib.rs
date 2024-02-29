@@ -1,5 +1,9 @@
 use std::{
-    collections::hash_map::DefaultHasher, hash::{Hash, Hasher}, io::{Read, Seek}, path::{Path, PathBuf}, sync::Arc
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+    io::{Read, Seek},
+    path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use image::Pixel;
@@ -10,9 +14,7 @@ use renderer::Display;
 use std::time::{Duration, Instant};
 use wgpu::{util::DeviceExt, Backends, Extent3d};
 
-use cgmath::{
-    Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, UlpsEq, Vector2, Vector3
-};
+use cgmath::{Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, UlpsEq, Vector2, Vector3};
 use egui::Color32;
 use num_traits::One;
 
@@ -27,6 +29,7 @@ use winit::{
     event::{DeviceEvent, ElementState, Event, WindowEvent},
     event_loop::EventLoop,
     keyboard::{KeyCode, PhysicalKey},
+    platform::modifier_supplement::KeyEventExtModifierSupplement,
     window::{Window, WindowBuilder},
 };
 
@@ -40,18 +43,19 @@ pub use controller::CameraController;
 mod pointcloud;
 pub use pointcloud::PointCloud;
 
+mod debug;
 mod io;
-// #[cfg(feature = "npz")]
-// use mod::npz;
 
 mod renderer;
 pub use renderer::{GaussianRenderer, SplattingArgs};
 
 mod scene;
+use crate::utils::GPUStopwatch;
 
 pub use self::scene::{Scene, SceneCamera, Split};
 
 pub mod gpu_rs;
+mod lines;
 mod ui_renderer;
 mod uniform;
 mod utils;
@@ -101,7 +105,7 @@ impl WGPUContext {
                         max_compute_workgroup_storage_size: 1 << 15,
                         ..Default::default()
                     },
-                
+
                     #[cfg(target_arch = "wasm32")]
                     required_limits: wgpu::Limits {
                         max_compute_workgroup_storage_size: 1 << 15,
@@ -155,17 +159,21 @@ pub struct WindowContext {
     /// hash for the render settings
     /// if render settings dont change we dont have to rerender
     render_settings_hash: Option<u64>,
-    splatting_args:SplattingArgs,
+    splatting_args: SplattingArgs,
 
     saved_cameras: Vec<SceneCamera>,
     #[cfg(feature = "video")]
     cameras_save_path: String,
+
+    line_renderer: lines::LineRenderer,
+    debug_lines: debug::DebugLines,
+
+    stopwatch: Option<GPUStopwatch>,
 }
 
 impl WindowContext {
     // Creating some of the wgpu types requires async code
     async fn new<R: Read + Seek>(window: Window, pc_file: R, render_config: &RenderConfig) -> Self {
-        
         let mut size = window.inner_size();
         if size == PhysicalSize::new(0, 0) {
             size = PhysicalSize::new(800, 600);
@@ -238,14 +246,24 @@ impl WindowContext {
         // controller.up = pc.up;
         let ui_renderer = ui_renderer::EguiWGPU::new(device, surface_format, &window);
 
-
         let display = Display::new(
             device,
             render_format,
             surface_format.remove_srgb_suffix(),
             size.width,
-            size.height
+            size.height,
         );
+
+        let line_renderer = lines::LineRenderer::new(device, render_format);
+
+        let stopwatch = if cfg!(not(target_arch = "wasm32")) {
+            Some(GPUStopwatch::new(device, Some(3)))
+        } else {
+            None
+        };
+
+        let debug_lines = debug::DebugLines::new(&pc);
+
         Self {
             wgpu_context,
             scale_factor: window.scale_factor() as f32,
@@ -253,14 +271,14 @@ impl WindowContext {
             surface,
             config,
             renderer,
-            splatting_args:SplattingArgs{
+            splatting_args: SplattingArgs {
                 camera: view_camera,
                 viewport: Vector2::new(size.width, size.height),
                 gaussian_scaling: 1.,
                 max_sh_deg: pc.sh_deg(),
                 show_env_map: false,
                 mip_splatting: None,
-                kernel_size: None
+                kernel_size: None,
             },
             pc,
             // camera: view_camera,
@@ -279,9 +297,25 @@ impl WindowContext {
             scene: None,
             current_view: None,
             render_settings_hash: None,
-            pointcloud_file_path:None,
-            scene_file_path:None
-           
+            pointcloud_file_path: None,
+            scene_file_path: None,
+
+            line_renderer,
+            debug_lines,
+
+            stopwatch,
+        }
+    }
+
+    fn reload_volume(&mut self) -> anyhow::Result<()> {
+        if let Some(file_path) = &self.pointcloud_file_path {
+            log::info!("reloading volume from {:?}", file_path);
+            let file = std::fs::File::open(file_path)?;
+            let pc_raw = io::GenericGaussianPointCloud::load(file)?;
+            self.pc = PointCloud::new(&self.wgpu_context.device, pc_raw)?;
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("no pointcloud file path present"))
         }
     }
 
@@ -317,34 +351,35 @@ impl WindowContext {
                 }
             }
         } else {
-            self.controller.update_camera(&mut self.splatting_args.camera, dt); 
-            
+            self.controller
+                .update_camera(&mut self.splatting_args.camera, dt);
+
             // check if camera moved out of selected view
-            if let Some(idx) = self.current_view{
-                if let Some(scene) = &self.scene{
-                    if let Some(camera) = scene.camera(idx){
-                        let scene_camera:PerspectiveCamera = camera.into();
-                        if  !self.splatting_args.camera.position.ulps_eq(&scene_camera.position, 1e-4, f32::default_max_ulps())
-                        || !self.splatting_args.camera.rotation.ulps_eq(&scene_camera.rotation, 1e-4, f32::default_max_ulps()){
+            if let Some(idx) = self.current_view {
+                if let Some(scene) = &self.scene {
+                    if let Some(camera) = scene.camera(idx) {
+                        let scene_camera: PerspectiveCamera = camera.into();
+                        if !self.splatting_args.camera.position.ulps_eq(
+                            &scene_camera.position,
+                            1e-4,
+                            f32::default_max_ulps(),
+                        ) || !self.splatting_args.camera.rotation.ulps_eq(
+                            &scene_camera.rotation,
+                            1e-4,
+                            f32::default_max_ulps(),
+                        ) {
                             self.current_view.take();
                         }
                     }
                 }
             }
         }
-       
 
-        // set camera near and far plane
-        let center = self.pc.bbox().center();
-        let radius = self.pc.bbox().sphere();
-        let distance = self.splatting_args.camera.position.distance(center);
-        let zfar = distance + radius;
-        let znear = (distance - radius).max(zfar / 1000.);
-        self.splatting_args.camera.projection.zfar = zfar;
-        self.splatting_args.camera.projection.znear = znear;
+        self.splatting_args.camera.fit_near_far(self.pc.bbox());
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+        self.stopwatch.as_mut().map(|s| s.reset());
         let window_size = self.window.inner_size();
         if window_size.width != self.config.width || window_size.height != self.config.height {
             self.resize(window_size, None);
@@ -362,27 +397,67 @@ impl WindowContext {
         self.splatting_args.hash(&mut hasher);
         let settings_hash = hasher.finish();
 
-        if self
-            .render_settings_hash
-            .and_then(|v| Some(v != settings_hash))
-            .unwrap_or(true)
-        {
-            self.renderer.render(
-                &self.wgpu_context.device,
-                &self.wgpu_context.queue,
-                &self.pc,
-                self.display.texture(),
-                self.splatting_args,
-            );
-            self.render_settings_hash.replace(settings_hash);
-        }
+        // do prepare stuff
 
         let mut encoder =
             self.wgpu_context
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("display"),
+                    label: Some("render command encoder"),
                 });
+
+        let redraw = self
+            .render_settings_hash
+            .and_then(|v| Some(v != settings_hash))
+            .unwrap_or(true);
+
+        if redraw {
+            self.renderer.prepare(
+                &mut encoder,
+                &self.wgpu_context.device,
+                &self.wgpu_context.queue,
+                &self.pc,
+                self.splatting_args,
+                (&mut self.stopwatch).into(),
+            );
+            self.render_settings_hash.replace(settings_hash);
+        }
+
+        self.line_renderer.prepare(
+            &mut encoder,
+            &self.wgpu_context.queue,
+            &self.wgpu_context.device,
+            &self.debug_lines.visible_lines(),
+        );
+        if let Some(stopwatch) = &mut self.stopwatch {
+            stopwatch.start(&mut encoder, "rasterization").unwrap();
+        }
+        if redraw {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("render pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: self.display.texture(),
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: self.background_color.r() as f64 / 255.,
+                            g: self.background_color.g() as f64 / 255.,
+                            b: self.background_color.b() as f64 / 255.,
+                            a: 1.,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            self.renderer.render(&mut render_pass, &self.pc);
+
+            self.line_renderer
+                .render(&mut render_pass, self.renderer.camera());
+        }
+        if let Some(stopwatch) = &mut self.stopwatch {
+            stopwatch.stop(&mut encoder, "rasterization").unwrap();
+        }
 
         self.display.render(
             &mut encoder,
@@ -394,8 +469,9 @@ impl WindowContext {
                 a: rgba[3] as f64 / 255.,
             },
             self.renderer.camera(),
-            &self.renderer.render_settings()
+            &self.renderer.render_settings(),
         );
+        self.stopwatch.as_mut().map(|s| s.end(&mut encoder));
         self.wgpu_context.queue.submit([encoder.finish()]);
 
         if self.ui_visible {
@@ -423,6 +499,7 @@ impl WindowContext {
     }
 
     fn set_scene(&mut self, scene: Scene) {
+        self.debug_lines.set_scene(&scene);
         let mut center = Point3::origin();
         for c in scene.cameras(None) {
             let z_axis: Vector3<f32> = c.rotation[2].into();
@@ -442,14 +519,14 @@ impl WindowContext {
         }
     }
 
-    fn set_env_map<P:AsRef<Path>>(&mut self,path:P) -> anyhow::Result<()>{
+    fn set_env_map<P: AsRef<Path>>(&mut self, path: P) -> anyhow::Result<()> {
         let env_map_exr = image::open(path)?;
         let env_map_data: Vec<[f32; 4]> = env_map_exr
-            .as_rgb32f().ok_or(anyhow::anyhow!("env map must be rgb"))?
+            .as_rgb32f()
+            .ok_or(anyhow::anyhow!("env map must be rgb"))?
             .pixels()
             .map(|p| p.to_rgba().0)
             .collect();
-
 
         let env_texture = self.wgpu_context.device.create_texture_with_data(
             &self.wgpu_context.queue,
@@ -470,17 +547,22 @@ impl WindowContext {
             wgpu::util::TextureDataOrder::LayerMajor,
             bytemuck::cast_slice(&env_map_data.as_slice()),
         );
-        self.display.set_env_map(&self.wgpu_context.device,Some(&env_texture.create_view(&Default::default())));
+        self.display.set_env_map(
+            &self.wgpu_context.device,
+            Some(&env_texture.create_view(&Default::default())),
+        );
         self.splatting_args.show_env_map = true;
         Ok(())
     }
 
     fn start_tracking_shot(&mut self) {
         if self.saved_cameras.len() > 1 {
+            let shot = TrackingShot::from_scene(self.saved_cameras.clone());
+            self.debug_lines.set_tracking_shot(&shot);
             let a = Animation::new(
                 Duration::from_secs_f32(self.saved_cameras.len() as f32 * 2.),
                 true,
-                Box::new(TrackingShot::from_scene(self.saved_cameras.clone())),
+                Box::new(shot),
             );
             self.animation = Some((a, true));
         }
@@ -511,7 +593,7 @@ impl WindowContext {
         camera: C,
         animation_duration: Duration,
     ) {
-        let camera:PerspectiveCamera = camera.into();
+        let camera: PerspectiveCamera = camera.into();
         if animation_duration.is_zero() {
             self.update_camera(camera.into())
         } else {
@@ -628,7 +710,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
     }
 
     if let Some(skybox) = &config.skybox {
-        if let Err(e) = state.set_env_map(skybox.as_path()){
+        if let Err(e) = state.set_env_map(skybox.as_path()) {
             log::error!("failed do set skybox: {e}");
         }
     }
@@ -681,8 +763,11 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
                         
                     }else if key == KeyCode::KeyC{
                         state.save_view();
-                    }else
-                    if let Some(scene) = &state.scene{
+                    } else  if key == KeyCode::KeyR && state.controller.alt_pressed{
+                        if let Err(err) = state.reload_volume(){
+                            log::error!("failed to reload volume: {:?}", err);
+                        }   
+                    }else if let Some(scene) = &state.scene{
 
                         let new_camera = 
                         if let Some(num) = key_to_num(key){
@@ -773,6 +858,9 @@ pub async fn run_wasm(pc: Vec<u8>, scene: Option<Vec<u8>>) {
     wasm_bindgen_futures::spawn_local(open_window(
         pc_reader,
         scene_reader,
-        RenderConfig { no_vsync: false,skybox:None },
+        RenderConfig {
+            no_vsync: false,
+            skybox: None,
+        },
     ));
 }

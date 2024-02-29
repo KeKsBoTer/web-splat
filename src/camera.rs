@@ -1,7 +1,7 @@
 use cgmath::*;
 use std::hash::{Hash, Hasher};
 
-use crate::animation::Lerp;
+use crate::{animation::Lerp, pointcloud::Aabb};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PerspectiveCamera {
@@ -21,6 +21,17 @@ impl PerspectiveCamera {
             rotation,
             projection: projection,
         }
+    }
+
+    pub fn fit_near_far(&mut self, aabb: &Aabb<f32>) {
+        // set camera near and far plane
+        let center = aabb.center();
+        let radius = aabb.sphere();
+        let distance = self.position.distance(center);
+        let zfar = distance + radius;
+        let znear = (distance - radius).max(zfar / 1000.);
+        self.projection.zfar = zfar;
+        self.projection.znear = znear;
     }
 }
 

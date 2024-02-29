@@ -9,13 +9,17 @@ use egui_plot::{Legend, PlotPoints};
 
 pub(crate) fn ui(state: &mut WindowContext) {
     let ctx = state.ui_renderer.winit.egui_ctx();
-    #[cfg(not(target_arch = "wasm32"))]
-    let stats = pollster::block_on(
-        state
-            .renderer
-            .render_stats(&state.wgpu_context.device, &state.wgpu_context.queue),
-    );
-    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(stopwatch) = state.stopwatch.as_mut() {
+        let durations = pollster::block_on(
+            stopwatch.take_measurements(&state.wgpu_context.device, &state.wgpu_context.queue),
+        );
+        state.history.push((
+            *durations.get("preprocess").unwrap_or(&Duration::ZERO),
+            *durations.get("sorting").unwrap_or(&Duration::ZERO),
+            *durations.get("rasterization").unwrap_or(&Duration::ZERO),
+        ));
+    }
+
     let num_drawn = pollster::block_on(
         state
             .renderer
@@ -23,11 +27,6 @@ pub(crate) fn ui(state: &mut WindowContext) {
     );
 
     #[cfg(not(target_arch = "wasm32"))]
-    state.history.push((
-        stats.preprocess_time,
-        stats.sort_time,
-        stats.rasterization_time,
-    ));
     ctx.set_visuals(Visuals {
         window_shadow: Shadow::small_light(),
         ..Default::default()
@@ -46,7 +45,7 @@ pub(crate) fn ui(state: &mut WindowContext) {
                 ui.colored_label(egui::Color32::WHITE, "Visible points");
                 ui.label(format!(
                     "{:} ({:.2}%)",
-                    num_drawn,
+                    format_thousands(num_drawn),
                     (num_drawn as f32 / state.pc.num_points() as f32) * 100.
                 ));
             });
@@ -154,8 +153,12 @@ pub(crate) fn ui(state: &mut WindowContext) {
                 ui.end_row();
                 ui.label("Directional Color");
                 let mut dir_color = state.splatting_args.max_sh_deg > 0;
-                ui.checkbox(&mut dir_color, "");
+                ui.add_enabled(
+                    state.pc.sh_deg() > 0,
+                    egui::Checkbox::new(&mut dir_color, ""),
+                );
                 state.splatting_args.max_sh_deg = if dir_color { state.pc.sh_deg() } else { 0 };
+
                 ui.end_row();
                 ui.label("Show Env Map");
                 ui.add_enabled(
@@ -195,6 +198,23 @@ pub(crate) fn ui(state: &mut WindowContext) {
                 );
                 ui.end_row();
             });
+    });
+
+    egui::Window::new("⚙ Debug Visualization").show(ctx, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.add_enabled(
+                state.debug_lines.cameras.is_some(),
+                egui::Checkbox::new(&mut state.debug_lines.show_cameras, "Cameras"),
+            );
+            ui.checkbox(&mut state.debug_lines.show_center_up, "Center & Up");
+            ui.checkbox(&mut state.debug_lines.show_origin, "Origin");
+            ui.checkbox(&mut state.debug_lines.show_volume_aabb, "Volume AABB");
+
+            ui.add_enabled(
+                state.debug_lines.camera_path.is_some(),
+                egui::Checkbox::new(&mut state.debug_lines.show_camera_path, "Camera Path"),
+            );
+        });
     });
 
     let mut new_camera: Option<SetCamera> = None;
@@ -306,6 +326,7 @@ pub(crate) fn ui(state: &mut WindowContext) {
                                     }
                                     return None;
                                 })
+                                .min_col_width(50.)
                                 .show(ui, |ui| {
                                     let style = ui.style().clone();
                                     for c in cameras2 {
@@ -321,7 +342,9 @@ pub(crate) fn ui(state: &mut WindowContext) {
                                             c.split.to_string(),
                                         );
 
-                                        let resp = ui.label(c.img_name.clone());
+                                        let resp = ui.add(
+                                            egui::Label::new(c.img_name.clone()).truncate(true),
+                                        );
                                         if let Some(view_id) = curr_view {
                                             if c.id == view_id {
                                                 resp.scroll_to_me(None);

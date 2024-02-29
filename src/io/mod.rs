@@ -1,11 +1,15 @@
 use std::io::{BufReader, Read, Seek};
 
+use bytemuck::Zeroable;
 use cgmath::{Array, EuclideanSpace, InnerSpace, Point3, Vector3};
 use half::f16;
 
 use crate::pointcloud::{Aabb, Covariance3D, Gaussian, GaussianCompressed, GaussianQuantization};
 
-use self::{npz::NpzReader, ply::PlyReader};
+#[cfg(feature = "npz")]
+use self::npz::NpzReader;
+
+use self::ply::PlyReader;
 
 #[cfg(feature = "npz")]
 pub mod npz;
@@ -42,7 +46,7 @@ impl GenericGaussianPointCloud {
         f.read_exact(&mut signature)?;
         f.rewind()?;
         if signature.starts_with(PlyReader::<R>::magic_bytes()) {
-            let mut ply_reader = PlyReader::new(f).unwrap();
+            let mut ply_reader = PlyReader::new(f)?;
             return ply_reader.read();
         }
         #[cfg(feature = "npz")]
@@ -65,7 +69,7 @@ impl GenericGaussianPointCloud {
         covars: Option<Vec<Covariance3D>>,
         quantization: Option<GaussianQuantization>,
     ) -> Self {
-        let mut bbox: Aabb<f32> = Aabb::unit();
+        let mut bbox: Aabb<f32> = Aabb::zeroed();
         for v in &gaussians {
             bbox.grow(v.xyz.map(|x| x.to_f32()));
         }

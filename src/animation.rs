@@ -66,6 +66,10 @@ impl TrackingShot {
 
         Self { spline }
     }
+
+    pub fn num_control_points(&self) -> usize {
+        self.spline.len()
+    }
 }
 
 impl Sampler for TrackingShot {

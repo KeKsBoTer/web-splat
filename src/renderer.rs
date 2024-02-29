@@ -5,13 +5,10 @@ use crate::{
     uniform::UniformBuffer,
 };
 
-#[cfg(not(target_arch = "wasm32"))]
 use crate::utils::GPUStopwatch;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroU64;
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Duration;
 use wgpu::{include_wgsl, Extent3d, MultisampleState};
 
 use cgmath::{Matrix4, SquareMatrix, Vector2};
@@ -19,14 +16,14 @@ use cgmath::{Matrix4, SquareMatrix, Vector2};
 pub struct GaussianRenderer {
     pipeline: wgpu::RenderPipeline,
     camera: UniformBuffer<CameraUniform>,
+
     render_settings: UniformBuffer<SplattingArgsUniform>,
     preprocess: PreprocessPipeline,
+
     draw_indirect_buffer: wgpu::Buffer,
     #[allow(dead_code)]
     draw_indirect: wgpu::BindGroup,
     color_format: wgpu::TextureFormat,
-    #[cfg(not(target_arch = "wasm32"))]
-    stopwatch: GPUStopwatch,
     sorter: GPURSSorter,
     sorter_suff: Option<PointCloudSortStuff>,
 }
@@ -100,8 +97,6 @@ impl GaussianRenderer {
                 resource: draw_indirect_buffer.as_entire_binding(),
             }],
         });
-        #[cfg(not(target_arch = "wasm32"))]
-        let stopwatch = GPUStopwatch::new(device, Some(3));
 
         let sorter = GPURSSorter::new(device, queue).await;
 
@@ -114,8 +109,6 @@ impl GaussianRenderer {
             draw_indirect_buffer,
             draw_indirect,
             color_format,
-            #[cfg(not(target_arch = "wasm32"))]
-            stopwatch,
             sorter,
             sorter_suff: None,
             render_settings: UniformBuffer::new_default(
@@ -194,113 +187,75 @@ impl GaussianRenderer {
         return n;
     }
 
-    pub fn render<'a>(
-        &'a mut self,
+    pub fn prepare(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        pc: &'a PointCloud,
-        target: &wgpu::TextureView,
+        pc: &PointCloud,
         render_settings: SplattingArgs,
+        stopwatch: &mut Option<GPUStopwatch>,
     ) {
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Render Encoder"),
-        });
+        if self.sorter_suff.is_none()
+            || self
+                .sorter_suff
+                .as_ref()
+                .is_some_and(|s| s.num_points != pc.num_points() as usize)
         {
-            if self.sorter_suff.is_none()
-                || self
-                    .sorter_suff
-                    .as_ref()
-                    .is_some_and(|s| s.num_points != pc.num_points() as usize)
-            {
-                log::debug!("created sort buffers for {:} points", pc.num_points());
-                self.sorter_suff = Some(
-                    self.sorter
-                        .create_sort_stuff(device, pc.num_points() as usize),
-                );
-            }
-
-            GPURSSorter::record_reset_indirect_buffer(
-                &self.sorter_suff.as_ref().unwrap().sorter_dis,
-                &self.sorter_suff.as_ref().unwrap().sorter_uni,
-                &queue,
+            log::debug!("created sort buffers for {:} points", pc.num_points());
+            self.sorter_suff = Some(
+                self.sorter
+                    .create_sort_stuff(device, pc.num_points() as usize),
             );
-
-            // convert 3D gaussian splats to 2D gaussian splats
-            #[cfg(not(target_arch = "wasm32"))]
-            self.stopwatch.start(&mut encoder, "preprocess").unwrap();
-            self.preprocess(&mut encoder, queue, &pc, render_settings);
-            #[cfg(not(target_arch = "wasm32"))]
-            self.stopwatch.stop(&mut encoder, "preprocess").unwrap();
-
-            // sort 2d splats
-            #[cfg(not(target_arch = "wasm32"))]
-            self.stopwatch.start(&mut encoder, "sorting").unwrap();
-            self.sorter.record_sort_indirect(
-                &self.sorter_suff.as_ref().unwrap().sorter_bg,
-                &self.sorter_suff.as_ref().unwrap().sorter_dis,
-                &mut encoder,
-            );
-            #[cfg(not(target_arch = "wasm32"))]
-            self.stopwatch.stop(&mut encoder, "sorting").unwrap();
-
-            encoder.copy_buffer_to_buffer(
-                &self.sorter_suff.as_ref().unwrap().sorter_uni,
-                0,
-                &self.draw_indirect_buffer,
-                std::mem::size_of::<u32>() as u64,
-                std::mem::size_of::<u32>() as u64,
-            );
-
-            // rasterize splats
-            encoder.push_debug_group("render");
-            #[cfg(not(target_arch = "wasm32"))]
-            self.stopwatch.start(&mut encoder, "rasterization").unwrap();
-            {
-                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("render pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: target,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    ..Default::default()
-                });
-
-                render_pass.set_bind_group(0, pc.render_bind_group(), &[]);
-                render_pass.set_bind_group(
-                    1,
-                    &self.sorter_suff.as_ref().unwrap().sorter_render_bg,
-                    &[],
-                );
-                render_pass.set_pipeline(&self.pipeline);
-
-                render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
-            }
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        self.stopwatch.stop(&mut encoder, "rasterization").unwrap();
-        encoder.pop_debug_group();
-        #[cfg(not(target_arch = "wasm32"))]
-        self.stopwatch.end(&mut encoder);
-        queue.submit([encoder.finish()]);
+
+        GPURSSorter::record_reset_indirect_buffer(
+            &self.sorter_suff.as_ref().unwrap().sorter_dis,
+            &self.sorter_suff.as_ref().unwrap().sorter_uni,
+            &queue,
+        );
+
+        // convert 3D gaussian splats to 2D gaussian splats
+        if let Some(stopwatch) = stopwatch {
+            stopwatch.start(encoder, "preprocess").unwrap();
+        }
+
+        self.preprocess(encoder, queue, &pc, render_settings);
+        if let Some(stopwatch) = stopwatch {
+            stopwatch.stop(encoder, "preprocess").unwrap();
+        }
+        // sort 2d splats
+        if let Some(stopwatch) = stopwatch {
+            stopwatch.start(encoder, "sorting").unwrap();
+        }
+        self.sorter.record_sort_indirect(
+            &self.sorter_suff.as_ref().unwrap().sorter_bg,
+            &self.sorter_suff.as_ref().unwrap().sorter_dis,
+            encoder,
+        );
+        if let Some(stopwatch) = stopwatch {
+            stopwatch.stop(encoder, "sorting").unwrap();
+        }
+
+        encoder.copy_buffer_to_buffer(
+            &self.sorter_suff.as_ref().unwrap().sorter_uni,
+            0,
+            &self.draw_indirect_buffer,
+            std::mem::size_of::<u32>() as u64,
+            std::mem::size_of::<u32>() as u64,
+        );
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn render_stats(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) -> RenderStatistics {
-        let durations = self.stopwatch.take_measurements(device, queue).await;
-        self.stopwatch.reset();
-        RenderStatistics {
-            preprocess_time: *durations.get("preprocess").unwrap_or(&Duration::ZERO),
-            sort_time: *durations.get("sorting").unwrap_or(&Duration::ZERO),
-            rasterization_time: *durations.get("rasterization").unwrap_or(&Duration::ZERO),
-        }
+    pub fn render<'rpass>(
+        &'rpass self,
+        render_pass: &mut wgpu::RenderPass<'rpass>,
+        pc: &'rpass PointCloud,
+    ) {
+        render_pass.set_bind_group(0, pc.render_bind_group(), &[]);
+        render_pass.set_bind_group(1, &self.sorter_suff.as_ref().unwrap().sorter_render_bg, &[]);
+        render_pass.set_pipeline(&self.pipeline);
+
+        render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
     }
 
     pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -454,13 +409,6 @@ impl PreprocessPipeline {
         let wgs_x = (pc.num_points() as f32 / 256.0).ceil() as u32;
         pass.dispatch_workgroups(wgs_x, 1, 1);
     }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub struct RenderStatistics {
-    pub preprocess_time: Duration,
-    pub rasterization_time: Duration,
-    pub sort_time: Duration,
 }
 
 pub struct Display {
@@ -735,6 +683,7 @@ impl Hash for SplattingArgs {
     }
 }
 
+pub const DEFAULT_KERNEL_SIZE: f32 = 0.3;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SplattingArgsUniform {
@@ -775,4 +724,3 @@ impl Default for SplattingArgsUniform {
         }
     }
 }
-pub const DEFAULT_KERNEL_SIZE: f32 = 0.3;

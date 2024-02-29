@@ -9,7 +9,6 @@ use std::mem;
 use wgpu::util::DeviceExt;
 
 use crate::io::GenericGaussianPointCloud;
-#[cfg(feature = "npz")]
 use crate::uniform::UniformBuffer;
 
 #[repr(C)]
@@ -322,6 +321,10 @@ impl PointCloud {
     pub fn center(&self) -> Point3<f32> {
         self.center
     }
+
+    pub fn up(&self) -> Option<Vector3<f32>> {
+        self.up
+    }
 }
 
 #[repr(C)]
@@ -370,6 +373,7 @@ pub struct GaussianQuantization {
     pub scaling_factor: Quantization,
 }
 
+#[derive(Zeroable)]
 pub struct Aabb<F: Float + BaseNum> {
     min: Point3<F>,
     max: Point3<F>,
@@ -384,6 +388,7 @@ impl<F: Float + BaseNum> Aabb<F> {
         self.min.x = self.min.x.min(pos.x);
         self.min.y = self.min.y.min(pos.y);
         self.min.z = self.min.z.min(pos.z);
+
         self.max.x = self.max.x.max(pos.x);
         self.max.y = self.max.y.max(pos.y);
         self.max.z = self.max.z.max(pos.z);
@@ -416,6 +421,10 @@ impl<F: Float + BaseNum> Aabb<F> {
 
     pub fn sphere(&self) -> F {
         self.min.distance(self.max) / (F::one() + F::one())
+    }
+
+    pub fn size(&self) -> Vector3<F> {
+        self.max - self.min
     }
 }
 
