@@ -74,6 +74,8 @@ struct SortInfos {
 }
 
 struct RenderSettings {
+    clipping_box_min: vec4<f32>,
+    clipping_box_max: vec4<f32>,
     gaussian_scaling: f32,
     max_sh_deg: u32,
     show_env_map: u32,
@@ -170,6 +172,10 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let xyz = vec3<f32>(a.x, a.y, b.x);
     var opacity = b.y;
 
+    if any(xyz < render_settings.clipping_box_min.xyz) || any(xyz > render_settings.clipping_box_max.xyz) {
+        return;
+    }
+
     var camspace = camera.view * vec4<f32>(xyz, 1.);
     let pos2d = camera.proj * camspace;
     let bounds = 1.2 * pos2d.w;
@@ -255,7 +261,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let znear = -camera.proj[3][2] / camera.proj[2][2];
     let zfar = -camera.proj[3][2] / (camera.proj[2][2] - (1.));
     // filling the sorting buffers and the indirect sort dispatch buffer
-    sort_depths[store_idx] = u32(f32(0xffffffu) - pos2d.z / zfar * f32(0xffffffu));
+    sort_depths[store_idx] = bitcast<u32>(zfar - pos2d.z) ;//u32(f32(0xffffffu) - pos2d.z / zfar * f32(0xffffffu));
     sort_indices[store_idx] = store_idx;
 
     let keys_per_wg = 256u * 15u;         // Caution: if workgroup size (256) or keys per thread (15) changes the dispatch is wrong!!

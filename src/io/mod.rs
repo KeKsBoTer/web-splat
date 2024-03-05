@@ -71,7 +71,7 @@ impl GenericGaussianPointCloud {
     ) -> Self {
         let mut bbox: Aabb<f32> = Aabb::zeroed();
         for v in &gaussians {
-            bbox.grow(v.xyz.map(|x| x.to_f32()));
+            bbox.grow(&v.xyz.map(|x| x.to_f32()));
         }
 
         let (center, mut up) = plane_from_points(
@@ -115,7 +115,7 @@ impl GenericGaussianPointCloud {
     ) -> Self {
         let mut bbox: Aabb<f32> = Aabb::unit();
         for v in &gaussians {
-            bbox.grow(v.xyz.map(|x| x.to_f32()));
+            bbox.grow(&v.xyz.map(|x| x.to_f32()));
         }
 
         let (center, mut up) = plane_from_points(

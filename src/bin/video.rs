@@ -78,7 +78,7 @@ async fn render_tracking_shot(
     let mut animation = Animation::new(
         animation_duration,
         false,
-        Box::new(TrackingShot::from_scene(cameras)),
+        Box::new(TrackingShot::from_cameras(cameras)),
     );
     println!("{:?}", animation_duration);
 

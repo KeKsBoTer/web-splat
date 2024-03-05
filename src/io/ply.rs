@@ -1,3 +1,4 @@
+use anyhow::Ok;
 use half::f16;
 #[cfg(target_arch = "wasm32")]
 use instant::Instant;
@@ -37,7 +38,9 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
         let num_points = Self::num_points(&header)?;
         let mip_splatting = Self::mip_splatting(&header)?;
         let kernel_size = Self::kernel_size(&header)?;
-        let background_color = Self::background_color(&header)?;
+        let background_color = Self::background_color(&header)
+            .map_err(|e| log::warn!("could not parse background_color: {}", e))
+            .unwrap_or_default();
         Ok(Self {
             header,
             reader,
@@ -145,15 +148,16 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
             .iter()
             .find(|c| c.contains("background_color"))
             .map(|c| {
-                let parts = c.split('=').last().map(|c| {
+                let value = c.split('=').last();
+                let parts = value.map(|c| {
                     c.split(",")
                         .map(|v| v.parse::<f32>())
                         .collect::<Result<Vec<f32>, _>>()
                 });
                 parts.map_or_else(
-                    || Err(anyhow::anyhow!("could not parse background_color")),
+                    || Err(anyhow::anyhow!("could not parse:")),
                     |x| {
-                        x.map_err(|e| anyhow::anyhow!("could not parse background_color: {}", e))
+                        x.map_err(|e| anyhow::anyhow!("could not parse: {}", e))
                             .map(|x| [x[0], x[1], x[2]])
                     },
                 )
@@ -184,10 +188,6 @@ impl<R: io::Read + io::Seek> PointCloudReader for PlyReader<R> {
                 }
             }
         };
-        info!(
-            "reading ply file took {:}ms",
-            (Instant::now() - start).as_millis()
-        );
         return Ok(GenericGaussianPointCloud::new(
             gaussians,
             sh_coefs,

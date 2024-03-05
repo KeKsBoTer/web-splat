@@ -1,7 +1,7 @@
 use bytemuck::ByteHash;
 use cgmath::{Point3, Vector4};
 
-use crate::{pointcloud::Aabb, renderer::CameraUniform, uniform::UniformBuffer, PerspectiveCamera};
+use crate::{renderer::CameraUniform, uniform::UniformBuffer};
 
 pub struct LineRenderer {
     pipeline: wgpu::RenderPipeline,
@@ -30,18 +30,18 @@ impl LineRenderer {
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &[
                         wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x4,
+                            format: wgpu::VertexFormat::Float32x3,
                             offset: 0,
                             shader_location: 0,
                         },
                         wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x4,
-                            offset: wgpu::VertexFormat::Float32x4.size(),
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: wgpu::VertexFormat::Float32x3.size(),
                             shader_location: 1,
                         },
                         wgpu::VertexAttribute {
                             format: wgpu::VertexFormat::Unorm8x4,
-                            offset: wgpu::VertexFormat::Float32x4.size() * 2,
+                            offset: wgpu::VertexFormat::Float32x3.size() * 2,
                             shader_location: 2,
                         },
                     ],
@@ -94,22 +94,14 @@ impl LineRenderer {
         _encoder: &mut wgpu::CommandEncoder,
         queue: &wgpu::Queue,
         device: &wgpu::Device,
-        lines: &Vec<&[Line]>,
+        lines: &Vec<Line>,
     ) {
-        let mut aabb = Aabb::unit();
-        let mut data: Vec<u8> = Vec::new();
-        for group in lines {
-            for l in *group {
-                aabb.grow(Point3::from_homogeneous(l.start));
-                aabb.grow(Point3::from_homogeneous(l.end));
-            }
-            data.extend_from_slice(bytemuck::cast_slice(group));
-        }
+        let data = bytemuck::cast_slice(lines);
         if data.len() > self.line_buffer.size() as usize {
-            self.line_buffer = Self::create_line_buffer(device, data.len());
+            self.line_buffer = Self::create_line_buffer(device, lines.len());
         }
         queue.write_buffer(&self.line_buffer, 0, &data);
-        self.num_lines = lines.iter().map(|v| v.len()).sum();
+        self.num_lines = lines.len();
     }
 
     pub fn render<'rpass>(
@@ -145,15 +137,15 @@ pub trait RendereMiddleware {
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable, ByteHash)]
 pub struct Line {
-    start: Vector4<f32>,
-    end: Vector4<f32>,
-    color: Vector4<u8>,
+    pub start: Point3<f32>,
+    pub end: Point3<f32>,
+    pub color: Vector4<u8>,
 }
 impl Line {
     pub fn new(start: Point3<f32>, end: Point3<f32>, color: wgpu::Color) -> Line {
         Self {
-            start: start.to_homogeneous(),
-            end: end.to_homogeneous(),
+            start: start,
+            end: end,
             color: Vector4::new(
                 (color.r * 255.) as u8,
                 (color.g * 255.) as u8,

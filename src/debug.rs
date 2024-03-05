@@ -1,29 +1,48 @@
-use cgmath::{EuclideanSpace, Matrix4, Point3, Quaternion, SquareMatrix, Transform, Vector3};
+use std::collections::HashMap;
+
+use bytemuck::Zeroable;
+use cgmath::{
+    EuclideanSpace, Matrix4, Point3, Quaternion, SquareMatrix, Transform, Vector3, Vector4,
+};
 use wgpu::Color;
 
 use crate::{
-    lines::Line, Camera, PerspectiveCamera, PointCloud, Sampler, Scene, Split, TrackingShot,
+    lines::Line, pointcloud::Aabb, Camera, PerspectiveCamera, PointCloud, Sampler, Scene, Split,
+    TrackingShot,
 };
 
+pub struct LineGroup {
+    pub lines: Vec<Line>,
+    pub visible: bool,
+}
+
+impl LineGroup {
+    fn new(lines: impl Into<Vec<Line>>, visible: bool) -> Self {
+        Self {
+            lines: lines.into(),
+            visible,
+        }
+    }
+
+    fn aabb(&self) -> Aabb<f32> {
+        let mut aabb: Aabb<f32> = Aabb::zeroed();
+        for line in &self.lines {
+            aabb.grow(&line.start);
+            aabb.grow(&line.end);
+        }
+        aabb
+    }
+}
+
 pub struct DebugLines {
-    pub cameras: Option<Vec<Line>>,
-    pub show_cameras: bool,
-
-    pub volume_aabb: Vec<Line>,
-    pub show_volume_aabb: bool,
-
-    pub origin: Vec<Line>,
-    pub show_origin: bool,
-
-    pub center_up: Vec<Line>,
-    pub show_center_up: bool,
-
-    pub camera_path: Option<Vec<Line>>,
-    pub show_camera_path: bool,
+    line_groups: HashMap<String, LineGroup>,
+    aabb: Aabb<f32>,
 }
 
 impl DebugLines {
     pub fn new(pc: &PointCloud) -> Self {
+        let mut lines = HashMap::new();
+
         let aabb = pc.bbox();
         let pc_size = aabb.size() * 0.5;
         let center = aabb.center();
@@ -31,7 +50,13 @@ impl DebugLines {
             Matrix4::from_translation(center.to_vec()) * Matrix4::from_diagonal(pc_size.extend(1.));
         let volume_aabb = box_lines(t, wgpu::Color::BLUE).to_vec();
 
+        lines.insert(
+            "volume_aabb".to_string(),
+            LineGroup::new(volume_aabb.clone(), false),
+        );
+
         let origin = axes_lines(Matrix4::identity()).to_vec();
+        lines.insert("origin".to_string(), LineGroup::new(origin, false));
 
         let t = if let Some(up) = pc.up() {
             let rot = Quaternion::from_arc(Vector3::unit_y(), up, None);
@@ -41,23 +66,66 @@ impl DebugLines {
         };
 
         let center_up = axes_lines(t).to_vec();
+        lines.insert("center_up".to_string(), LineGroup::new(center_up, false));
+        let clipping_box: Vec<Line> = volume_aabb
+            .iter()
+            .map(|l| {
+                let mut l2 = l.clone();
+                l2.color = Vector4::new(255, 255, 0, 255);
+                l2
+            })
+            .collect();
 
-        Self {
-            cameras: None,
-            show_cameras: false,
-            volume_aabb,
-            show_volume_aabb: false,
-            origin,
-            show_origin: false,
-            center_up,
-            show_center_up: false,
-            camera_path: None,
-            show_camera_path: false,
+        lines.insert(
+            "clipping_box".to_string(),
+            LineGroup::new(clipping_box, false),
+        );
+
+        let mut me = Self {
+            line_groups: lines,
+            aabb: Aabb::zeroed(),
+        };
+        me.update_aabb();
+        return me;
+    }
+
+    pub fn all_lines(&mut self) -> Vec<(&String, &mut LineGroup)> {
+        self.line_groups.iter_mut().collect()
+    }
+
+    fn update_aabb(&mut self) {
+        let mut aabb = Aabb::zeroed();
+        for lg in self.line_groups.values() {
+            aabb.grow_union(&lg.aabb());
         }
+        self.aabb = aabb;
+    }
+
+    pub fn any_visible(&self) -> bool {
+        self.line_groups.values().any(|lg| lg.visible)
+    }
+
+    pub fn update_clipping_box(&mut self, clipping_box: &Aabb<f32>) {
+        let t = Matrix4::from_translation(clipping_box.center().to_vec())
+            * Matrix4::from_diagonal((clipping_box.size() * 0.5).extend(1.));
+        self.update_lines(
+            "clipping_box",
+            box_lines(
+                t,
+                wgpu::Color {
+                    r: 1.,
+                    g: 1.,
+                    b: 0.,
+                    a: 1.,
+                },
+            )
+            .to_vec(),
+        );
     }
 
     pub fn set_scene(&mut self, scene: &Scene) {
-        self.cameras = Some(
+        self.update_lines(
+            "cameras",
             scene
                 .cameras(None)
                 .iter()
@@ -73,36 +141,39 @@ impl DebugLines {
                         },
                     )
                 })
-                .collect(),
+                .collect::<Vec<_>>(),
         );
     }
 
-    pub fn visible_lines(&self) -> Vec<&[Line]> {
+    pub fn visible_lines(&self) -> Vec<Line> {
         let mut lines = vec![];
-        if self.show_cameras {
-            if let Some(cameras) = &self.cameras {
-                lines.push(cameras.as_slice());
+        for set in self.line_groups.values() {
+            if set.visible {
+                lines.extend_from_slice(&set.lines);
             }
-        }
-        if self.show_camera_path {
-            if let Some(camera_path) = &self.camera_path {
-                lines.push(camera_path.as_slice());
-            }
-        }
-        if self.show_volume_aabb {
-            lines.push(&self.volume_aabb);
-        }
-        if self.show_origin {
-            lines.push(&self.origin);
-        }
-        if self.show_center_up {
-            lines.push(&self.center_up);
         }
         lines
     }
 
+    fn update_lines(&mut self, name: &str, lines: Vec<Line>) {
+        if let Some(lg) = self.line_groups.get_mut(name) {
+            lg.lines = lines;
+        } else {
+            self.line_groups
+                .insert(name.to_string(), LineGroup::new(lines, false));
+            self.update_aabb();
+        }
+    }
+
     pub fn set_tracking_shot(&mut self, tracking_shot: &TrackingShot) {
-        self.camera_path = Some(tracking_shot_lines(tracking_shot, Color::GREEN, Color::RED));
+        self.update_lines(
+            "camera_path",
+            tracking_shot_lines(tracking_shot, Color::GREEN, Color::RED),
+        );
+    }
+
+    pub fn bbox(&self) -> &Aabb<f32> {
+        &self.aabb
     }
 }
 

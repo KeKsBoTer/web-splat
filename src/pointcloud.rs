@@ -170,9 +170,14 @@ impl PointCloud {
             bbox: pc.aabb.into(),
             center: pc.center,
             up: pc.up,
-            mip_splatting: None,
-            kernel_size: None,
-            background_color: None,
+            mip_splatting: pc.mip_splatting,
+            kernel_size: pc.kernel_size,
+            background_color: pc.background_color.map(|c| wgpu::Color {
+                r: c[0] as f64,
+                g: c[1] as f64,
+                b: c[2] as f64,
+                a: 1.,
+            }),
         })
     }
 
@@ -373,10 +378,11 @@ pub struct GaussianQuantization {
     pub scaling_factor: Quantization,
 }
 
-#[derive(Zeroable)]
+#[repr(C)]
+#[derive(Zeroable, Clone, Copy, Debug)]
 pub struct Aabb<F: Float + BaseNum> {
-    min: Point3<F>,
-    max: Point3<F>,
+    pub min: Point3<F>,
+    pub max: Point3<F>,
 }
 
 impl<F: Float + BaseNum> Aabb<F> {
@@ -384,7 +390,7 @@ impl<F: Float + BaseNum> Aabb<F> {
         Self { min, max }
     }
 
-    pub fn grow(&mut self, pos: Point3<F>) {
+    pub fn grow(&mut self, pos: &Point3<F>) {
         self.min.x = self.min.x.min(pos.x);
         self.min.y = self.min.y.min(pos.y);
         self.min.z = self.min.z.min(pos.z);
@@ -425,6 +431,16 @@ impl<F: Float + BaseNum> Aabb<F> {
 
     pub fn size(&self) -> Vector3<F> {
         self.max - self.min
+    }
+
+    pub fn grow_union(&mut self, other: &Aabb<F>) {
+        self.min.x = self.min.x.min(other.min.x);
+        self.min.y = self.min.y.min(other.min.y);
+        self.min.z = self.min.z.min(other.min.z);
+
+        self.max.x = self.max.x.max(other.max.x);
+        self.max.y = self.max.y.max(other.max.y);
+        self.max.z = self.max.z.max(other.max.z);
     }
 }
 

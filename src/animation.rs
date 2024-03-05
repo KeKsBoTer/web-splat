@@ -6,7 +6,11 @@ use std::time::Duration;
 
 use cgmath::{EuclideanSpace, InnerSpace, Point3, Quaternion, Rad, VectorSpace};
 
-use crate::{camera::PerspectiveCamera, PerspectiveProjection};
+use crate::{
+    camera::PerspectiveCamera,
+    ts::{get_distance_matrix, solve},
+    PerspectiveProjection,
+};
 
 pub trait Lerp {
     fn lerp(&self, other: &Self, amount: f32) -> Self;
@@ -45,7 +49,7 @@ pub struct TrackingShot {
 }
 
 impl TrackingShot {
-    pub fn from_scene<C>(cameras: Vec<C>) -> Self
+    pub fn from_cameras<C>(cameras: Vec<C>) -> Self
     where
         C: Into<PerspectiveCamera>,
     {

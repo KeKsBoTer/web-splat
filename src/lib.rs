@@ -14,7 +14,7 @@ use renderer::Display;
 use std::time::{Duration, Instant};
 use wgpu::{util::DeviceExt, Backends, Extent3d};
 
-use cgmath::{Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, UlpsEq, Vector2, Vector3};
+use cgmath::{Deg, EuclideanSpace,  Point3, Quaternion, UlpsEq, Vector2, Vector3};
 use egui::Color32;
 use num_traits::One;
 
@@ -29,10 +29,10 @@ use winit::{
     event::{DeviceEvent, ElementState, Event, WindowEvent},
     event_loop::EventLoop,
     keyboard::{KeyCode, PhysicalKey},
-    platform::modifier_supplement::KeyEventExtModifierSupplement,
     window::{Window, WindowBuilder},
 };
 
+mod ts;
 mod animation;
 mod ui;
 pub use animation::{Animation, Sampler, TrackingShot, Transition};
@@ -50,7 +50,7 @@ mod renderer;
 pub use renderer::{GaussianRenderer, SplattingArgs};
 
 mod scene;
-use crate::utils::GPUStopwatch;
+use crate::{renderer::SplattingArgsUniform, utils::GPUStopwatch};
 
 pub use self::scene::{Scene, SceneCamera, Split};
 
@@ -279,6 +279,7 @@ impl WindowContext {
                 show_env_map: false,
                 mip_splatting: None,
                 kernel_size: None,
+                clipping_box:aabb.clone()
             },
             pc,
             // camera: view_camera,
@@ -375,7 +376,9 @@ impl WindowContext {
             }
         }
 
-        self.splatting_args.camera.fit_near_far(self.pc.bbox());
+        let mut aabb = self.pc.bbox().clone();
+        aabb.grow_union(self.debug_lines.bbox());
+        self.splatting_args.camera.fit_near_far(&aabb);
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -409,7 +412,7 @@ impl WindowContext {
         let redraw = self
             .render_settings_hash
             .and_then(|v| Some(v != settings_hash))
-            .unwrap_or(true);
+            .unwrap_or(true) || self.debug_lines.any_visible();
 
         if redraw {
             self.renderer.prepare(
@@ -557,10 +560,10 @@ impl WindowContext {
 
     fn start_tracking_shot(&mut self) {
         if self.saved_cameras.len() > 1 {
-            let shot = TrackingShot::from_scene(self.saved_cameras.clone());
+            let shot = TrackingShot::from_cameras(self.saved_cameras.clone());
             self.debug_lines.set_tracking_shot(&shot);
             let a = Animation::new(
-                Duration::from_secs_f32(self.saved_cameras.len() as f32 * 2.),
+                Duration::from_secs_f32(self.saved_cameras.len() as f32 ),
                 true,
                 Box::new(shot),
             );
@@ -698,6 +701,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
             .expect("couldn't append canvas to document body");
     }
 
+    log::info!("soze: {}",std::mem::size_of::<SplattingArgsUniform>());
     let mut state = WindowContext::new(window, file, &config).await;
     state.pointcloud_file_path = pointcloud_file_path;
 

@@ -1,4 +1,5 @@
 use crate::gpu_rs::{GPURSSorter, PointCloudSortStuff};
+use crate::pointcloud::Aabb;
 use crate::{
     camera::{Camera, PerspectiveCamera, VIEWPORT_Y_FLIP},
     pointcloud::PointCloud,
@@ -11,7 +12,7 @@ use std::num::NonZeroU64;
 
 use wgpu::{include_wgsl, Extent3d, MultisampleState};
 
-use cgmath::{Matrix4, SquareMatrix, Vector2};
+use cgmath::{EuclideanSpace, Matrix4, SquareMatrix, Vector2, Vector3, Vector4};
 
 pub struct GaussianRenderer {
     pipeline: wgpu::RenderPipeline,
@@ -669,6 +670,7 @@ pub struct SplattingArgs {
     pub show_env_map: bool,
     pub mip_splatting: Option<bool>,
     pub kernel_size: Option<f32>,
+    pub clipping_box: Aabb<f32>,
 }
 
 impl Hash for SplattingArgs {
@@ -680,6 +682,8 @@ impl Hash for SplattingArgs {
         self.show_env_map.hash(state);
         self.mip_splatting.hash(state);
         self.kernel_size.map(f32::to_bits).hash(state);
+        bytemuck::bytes_of(&self.clipping_box.min).hash(state);
+        bytemuck::bytes_of(&self.clipping_box.max).hash(state);
     }
 }
 
@@ -687,11 +691,14 @@ pub const DEFAULT_KERNEL_SIZE: f32 = 0.3;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SplattingArgsUniform {
+    clipping_box_min: Vector4<f32>,
+    clipping_box_max: Vector4<f32>,
     gaussian_scaling: f32,
     max_sh_deg: u32,
     show_env_map: u32,
     mip_splatting: u32,
     kernel_size: f32,
+    _pad: [u32; 3],
 }
 
 impl SplattingArgsUniform {
@@ -709,6 +716,9 @@ impl SplattingArgsUniform {
             kernel_size: pc
                 .dilation_kernel_size()
                 .unwrap_or(args.kernel_size.unwrap_or(Self::default().kernel_size)),
+            clipping_box_min: args.clipping_box.min.to_vec().extend(0.),
+            clipping_box_max: args.clipping_box.max.to_vec().extend(0.),
+            _pad: [0; 3],
         }
     }
 }
@@ -721,6 +731,14 @@ impl Default for SplattingArgsUniform {
             show_env_map: true as u32,
             mip_splatting: false as u32,
             kernel_size: DEFAULT_KERNEL_SIZE,
+            clipping_box_max: Vector4::new(f32::INFINITY, f32::INFINITY, f32::INFINITY, 0.),
+            clipping_box_min: Vector4::new(
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+                0.,
+            ),
+            _pad: [0; 3],
         }
     }
 }

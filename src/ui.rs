@@ -1,6 +1,7 @@
 use std::{ops::RangeInclusive, time::Duration};
 
 use crate::{renderer::DEFAULT_KERNEL_SIZE, SceneCamera, Split, WindowContext};
+use cgmath::Vector3;
 #[cfg(not(target_arch = "wasm32"))]
 use egui::Vec2b;
 use egui::{emath::Numeric, epaint::Shadow, Align2, Color32, Vec2, Visuals};
@@ -197,23 +198,65 @@ pub(crate) fn ui(state: &mut WindowContext) {
                     state.pc.mip_splatting().unwrap_or(false),
                 );
                 ui.end_row();
+
+                ui.label("Clipping Box Min");
+                ui.horizontal(|ui| {
+                    let aabb_min = &mut state.splatting_args.clipping_box.min;
+                    ui.add(
+                        egui::DragValue::new(&mut aabb_min.x)
+                            .speed(0.01)
+                            .suffix("x")
+                            .clamp_range(state.pc.bbox().min.x..=state.pc.bbox().max.x),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut aabb_min.y)
+                            .speed(0.01)
+                            .suffix("y")
+                            .clamp_range(state.pc.bbox().min.y..=state.pc.bbox().max.y),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut aabb_min.z)
+                            .speed(0.01)
+                            .suffix("z")
+                            .clamp_range(state.pc.bbox().min.z..=state.pc.bbox().max.z),
+                    );
+                });
+                ui.end_row();
+
+                ui.label("Clipping Box Max");
+                ui.horizontal(|ui| {
+                    let aabb_max = &mut state.splatting_args.clipping_box.max;
+                    ui.add(
+                        egui::DragValue::new(&mut aabb_max.x)
+                            .speed(0.01)
+                            .suffix("x")
+                            .clamp_range(state.pc.bbox().min.x..=state.pc.bbox().max.x),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut aabb_max.y)
+                            .speed(0.01)
+                            .suffix("y")
+                            .clamp_range(state.pc.bbox().min.y..=state.pc.bbox().max.y),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut aabb_max.z)
+                            .speed(0.01)
+                            .suffix("z")
+                            .clamp_range(state.pc.bbox().min.z..=state.pc.bbox().max.z),
+                    );
+                });
             });
+
+        state
+            .debug_lines
+            .update_clipping_box(&state.splatting_args.clipping_box);
     });
 
     egui::Window::new("⚙ Debug Visualization").show(ctx, |ui| {
         ui.horizontal_wrapped(|ui| {
-            ui.add_enabled(
-                state.debug_lines.cameras.is_some(),
-                egui::Checkbox::new(&mut state.debug_lines.show_cameras, "Cameras"),
-            );
-            ui.checkbox(&mut state.debug_lines.show_center_up, "Center & Up");
-            ui.checkbox(&mut state.debug_lines.show_origin, "Origin");
-            ui.checkbox(&mut state.debug_lines.show_volume_aabb, "Volume AABB");
-
-            ui.add_enabled(
-                state.debug_lines.camera_path.is_some(),
-                egui::Checkbox::new(&mut state.debug_lines.show_camera_path, "Camera Path"),
-            );
+            for (name, group) in state.debug_lines.all_lines() {
+                ui.checkbox(&mut group.visible, name.to_string());
+            }
         });
     });
 
