@@ -11,8 +11,7 @@ use std::time::{Duration, Instant};
 use wgpu::{util::DeviceExt, Backends, Extent3d};
 
 use cgmath::{
-    Deg, EuclideanSpace, MetricSpace, Point3, Quaternion,
-    Vector2, Vector3,
+    Deg, EuclideanSpace, MetricSpace, Point3, Quaternion, UlpsEq, Vector2, Vector3
 };
 use egui::Color32;
 use num_traits::One;
@@ -464,6 +463,7 @@ impl WindowContext {
                 usage: wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             },
+            wgpu::util::TextureDataOrder::LayerMajor,
             bytemuck::cast_slice(&env_map_data.as_slice()),
         );
         self.display.set_env_map(&self.wgpu_context.device,Some(&env_texture.create_view(&Default::default())));

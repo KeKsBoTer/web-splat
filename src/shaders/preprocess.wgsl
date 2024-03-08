@@ -1,4 +1,4 @@
-
+const KERNEL_SIZE:f32 = 0.3;
 //const MAX_SH_DEG:u32 = <injected>u;
 
 const SH_C0:f32 = 0.28209479177387814;
@@ -255,9 +255,9 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let T = W * J;
     let cov = transpose(T) * Vrk * T;
 
-    let diagonal1 = cov[0][0] + 0.3;
+    let diagonal1 = cov[0][0] + KERNEL_SIZE;
     let offDiagonal = cov[0][1];
-    let diagonal2 = cov[1][1] + 0.3;
+    let diagonal2 = cov[1][1] + KERNEL_SIZE;
 
     let mid = 0.5 * (diagonal1 + diagonal2);
     let radius = length(vec2<f32>((diagonal1 - diagonal2) / 2.0, offDiagonal));
