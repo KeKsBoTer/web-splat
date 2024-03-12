@@ -213,7 +213,7 @@
 
                 let [pc_data, scene_data] = await Promise.all([pc_promise, scene_promise]);
                 await init_promise;
-                run_wasm(pc_data, scene_data);
+                run_wasm(pc_data, scene_data,pc_file,scene_file);
             } catch (e) {
                 document.getElementById("spinner").style.display = "none";
                 let errorPane = document.getElementById("loading-error");

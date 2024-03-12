@@ -758,8 +758,8 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
-pub async fn run_wasm(pc: Vec<u8>, scene: Option<Vec<u8>>) {
-    use std::io::Cursor;
+pub async fn run_wasm(pc: Vec<u8>, scene: Option<Vec<u8>>,pc_file:Option<String>,scene_file:Option<String>) {
+    use std::{io::Cursor, str::FromStr};
 
     std::panic::set_hook(Box::new(console_error_panic_hook::hook));
     console_log::init().expect("could not initialize logger");
@@ -770,5 +770,7 @@ pub async fn run_wasm(pc: Vec<u8>, scene: Option<Vec<u8>>) {
         pc_reader,
         scene_reader,
         RenderConfig { no_vsync: false,skybox:None },
+        pc_file.and_then(|s|PathBuf::from_str(s.as_str()).ok()),
+        scene_file.and_then(|s|PathBuf::from_str(s.as_str()).ok()),
     ));
 }
