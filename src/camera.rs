@@ -126,7 +126,6 @@ impl PerspectiveProjection {
     pub fn resize(&mut self, width: u32, height: u32) {
         let ratio = width as f32 / height as f32;
         self.fovx = self.fovy * ratio / self.fov2view_ratio;
-        println!("resize fovx: {:?}", self.fovx);
     }
 
     pub(crate) fn focal(&self, viewport: Vector2<u32>) -> Vector2<f32> {
