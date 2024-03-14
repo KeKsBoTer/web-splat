@@ -58,6 +58,7 @@ mod utils;
 pub struct RenderConfig {
     pub no_vsync: bool,
     pub skybox: Option<PathBuf>,
+    pub hdr: bool,
 }
 
 pub struct WGPUContext {
@@ -193,7 +194,7 @@ impl WindowContext {
             .unwrap_or(&surface_caps.formats[0])
             .clone();
 
-        let render_format = wgpu::TextureFormat::Rgba16Float;
+        let render_format = if render_config.hdr{ wgpu::TextureFormat::Rgba16Float}else{wgpu::TextureFormat::Rgba8Unorm};
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -774,7 +775,7 @@ pub async fn run_wasm(pc: Vec<u8>, scene: Option<Vec<u8>>,pc_file:Option<String>
     wasm_bindgen_futures::spawn_local(open_window(
         pc_reader,
         scene_reader,
-        RenderConfig { no_vsync: false,skybox:None },
+        RenderConfig { no_vsync: false,skybox:None,hdr:false },
         pc_file.and_then(|s|PathBuf::from_str(s.as_str()).ok()),
         scene_file.and_then(|s|PathBuf::from_str(s.as_str()).ok()),
     ));

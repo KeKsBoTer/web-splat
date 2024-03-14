@@ -14,6 +14,10 @@ struct Opt {
     #[arg(long, default_value_t = false)]
     no_vsync: bool,
 
+    /// Support HDR rendering
+    #[arg(long, default_value_t = false)]
+    hdr: bool,
+
     /// Sky box image
     #[arg(long)]
     skybox: Option<PathBuf>,
@@ -53,6 +57,7 @@ async fn main() {
         RenderConfig {
             no_vsync: opt.no_vsync,
             skybox: opt.skybox,
+            hdr: opt.hdr,
         },
         Some(opt.input),
         opt.scene,
