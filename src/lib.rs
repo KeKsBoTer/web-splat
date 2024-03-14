@@ -289,7 +289,10 @@ impl WindowContext {
                 .configure(&self.wgpu_context.device, &self.config);
             self.display
                 .resize(&self.wgpu_context.device, new_size.width, new_size.height);
+            
             self.splatting_args.viewport = Vector2::new(new_size.width, new_size.height);
+            self.splatting_args.camera.projection
+            .resize(new_size.width,new_size.height);
         }
         if let Some(scale_factor) = scale_factor {
             if scale_factor > 0. {
@@ -307,6 +310,7 @@ impl WindowContext {
             } else {
                 let dt = if *playing { dt } else { Duration::ZERO };
                 self.splatting_args.camera = next_camera.update(dt);
+                self.splatting_args.camera.projection.resize(self.config.width, self.config.height);
                 if next_camera.done() {
                     self.animation.take();
                     self.controller.reset_to_camera(self.splatting_args.camera);
@@ -527,6 +531,7 @@ impl WindowContext {
 
     fn update_camera(&mut self, camera: PerspectiveCamera) {
         self.splatting_args.camera = camera;
+        self.splatting_args.camera.projection.resize(self.config.width, self.config.height);
     }
 
     fn save_view(&mut self) {

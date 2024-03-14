@@ -26,9 +26,8 @@ impl PerspectiveCamera {
 
 impl Hash for PerspectiveCamera {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        bytemuck::bytes_of(&self.position).hash(state);
-        bytemuck::bytes_of(&self.rotation).hash(state);
-        self.projection.hash(state);
+        bytemuck::bytes_of(&self.view_matrix()).hash(state);
+        bytemuck::bytes_of(&self.proj_matrix()).hash(state);
     }
 }
 
@@ -127,6 +126,7 @@ impl PerspectiveProjection {
     pub fn resize(&mut self, width: u32, height: u32) {
         let ratio = width as f32 / height as f32;
         self.fovx = self.fovy * ratio / self.fov2view_ratio;
+        println!("resize fovx: {:?}", self.fovx);
     }
 
     pub(crate) fn focal(&self, viewport: Vector2<u32>) -> Vector2<f32> {

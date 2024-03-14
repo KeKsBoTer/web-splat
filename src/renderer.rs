@@ -136,14 +136,11 @@ impl GaussianRenderer {
         pc: &'a PointCloud,
         render_settings: SplattingArgs,
     ) {
-        let mut camera = render_settings.camera;
-        camera
-            .projection
-            .resize(render_settings.viewport.x, render_settings.viewport.y);
+        let camera = render_settings.camera;
         let uniform = self.camera.as_mut();
-        uniform.set_camera(camera);
         uniform.set_focal(camera.projection.focal(render_settings.viewport));
         uniform.set_viewport(render_settings.viewport.cast().unwrap());
+        uniform.set_camera(camera);
         self.camera.sync(queue);
 
         let settings_uniform = self.render_settings.as_mut();
@@ -208,6 +205,9 @@ impl GaussianRenderer {
             label: Some("Render Encoder"),
         });
         {
+
+            #[cfg(not(target_arch = "wasm32"))]
+            self.stopwatch.reset();
             if self.sorter_suff.is_none()
                 || self
                     .sorter_suff
