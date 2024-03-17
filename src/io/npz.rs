@@ -57,6 +57,7 @@ impl<'a, R: Read + Seek> NpzReader<'a, R> {
 
 impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
     fn read(&mut self) -> Result<GenericGaussianPointCloud, anyhow::Error> {
+        let now = Instant::now();
         let opacity_scale: f32 = get_npz_value(&mut self.npz_file, "opacity_scale")?.unwrap_or(1.0);
         let opacity_zero_point: i32 =
             get_npz_value(&mut self.npz_file, "opacity_zero_point")?.unwrap_or(0);
@@ -80,28 +81,44 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
         let features_rest_zero_point: i32 =
             get_npz_value(&mut self.npz_file, "features_rest_zero_point")?.unwrap_or(0);
 
-        let scaling_factor_scale: f32 =
-            get_npz_value(&mut self.npz_file, "scaling_factor_scale")?.unwrap_or(1.);
-        let scaling_factor_zero_point: i32 =
-            get_npz_value(&mut self.npz_file, "scaling_factor_zero_point")?.unwrap_or(0);
+        let mut scaling_factor: Option<Vec<i8>> = None;
+        let mut scaling_factor_zero_point: i32 = 0;
+        let mut scaling_factor_scale: f32 = 1.0;
+        if self.npz_file.by_name("scaling_factor_scale")?.is_some() {
+            scaling_factor_scale =
+                get_npz_value(&mut self.npz_file, "scaling_factor_scale")?.unwrap_or(1.);
+            scaling_factor_zero_point =
+                get_npz_value(&mut self.npz_file, "scaling_factor_zero_point")?.unwrap_or(0);
 
-        let now = Instant::now();
+            scaling_factor = Some(try_get_npz_array(&mut self.npz_file, "scaling_factor")?);
+        }
+
         let xyz: Vec<Point3<f16>> = try_get_npz_array::<f16>(&mut self.npz_file, "xyz")?
             .as_slice()
             .chunks_exact(3)
             .map(|c: &[f16]| Point3::new(c[0], c[1], c[2]).cast().unwrap())
             .collect();
 
-        let scaling: Vec<Vector3<f32>> = try_get_npz_array::<i8>(&mut self.npz_file, "scaling")?
-            .as_slice()
-            .iter()
-            .map(|c: &i8| ((*c as f32 - scaling_zero_point) * scaling_scale).max(0.))
-            .collect::<Vec<f32>>()
-            .chunks_exact(3)
-            .map(|c: &[f32]| Vector3::new(c[0], c[1], c[2]).normalize())
-            .collect();
-
-        let scaling_factor: Vec<i8> = try_get_npz_array(&mut self.npz_file, "scaling_factor")?;
+        let scaling: Vec<Vector3<f32>> = if scaling_factor.is_none() {
+            // if no scaling factor is present, we assume the scaling is not normalized
+            try_get_npz_array::<i8>(&mut self.npz_file, "scaling")?
+                .as_slice()
+                .iter()
+                .map(|c: &i8| ((*c as f32 - scaling_zero_point) * scaling_scale).exp())
+                .collect::<Vec<f32>>()
+                .chunks_exact(3)
+                .map(|c: &[f32]| Vector3::new(c[0], c[1], c[2]))
+                .collect()
+        } else {
+            try_get_npz_array::<i8>(&mut self.npz_file, "scaling")?
+                .as_slice()
+                .iter()
+                .map(|c: &i8| ((*c as f32 - scaling_zero_point) * scaling_scale).max(0.))
+                .collect::<Vec<f32>>()
+                .chunks_exact(3)
+                .map(|c: &[f32]| Vector3::new(c[0], c[1], c[2]).normalize())
+                .collect()
+        };
 
         let rotation: Vec<Quaternion<f32>> = try_get_npz_array(&mut self.npz_file, "rotation")?
             .as_slice()
@@ -114,18 +131,27 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
 
         let opacity: Vec<i8> = try_get_npz_array(&mut self.npz_file, "opacity")?;
 
-        let features_indices: Vec<u32> =
-            try_get_npz_array::<i32>(&mut self.npz_file, "feature_indices")?
-                .as_slice()
-                .iter()
-                .map(|c: &i32| *c as u32)
-                .collect::<Vec<u32>>();
+        let mut feature_indices: Option<Vec<u32>> = None;
+        if self.npz_file.by_name("feature_indices")?.is_some() {
+            feature_indices = Some(
+                try_get_npz_array::<i32>(&mut self.npz_file, "feature_indices")?
+                    .as_slice()
+                    .iter()
+                    .map(|c: &i32| *c as u32)
+                    .collect::<Vec<u32>>(),
+            );
+        }
 
-        let gaussian_indices = try_get_npz_array::<i32>(&mut self.npz_file, "gaussian_indices")?
-            .as_slice()
-            .iter()
-            .map(|c: &i32| *c as u32)
-            .collect::<Vec<u32>>();
+        let mut gaussian_indices: Option<Vec<u32>> = None;
+        if self.npz_file.by_name("gaussian_indices")?.is_some() {
+            gaussian_indices = Some(
+                try_get_npz_array::<i32>(&mut self.npz_file, "gaussian_indices")?
+                    .as_slice()
+                    .iter()
+                    .map(|c: &i32| *c as u32)
+                    .collect::<Vec<u32>>(),
+            );
+        }
 
         let features_dc: Vec<i8> = try_get_npz_array(&mut self.npz_file, "features_dc")?;
 
@@ -139,9 +165,18 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
             .map(|i| GaussianCompressed {
                 xyz: xyz[i],
                 opacity: opacity[i],
-                scale_factor: scaling_factor[i],
-                geometry_idx: gaussian_indices[i],
-                sh_idx: features_indices[i],
+                scale_factor: match scaling_factor {
+                    Some(ref sf) => sf[i],
+                    None => 0,
+                },
+                geometry_idx: match gaussian_indices {
+                    Some(ref gi) => gi[i],
+                    None => i as u32,
+                },
+                sh_idx: match feature_indices {
+                    Some(ref fi) => fi[i],
+                    None => i as u32,
+                },
             })
             .collect();
 
@@ -221,7 +256,7 @@ fn try_get_npz_array<T: npyz::Deserialize + Copy>(
 ) -> Result<Vec<T>, anyhow::Error> {
     return Ok(reader
         .by_name(field_name)?
-        .ok_or(anyhow::format_err!("array missing"))?
+        .ok_or(anyhow::format_err!("array {field_name} missing"))?
         .into_vec::<T>()?);
 }
 

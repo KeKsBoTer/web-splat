@@ -168,7 +168,6 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
 
 impl<R: io::Read + io::Seek> PointCloudReader for PlyReader<R> {
     fn read(&mut self) -> Result<GenericGaussianPointCloud, anyhow::Error> {
-        let start = Instant::now();
         let mut gaussians = Vec::with_capacity(self.num_points);
         let mut sh_coefs = Vec::with_capacity(self.num_points);
         match self.header.encoding {

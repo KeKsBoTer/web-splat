@@ -93,6 +93,8 @@ struct SortInfos {
 }
 
 struct RenderSettings {
+    clipping_box_min: vec4<f32>,
+    clipping_box_max: vec4<f32>,
     gaussian_scaling: f32,
     max_sh_deg: u32,
     show_env_map: u32,
@@ -211,6 +213,10 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let vertex = vertices[idx];
     let geometric_info = geometries[vertex.geometry_idx];
     let xyz = vec3<f32>(unpack2x16float(vertex.pos_xy), unpack2x16float(vertex.pos_zw).x);
+
+    if any(xyz < render_settings.clipping_box_min.xyz) || any(xyz > render_settings.clipping_box_max.xyz) {
+        return;
+    }
 
     var camspace = camera.view * vec4<f32>(xyz, 1.);
     let pos2d = camera.proj * camspace;
