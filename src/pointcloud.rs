@@ -425,7 +425,8 @@ impl<F: Float + BaseNum> Aabb<F> {
         self.min.midpoint(self.max)
     }
 
-    pub fn sphere(&self) -> F {
+    /// radius of a sphere that contains the aabb
+    pub fn radius(&self) -> F {
         self.min.distance(self.max) / (F::one() + F::one())
     }
 

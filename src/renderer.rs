@@ -9,10 +9,11 @@ use crate::{
 use crate::utils::GPUStopwatch;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroU64;
+use std::time::Duration;
 
 use wgpu::{include_wgsl, Extent3d, MultisampleState};
 
-use cgmath::{EuclideanSpace, Matrix4, SquareMatrix, Vector2, Vector3, Vector4};
+use cgmath::{EuclideanSpace, Matrix4, Point3, SquareMatrix, Vector2, Vector4};
 
 pub struct GaussianRenderer {
     pipeline: wgpu::RenderPipeline,
@@ -671,6 +672,9 @@ pub struct SplattingArgs {
     pub mip_splatting: Option<bool>,
     pub kernel_size: Option<f32>,
     pub clipping_box: Aabb<f32>,
+    pub walltime: Duration,
+    pub scene_center: Point3<f32>,
+    pub scene_extend: f32,
 }
 
 impl Hash for SplattingArgs {
@@ -682,6 +686,7 @@ impl Hash for SplattingArgs {
         self.show_env_map.hash(state);
         self.mip_splatting.hash(state);
         self.kernel_size.map(f32::to_bits).hash(state);
+        self.walltime.hash(state);
         bytemuck::bytes_of(&self.clipping_box.min).hash(state);
         bytemuck::bytes_of(&self.clipping_box.max).hash(state);
     }
@@ -697,8 +702,13 @@ pub struct SplattingArgsUniform {
     max_sh_deg: u32,
     show_env_map: u32,
     mip_splatting: u32,
+
     kernel_size: f32,
-    _pad: [u32; 3],
+    walltime: f32,
+    scene_extend: f32,
+    _pad: u32,
+
+    scene_center: Vector4<f32>,
 }
 
 impl SplattingArgsUniform {
@@ -708,17 +718,19 @@ impl SplattingArgsUniform {
             gaussian_scaling: args.gaussian_scaling,
             max_sh_deg: args.max_sh_deg,
             show_env_map: args.show_env_map as u32,
-            mip_splatting: pc.mip_splatting().map(|v| v as u32).unwrap_or(
-                args.mip_splatting
-                    .map(|v| v as u32)
-                    .unwrap_or(Self::default().mip_splatting),
-            ),
-            kernel_size: pc
-                .dilation_kernel_size()
-                .unwrap_or(args.kernel_size.unwrap_or(Self::default().kernel_size)),
+            mip_splatting: args
+                .mip_splatting
+                .map(|v| v as u32)
+                .unwrap_or(pc.mip_splatting().unwrap_or(false) as u32),
+            kernel_size: args
+                .kernel_size
+                .unwrap_or(pc.dilation_kernel_size().unwrap_or(DEFAULT_KERNEL_SIZE)),
             clipping_box_min: args.clipping_box.min.to_vec().extend(0.),
             clipping_box_max: args.clipping_box.max.to_vec().extend(0.),
-            _pad: [0; 3],
+            walltime: args.walltime.as_secs_f32(),
+            scene_center: pc.center().to_vec().extend(0.),
+            scene_extend: args.scene_extend.max(pc.bbox().radius()),
+            ..Default::default()
         }
     }
 }
@@ -738,7 +750,10 @@ impl Default for SplattingArgsUniform {
                 f32::NEG_INFINITY,
                 0.,
             ),
-            _pad: [0; 3],
+            walltime: 0.,
+            scene_center: Vector4::new(0., 0., 0., 0.),
+            scene_extend: 1.,
+            _pad: 0,
         }
     }
 }

@@ -4,7 +4,7 @@ use std::{
     io::{self, BufReader},
 };
 
-use cgmath::{Matrix3, MetricSpace, Point3, Vector2};
+use cgmath::{EuclideanSpace, Matrix3, MetricSpace, Point3, Vector2, Vector3};
 use serde::{Deserialize, Serialize};
 
 use crate::camera::{focal2fov, fov2focal, PerspectiveCamera, PerspectiveProjection};
@@ -102,10 +102,13 @@ impl Into<PerspectiveCamera> for SceneCamera {
 #[derive(Debug)]
 pub struct Scene {
     cameras: HashMap<usize, SceneCamera>,
+    /// maximum distance between two cameras
+    extend: f32,
 }
 
 impl Scene {
     pub fn from_cameras(cameras: Vec<SceneCamera>) -> Self {
+        let extend = max_distance(cameras.iter().map(|c| Point3::from(c.position)).collect());
         let mut map = HashMap::with_capacity(cameras.len());
         for c in cameras {
             let id = c.id;
@@ -116,7 +119,10 @@ impl Scene {
                 );
             }
         }
-        Self { cameras: map }
+        Self {
+            cameras: map,
+            extend,
+        }
     }
 
     pub fn from_json<R: io::Read>(file: R) -> Result<Self, anyhow::Error> {
@@ -156,6 +162,10 @@ impl Scene {
         return c;
     }
 
+    pub fn extend(&self) -> f32 {
+        self.extend
+    }
+
     /// index of nearest camera
     pub fn nearest_camera(&self, pos: Point3<f32>, split: Option<Split>) -> Option<usize> {
         self.cameras
@@ -167,4 +177,17 @@ impl Scene {
             .min_by_key(|c| (Point3::from(c.position).distance2(pos) * 1e6) as u32)
             .map(|c| c.id)
     }
+}
+
+/// calculate the maximum distance between any two points
+/// naive implementation with O(n^2)
+fn max_distance(points: Vec<Point3<f32>>) -> f32 {
+    let mut max_distance: f32 = 0.;
+    for i in 0..points.len() {
+        for j in i + 1..points.len() {
+            max_distance = max_distance.max(points[i].distance2(points[j]));
+        }
+    }
+
+    max_distance.sqrt()
 }

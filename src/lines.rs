@@ -154,4 +154,9 @@ impl Line {
             ),
         }
     }
+
+    /// scales end relative to start
+    pub fn scale(&mut self, factor: f32) {
+        self.end = self.start + (self.end - self.start) * factor;
+    }
 }

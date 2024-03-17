@@ -63,5 +63,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
     let b = min(0.99, exp(-a) * in.color.a);
-    return vec4<f32>(in.color.rgb * b, b);
+    return vec4<f32>(in.color.rgb, 1.) * b;
 }

@@ -82,7 +82,7 @@ impl GenericGaussianPointCloud {
                 .as_slice(),
         );
 
-        if bbox.sphere() < 10. {
+        if bbox.radius() < 10. {
             up = None;
         }
         Self {
@@ -126,7 +126,7 @@ impl GenericGaussianPointCloud {
                 .as_slice(),
         );
 
-        if bbox.sphere() < 10. {
+        if bbox.radius() < 10. {
             up = None;
         }
         Self {

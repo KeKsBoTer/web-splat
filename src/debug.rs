@@ -2,13 +2,14 @@ use std::collections::HashMap;
 
 use bytemuck::Zeroable;
 use cgmath::{
-    EuclideanSpace, Matrix4, Point3, Quaternion, SquareMatrix, Transform, Vector3, Vector4,
+    EuclideanSpace, Matrix, Matrix4, Point3, Quaternion, SquareMatrix, Transform, Vector3, Vector4,
 };
+use rayon::str::MatchIndices;
 use wgpu::Color;
 
 use crate::{
-    lines::Line, pointcloud::Aabb, Camera, PerspectiveCamera, PointCloud, Sampler, Scene, Split,
-    TrackingShot,
+    camera, lines::Line, pointcloud::Aabb, Camera, PerspectiveCamera, PointCloud, Sampler, Scene,
+    Split, TrackingShot,
 };
 
 pub struct LineGroup {
@@ -131,14 +132,13 @@ impl DebugLines {
                 .iter()
                 .flat_map(|c| {
                     let cam: PerspectiveCamera = c.clone().into();
-                    let t =
-                        cam.view_matrix().inverse_transform().unwrap() * Matrix4::from_scale(0.1);
                     camera_lines(
-                        t,
+                        cam,
                         match c.split {
                             Split::Train => Color::WHITE,
                             Split::Test => Color::RED,
                         },
+                        scene.extend() * 2e-4,
                     )
                 })
                 .collect::<Vec<_>>(),
@@ -177,25 +177,67 @@ impl DebugLines {
     }
 }
 
-fn camera_lines(t: Matrix4<f32>, color: wgpu::Color) -> [Line; 9] {
-    let a = t.transform_point(Point3::new(0., 0., 0.));
-    let b = t.transform_point(Point3::new(1., 1., 1.));
-    let c = t.transform_point(Point3::new(1., -1., 1.));
-    let d = t.transform_point(Point3::new(-1., 1., 1.));
-    let e = t.transform_point(Point3::new(-1., -1., 1.));
-    let f = t.transform_point(Point3::new(0., 1., 1.));
-    let g = t.transform_point(Point3::new(0., 1.1, 1.));
-    [
-        Line::new(a, b, color),
-        Line::new(a, c, color),
-        Line::new(a, d, color),
-        Line::new(a, e, color),
-        Line::new(b, c, color),
-        Line::new(c, e, color),
-        Line::new(e, d, color),
-        Line::new(d, b, color),
-        Line::new(f, g, color),
-    ]
+fn camera_lines(camera: impl Camera, color: wgpu::Color, scale: f32) -> [Line; 12] {
+    let frustum_planes = camera.frustum_planes();
+    let a_l =
+        three_plane_intersection(frustum_planes.near, frustum_planes.top, frustum_planes.left);
+    let b_l = three_plane_intersection(
+        frustum_planes.near,
+        frustum_planes.bottom,
+        frustum_planes.left,
+    );
+    let c_l = three_plane_intersection(frustum_planes.far, frustum_planes.top, frustum_planes.left);
+    let d_l = three_plane_intersection(
+        frustum_planes.far,
+        frustum_planes.bottom,
+        frustum_planes.left,
+    );
+    // right side
+    let a_r = three_plane_intersection(
+        frustum_planes.near,
+        frustum_planes.top,
+        frustum_planes.right,
+    );
+    let b_r = three_plane_intersection(
+        frustum_planes.near,
+        frustum_planes.bottom,
+        frustum_planes.right,
+    );
+    let c_r =
+        three_plane_intersection(frustum_planes.far, frustum_planes.top, frustum_planes.right);
+    let d_r = three_plane_intersection(
+        frustum_planes.far,
+        frustum_planes.bottom,
+        frustum_planes.right,
+    );
+    let campos = camera.position();
+
+    let t = Matrix4::from_translation(campos.to_vec())
+        * Matrix4::from_scale(scale)
+        * Matrix4::from_translation(-campos.to_vec());
+
+    let mut lines = [
+        // right
+        Line::new(a_r, b_r, color),
+        Line::new(b_r, d_r, color),
+        Line::new(d_r, c_r, color),
+        Line::new(c_r, a_r, color),
+        // left
+        Line::new(a_l, b_l, color),
+        Line::new(b_l, d_l, color),
+        Line::new(d_l, c_l, color),
+        Line::new(c_l, a_l, color),
+        // rest
+        Line::new(a_l, a_r, color),
+        Line::new(b_l, b_r, color),
+        Line::new(d_l, d_r, color),
+        Line::new(c_l, c_r, color),
+    ];
+    for l in &mut lines {
+        l.start = t.transform_point(l.start);
+        l.end = t.transform_point(l.end);
+    }
+    return lines;
 }
 
 fn box_lines(t: Matrix4<f32>, color: wgpu::Color) -> [Line; 12] {
@@ -270,4 +312,11 @@ fn blend(a: wgpu::Color, b: wgpu::Color, t: f64) -> wgpu::Color {
         b: a.b * (1. - t) + b.b * t,
         a: a.a * (1. - t) + b.a * t,
     }
+}
+
+fn three_plane_intersection(a: Vector4<f32>, b: Vector4<f32>, c: Vector4<f32>) -> Point3<f32> {
+    let m = Matrix4::from_cols(a, b, c, Vector4::new(0., 0., 0., 1.)).transpose();
+
+    let intersection = m.inverse_transform().unwrap() * Vector4::new(0., 0., 0., 1.);
+    return Point3::from_homogeneous(intersection);
 }
