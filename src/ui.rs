@@ -1,10 +1,10 @@
 use std::{ops::RangeInclusive, time::Duration};
 
 use crate::{renderer::DEFAULT_KERNEL_SIZE, SceneCamera, Split, WindowContext};
-use cgmath::Vector3;
+use cgmath::{Euler, Matrix3, Quaternion, Vector3};
 #[cfg(not(target_arch = "wasm32"))]
 use egui::Vec2b;
-use egui::{emath::Numeric, epaint::Shadow, Align2, Color32, Vec2, Visuals};
+use egui::{emath::Numeric, epaint::Shadow, Align2, Color32, RichText, Vec2, Visuals};
 #[cfg(not(target_arch = "wasm32"))]
 use egui_plot::{Legend, PlotPoints};
 
@@ -257,9 +257,11 @@ pub(crate) fn ui(state: &mut WindowContext) {
             for (name, group) in state.debug_lines.all_lines() {
                 ui.checkbox(&mut group.visible, name.to_string());
             }
+            if ui.button("reset time").clicked() {
+                state.splatting_args.walltime = Duration::ZERO;
+            }
         });
     });
-
     let mut new_camera: Option<SetCamera> = None;
     #[allow(unused_mut)]
     let mut toggle_tracking_shot = false;
@@ -383,6 +385,14 @@ pub(crate) fn ui(state: &mut WindowContext) {
                                                 Split::Test => Color32::LIGHT_GREEN,
                                             },
                                             c.split.to_string(),
+                                        )
+                                        .on_hover_text(
+                                            RichText::new(format!(
+                                                "{:#?}",
+                                                Euler::from(Quaternion::from(Matrix3::from(
+                                                    c.rotation
+                                                )))
+                                            )),
                                         );
 
                                         let resp = ui.add(

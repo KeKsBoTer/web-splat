@@ -6,11 +6,7 @@ use std::time::Duration;
 
 use cgmath::{EuclideanSpace, InnerSpace, Point3, Quaternion, Rad, VectorSpace};
 
-use crate::{
-    camera::PerspectiveCamera,
-    ts::{get_distance_matrix, solve},
-    PerspectiveProjection,
-};
+use crate::{camera::PerspectiveCamera, PerspectiveProjection};
 
 pub trait Lerp {
     fn lerp(&self, other: &Self, amount: f32) -> Self;

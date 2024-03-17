@@ -14,7 +14,7 @@ use renderer::Display;
 use std::time::{Duration, Instant};
 use wgpu::{util::DeviceExt, Backends, Extent3d};
 
-use cgmath::{Deg, EuclideanSpace,  Point3, Quaternion, UlpsEq, Vector2, Vector3};
+use cgmath::{Deg, EuclideanSpace, Euler, Point3, Quaternion, UlpsEq, Vector2, Vector3};
 use egui::Color32;
 use num_traits::One;
 
@@ -32,7 +32,6 @@ use winit::{
     window::{Window, WindowBuilder},
 };
 
-mod ts;
 mod animation;
 mod ui;
 pub use animation::{Animation, Sampler, TrackingShot, Transition};
@@ -50,7 +49,7 @@ mod renderer;
 pub use renderer::{GaussianRenderer, SplattingArgs};
 
 mod scene;
-use crate::{renderer::SplattingArgsUniform, utils::GPUStopwatch};
+use crate::utils::GPUStopwatch;
 
 pub use self::scene::{Scene, SceneCamera, Split};
 
@@ -231,7 +230,7 @@ impl WindowContext {
         let aabb = pc.bbox();
         let aspect = size.width as f32 / size.height as f32;
         let view_camera = PerspectiveCamera::new(
-            aabb.center() - Vector3::new(1., 1., 1.) * aabb.sphere() * 0.5,
+            aabb.center() - Vector3::new(1., 1., 1.) * aabb.radius() * 0.5,
             Quaternion::one(),
             PerspectiveProjection::new(
                 Vector2::new(size.width, size.height),
@@ -263,7 +262,6 @@ impl WindowContext {
         };
 
         let debug_lines = debug::DebugLines::new(&pc);
-
         Self {
             wgpu_context,
             scale_factor: window.scale_factor() as f32,
@@ -279,7 +277,10 @@ impl WindowContext {
                 show_env_map: false,
                 mip_splatting: None,
                 kernel_size: None,
-                clipping_box:aabb.clone()
+                clipping_box:aabb.clone(),
+                walltime:Duration::ZERO,
+                scene_center:pc.center(),
+                scene_extend:aabb.radius(),
             },
             pc,
             // camera: view_camera,
@@ -308,16 +309,22 @@ impl WindowContext {
         }
     }
 
-    fn reload_volume(&mut self) -> anyhow::Result<()> {
+    fn reload(&mut self) -> anyhow::Result<()> {
         if let Some(file_path) = &self.pointcloud_file_path {
             log::info!("reloading volume from {:?}", file_path);
             let file = std::fs::File::open(file_path)?;
             let pc_raw = io::GenericGaussianPointCloud::load(file)?;
             self.pc = PointCloud::new(&self.wgpu_context.device, pc_raw)?;
-            Ok(())
         } else {
-            Err(anyhow::anyhow!("no pointcloud file path present"))
-        }
+            return Err(anyhow::anyhow!("no pointcloud file path present"))
+        } 
+        if let Some(scene_path) = &self.scene_file_path {
+            log::info!("reloading scene from {:?}", scene_path);
+            let file = std::fs::File::open(scene_path)?;
+            
+            self.set_scene(Scene::from_json(file)?);
+        } 
+        Ok(())
     }
 
     fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>, scale_factor: Option<f32>) {
@@ -328,6 +335,7 @@ impl WindowContext {
                 .configure(&self.wgpu_context.device, &self.config);
             self.display
                 .resize(&self.wgpu_context.device, new_size.width, new_size.height);
+            self.splatting_args.camera.projection.resize(new_size.width , new_size.height);
             self.splatting_args.viewport = Vector2::new(new_size.width, new_size.height);
         }
         if let Some(scale_factor) = scale_factor {
@@ -340,6 +348,7 @@ impl WindowContext {
     fn update(&mut self, dt: Duration) {
         // ema fps update
         self.fps = (1. / dt.as_secs_f32()) * 0.05 + self.fps * 0.95;
+        self.splatting_args.walltime += dt;
         if let Some((next_camera, playing)) = &mut self.animation {
             if self.controller.user_inptut {
                 self.cancle_animation()
@@ -502,6 +511,7 @@ impl WindowContext {
     }
 
     fn set_scene(&mut self, scene: Scene) {
+        self.splatting_args.scene_extend = scene.extend();
         self.debug_lines.set_scene(&scene);
         let mut center = Point3::origin();
         for c in scene.cameras(None) {
@@ -563,7 +573,7 @@ impl WindowContext {
             let shot = TrackingShot::from_cameras(self.saved_cameras.clone());
             self.debug_lines.set_tracking_shot(&shot);
             let a = Animation::new(
-                Duration::from_secs_f32(self.saved_cameras.len() as f32 ),
+                Duration::from_secs_f32(self.saved_cameras.len() as f32 *2.),
                 true,
                 Box::new(shot),
             );
@@ -587,7 +597,11 @@ impl WindowContext {
         if let Some(scene) = &self.scene {
             self.current_view.replace(i);
             log::info!("view moved to camera {i}");
-            self.set_camera(scene.camera(i).unwrap(), Duration::from_millis(200));
+            if let Some(camera) = scene.camera(i) {
+                self.set_camera(camera, Duration::from_millis(200));
+            }else{
+                log::error!("camera {i} not found");
+            }
         }
     }
 
@@ -701,7 +715,6 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
             .expect("couldn't append canvas to document body");
     }
 
-    log::info!("soze: {}",std::mem::size_of::<SplattingArgsUniform>());
     let mut state = WindowContext::new(window, file, &config).await;
     state.pointcloud_file_path = pointcloud_file_path;
 
@@ -768,7 +781,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
                     }else if key == KeyCode::KeyC{
                         state.save_view();
                     } else  if key == KeyCode::KeyR && state.controller.alt_pressed{
-                        if let Err(err) = state.reload_volume(){
+                        if let Err(err) = state.reload(){
                             log::error!("failed to reload volume: {:?}", err);
                         }   
                     }else if let Some(scene) = &state.scene{
