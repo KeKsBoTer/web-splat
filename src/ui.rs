@@ -1,10 +1,10 @@
 use std::{ops::RangeInclusive, time::Duration};
 
 use crate::{renderer::DEFAULT_KERNEL_SIZE, SceneCamera, Split, WindowContext};
-use cgmath::{Euler, Matrix3, Quaternion, Vector3};
+use cgmath::{Euler, Matrix3, Quaternion};
 #[cfg(not(target_arch = "wasm32"))]
 use egui::Vec2b;
-use egui::{emath::Numeric, epaint::Shadow, Align2, Color32, RichText, Vec2, Visuals};
+use egui::{emath::Numeric, epaint::Shadow, Align2, Color32, Pos2, RichText, Vec2, Visuals};
 #[cfg(not(target_arch = "wasm32"))]
 use egui_plot::{Legend, PlotPoints};
 
@@ -83,62 +83,6 @@ pub(crate) fn ui(state: &mut WindowContext) {
                 });
         });
 
-    egui::Window::new("🎮")
-        .default_width(200.)
-        .resizable(false)
-        .default_height(100.)
-        .default_open(false)
-        .movable(false)
-        .anchor(Align2::LEFT_BOTTOM, Vec2::new(10., -10.))
-        .show(ctx, |ui| {
-            egui::Grid::new("controls")
-                .num_columns(2)
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.strong("Camera");
-                    ui.end_row();
-                    ui.label("Rotate Camera");
-                    ui.label("Left click + drag");
-                    ui.end_row();
-
-                    ui.label("Move Target/Center");
-                    ui.label("Right click + drag");
-                    ui.end_row();
-
-                    ui.label("Tilt Camera");
-                    ui.label("Alt + drag mouse");
-                    ui.end_row();
-
-                    ui.label("Zoom");
-                    ui.label("Mouse wheel");
-                    ui.end_row();
-
-                    ui.label("Toggle UI");
-                    ui.label("U");
-                    ui.end_row();
-
-                    ui.strong("Scene Views");
-                    ui.end_row();
-                    ui.label("Views 0-9");
-                    ui.label("0-9");
-                    ui.end_row();
-                    ui.label("Random view");
-                    ui.label("R");
-                    ui.end_row();
-                    ui.label("Next View");
-                    ui.label("Page Up");
-                    ui.end_row();
-                    ui.label("Previous View");
-                    ui.label("Page Down");
-                    ui.end_row();
-                    ui.label("Snap to nearest view");
-                    ui.label("N");
-                    ui.end_row();
-                    ui.label("Start/Pause Tracking shot");
-                    ui.label("T");
-                    ui.end_row();
-                });
-        });
 
     egui::Window::new("⚙ Render Settings").show(ctx, |ui| {
         egui::Grid::new("render_settings")
@@ -252,16 +196,6 @@ pub(crate) fn ui(state: &mut WindowContext) {
             .update_clipping_box(&state.splatting_args.clipping_box);
     });
 
-    egui::Window::new("⚙ Debug Visualization").show(ctx, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            for (name, group) in state.debug_lines.all_lines() {
-                ui.checkbox(&mut group.visible, name.to_string());
-            }
-            if ui.button("reset time").clicked() {
-                state.splatting_args.walltime = Duration::ZERO;
-            }
-        });
-    });
     let mut new_camera: Option<SetCamera> = None;
     #[allow(unused_mut)]
     let mut toggle_tracking_shot = false;
@@ -420,6 +354,19 @@ pub(crate) fn ui(state: &mut WindowContext) {
             }
         });
 
+        egui::Window::new("⚙ Debug Visualization").show(ctx, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for (name, group) in state.debug_lines.all_lines() {
+                    ui.checkbox(&mut group.visible, name.to_string());
+                }
+                if ui.button("reset time").clicked() {
+                    state.splatting_args.walltime = Duration::ZERO;
+                }
+                if ui.button("Organize windows").clicked() {
+                    ui.ctx().memory_mut(|mem| mem.reset_areas());
+                }
+            });
+        });
     #[cfg(feature = "video")]
     {
         use std::{
@@ -610,6 +557,64 @@ pub(crate) fn ui(state: &mut WindowContext) {
             state.animation.take();
         }
     }
+
+    // egui::Window::new("🎮")
+    //     .default_width(200.)
+    //     .resizable(false)
+    //     .default_height(100.)
+    //     .default_open(false)
+    //     .movable(false)
+    //     .anchor(Align2::LEFT_BOTTOM, Vec2::new(10., -10.))
+    //     .show(ctx, |ui| {
+    //         egui::Grid::new("controls")
+    //             .num_columns(2)
+    //             .striped(true)
+    //             .show(ui, |ui| {
+    //                 ui.strong("Camera");
+    //                 ui.end_row();
+    //                 ui.label("Rotate Camera");
+    //                 ui.label("Left click + drag");
+    //                 ui.end_row();
+
+    //                 ui.label("Move Target/Center");
+    //                 ui.label("Right click + drag");
+    //                 ui.end_row();
+
+    //                 ui.label("Tilt Camera");
+    //                 ui.label("Alt + drag mouse");
+    //                 ui.end_row();
+
+    //                 ui.label("Zoom");
+    //                 ui.label("Mouse wheel");
+    //                 ui.end_row();
+
+    //                 ui.label("Toggle UI");
+    //                 ui.label("U");
+    //                 ui.end_row();
+
+    //                 ui.strong("Scene Views");
+    //                 ui.end_row();
+    //                 ui.label("Views 0-9");
+    //                 ui.label("0-9");
+    //                 ui.end_row();
+    //                 ui.label("Random view");
+    //                 ui.label("R");
+    //                 ui.end_row();
+    //                 ui.label("Next View");
+    //                 ui.label("Page Up");
+    //                 ui.end_row();
+    //                 ui.label("Previous View");
+    //                 ui.label("Page Down");
+    //                 ui.end_row();
+    //                 ui.label("Snap to nearest view");
+    //                 ui.label("N");
+    //                 ui.end_row();
+    //                 ui.label("Start/Pause Tracking shot");
+    //                 ui.label("T");
+    //                 ui.end_row();
+    //             });
+    //     });
+
     if let Some(c) = new_camera {
         match c {
             SetCamera::ID(id) => state.set_scene_camera(id),
