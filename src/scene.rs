@@ -4,7 +4,9 @@ use std::{
     io::{self, BufReader},
 };
 
-use cgmath::{EuclideanSpace, Matrix3, MetricSpace, Point3, Vector2, Vector3};
+use cgmath::{
+    EuclideanSpace, Matrix, Matrix3, MetricSpace, Point3, SquareMatrix, Vector2, Vector3,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::camera::{focal2fov, fov2focal, PerspectiveCamera, PerspectiveProjection};
@@ -86,9 +88,17 @@ impl Into<PerspectiveCamera> for SceneCamera {
     fn into(self) -> PerspectiveCamera {
         let fovx = focal2fov(self.fx, self.width as f32);
         let fovy = focal2fov(self.fy, self.height as f32);
+        let mut rot = Matrix3::from(self.rotation).transpose();
+        if rot.determinant() < 0. {
+            // make sure determinant is 1
+            // flip y axis if determinant is -1
+            rot.x[1] = -rot.x[1];
+            rot.y[1] = -rot.y[1];
+            rot.z[1] = -rot.z[1];
+        }
         PerspectiveCamera {
             position: self.position.into(),
-            rotation: Matrix3::from(self.rotation).into(),
+            rotation: rot.into(),
             projection: PerspectiveProjection::new(
                 Vector2::new(self.width, self.height),
                 Vector2::new(fovx, fovy),
