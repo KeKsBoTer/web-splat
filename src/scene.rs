@@ -88,7 +88,7 @@ impl Into<PerspectiveCamera> for SceneCamera {
     fn into(self) -> PerspectiveCamera {
         let fovx = focal2fov(self.fx, self.width as f32);
         let fovy = focal2fov(self.fy, self.height as f32);
-        let mut rot = Matrix3::from(self.rotation).transpose();
+        let mut rot = Matrix3::from(self.rotation);
         if rot.determinant() < 0. {
             // make sure determinant is 1
             // flip y axis if determinant is -1
