@@ -6,3 +6,7 @@ public/scenes
 *.json
 *.npz
 **/*.png
+
+videos/
+particle-data-RAW/
+*.exr

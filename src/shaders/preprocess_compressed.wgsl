@@ -99,7 +99,10 @@ struct RenderSettings {
     max_sh_deg: u32,
     show_env_map: u32,
     mip_spatting: u32,
-    kernel_size: f32
+    kernel_size: f32,
+    walltime: f32,
+    scene_extend: f32,
+    center: vec3<f32>,
 }
 
 
@@ -239,8 +242,15 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let cov2: vec2<f32> = unpack2x16float(geometric_info.cov[1]) * s2;
     let cov3: vec2<f32> = unpack2x16float(geometric_info.cov[2]) * s2;
 
+    let walltime = render_settings.walltime;
+    var scale_mod = 0.;
+    let dd = 5. * distance(render_settings.center, xyz) / render_settings.scene_extend;
+    if walltime > dd {
+        scale_mod = smoothstep(0., 1., (walltime - dd));
+    }
 
-    let scaling = render_settings.gaussian_scaling;
+    let scaling = render_settings.gaussian_scaling * scale_mod;
+
     let Vrk = mat3x3<f32>(
         cov1[0], cov1[1], cov2[0],
         cov1[1], cov2[1], cov3[0],

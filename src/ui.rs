@@ -83,7 +83,6 @@ pub(crate) fn ui(state: &mut WindowContext) {
                 });
         });
 
-
     egui::Window::new("⚙ Render Settings").show(ctx, |ui| {
         egui::Grid::new("render_settings")
             .num_columns(2)
@@ -145,7 +144,11 @@ pub(crate) fn ui(state: &mut WindowContext) {
 
                 ui.label("Clipping Box Min");
                 ui.horizontal(|ui| {
-                    let aabb_min = &mut state.splatting_args.clipping_box.min;
+                    let aabb_min = &mut state
+                        .splatting_args
+                        .clipping_box
+                        .unwrap_or(state.pc.bbox().clone())
+                        .min;
                     ui.add(
                         egui::DragValue::new(&mut aabb_min.x)
                             .speed(0.01)
@@ -169,7 +172,11 @@ pub(crate) fn ui(state: &mut WindowContext) {
 
                 ui.label("Clipping Box Max");
                 ui.horizontal(|ui| {
-                    let aabb_max = &mut state.splatting_args.clipping_box.max;
+                    let aabb_max = &mut state
+                        .splatting_args
+                        .clipping_box
+                        .unwrap_or(state.pc.bbox().clone())
+                        .min;
                     ui.add(
                         egui::DragValue::new(&mut aabb_max.x)
                             .speed(0.01)
@@ -191,9 +198,9 @@ pub(crate) fn ui(state: &mut WindowContext) {
                 });
             });
 
-        state
-            .debug_lines
-            .update_clipping_box(&state.splatting_args.clipping_box);
+        if let Some(aabb) = &state.splatting_args.clipping_box {
+            state.debug_lines.update_clipping_box(aabb);
+        }
     });
 
     let mut new_camera: Option<SetCamera> = None;
@@ -354,19 +361,19 @@ pub(crate) fn ui(state: &mut WindowContext) {
             }
         });
 
-        egui::Window::new("⚙ Debug Visualization").show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                for (name, group) in state.debug_lines.all_lines() {
-                    ui.checkbox(&mut group.visible, name.to_string());
-                }
-                if ui.button("reset time").clicked() {
-                    state.splatting_args.walltime = Duration::ZERO;
-                }
-                if ui.button("Organize windows").clicked() {
-                    ui.ctx().memory_mut(|mem| mem.reset_areas());
-                }
-            });
+    egui::Window::new("⚙ Debug Visualization").show(ctx, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for (name, group) in state.debug_lines.all_lines() {
+                ui.checkbox(&mut group.visible, name.to_string());
+            }
+            if ui.button("reset time").clicked() {
+                state.splatting_args.walltime = Duration::ZERO;
+            }
+            if ui.button("Organize windows").clicked() {
+                ui.ctx().memory_mut(|mem| mem.reset_areas());
+            }
         });
+    });
     #[cfg(feature = "video")]
     {
         use std::{

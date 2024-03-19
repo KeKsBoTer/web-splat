@@ -194,13 +194,9 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
 
     let cov_sparse = cov_coefs(idx);
 
-    // animation
     let walltime = render_settings.walltime;
     var scale_mod = 0.;
     let dd = 5. * distance(render_settings.center, xyz) / render_settings.scene_extend;
-    // if walltime > dd {
-        // scale_mod = 1e-4;
-    // }
     if walltime > dd {
         scale_mod = smoothstep(0., 1., (walltime - dd));
     }

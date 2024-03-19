@@ -43,7 +43,7 @@ mod pointcloud;
 pub use pointcloud::PointCloud;
 
 mod debug;
-mod io;
+pub mod io;
 
 mod renderer;
 pub use renderer::{GaussianRenderer, SplattingArgs};
@@ -172,7 +172,11 @@ pub struct WindowContext {
 
 impl WindowContext {
     // Creating some of the wgpu types requires async code
-    async fn new<R: Read + Seek>(window: Window, pc_file: R, render_config: &RenderConfig) -> Self {
+    async fn new<R: Read + Seek>(
+        window: Window,
+        pc_file: R,
+        render_config: &RenderConfig,
+    ) -> anyhow::Result<Self> {
         let mut size = window.inner_size();
         if size == PhysicalSize::new(0, 0) {
             size = PhysicalSize::new(800, 600);
@@ -182,7 +186,7 @@ impl WindowContext {
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
 
-        let surface: wgpu::Surface = instance.create_surface(window.clone()).unwrap();
+        let surface: wgpu::Surface = instance.create_surface(window.clone())?;
 
         let wgpu_context = WGPUContext::new(&instance, Some(&surface)).await;
 
@@ -219,8 +223,8 @@ impl WindowContext {
         };
         surface.configure(&device, &config);
 
-        let pc_raw = io::GenericGaussianPointCloud::load(pc_file).unwrap();
-        let pc = PointCloud::new(&device, pc_raw).unwrap();
+        let pc_raw = io::GenericGaussianPointCloud::load(pc_file)?;
+        let pc = PointCloud::new(&device, pc_raw)?;
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
         let renderer =
@@ -262,7 +266,7 @@ impl WindowContext {
         };
 
         let debug_lines = debug::DebugLines::new(&pc);
-        Self {
+        Ok(Self {
             wgpu_context,
             scale_factor: window.scale_factor() as f32,
             window,
@@ -277,10 +281,10 @@ impl WindowContext {
                 show_env_map: false,
                 mip_splatting: None,
                 kernel_size: None,
-                clipping_box:aabb.clone(),
-                walltime:Duration::ZERO,
-                scene_center:pc.center(),
-                scene_extend:aabb.radius(),
+                clipping_box: None,
+                walltime: Duration::ZERO,
+                scene_center: None,
+                scene_extend: None,
             },
             pc,
             // camera: view_camera,
@@ -306,7 +310,7 @@ impl WindowContext {
             debug_lines,
 
             stopwatch,
-        }
+        })
     }
 
     fn reload(&mut self) -> anyhow::Result<()> {
@@ -316,14 +320,14 @@ impl WindowContext {
             let pc_raw = io::GenericGaussianPointCloud::load(file)?;
             self.pc = PointCloud::new(&self.wgpu_context.device, pc_raw)?;
         } else {
-            return Err(anyhow::anyhow!("no pointcloud file path present"))
-        } 
+            return Err(anyhow::anyhow!("no pointcloud file path present"));
+        }
         if let Some(scene_path) = &self.scene_file_path {
             log::info!("reloading scene from {:?}", scene_path);
             let file = std::fs::File::open(scene_path)?;
-            
+
             self.set_scene(Scene::from_json(file)?);
-        } 
+        }
         Ok(())
     }
 
@@ -335,7 +339,10 @@ impl WindowContext {
                 .configure(&self.wgpu_context.device, &self.config);
             self.display
                 .resize(&self.wgpu_context.device, new_size.width, new_size.height);
-            self.splatting_args.camera.projection.resize(new_size.width , new_size.height);
+            self.splatting_args
+                .camera
+                .projection
+                .resize(new_size.width, new_size.height);
             self.splatting_args.viewport = Vector2::new(new_size.width, new_size.height);
         }
         if let Some(scale_factor) = scale_factor {
@@ -421,7 +428,8 @@ impl WindowContext {
         let redraw = self
             .render_settings_hash
             .and_then(|v| Some(v != settings_hash))
-            .unwrap_or(true) || self.debug_lines.any_visible();
+            .unwrap_or(true)
+            || self.debug_lines.any_visible();
 
         if redraw {
             self.renderer.prepare(
@@ -511,7 +519,7 @@ impl WindowContext {
     }
 
     fn set_scene(&mut self, scene: Scene) {
-        self.splatting_args.scene_extend = scene.extend();
+        self.splatting_args.scene_extend = Some(scene.extend());
         self.debug_lines.set_scene(&scene);
         let mut center = Point3::origin();
         for c in scene.cameras(None) {
@@ -573,7 +581,7 @@ impl WindowContext {
             let shot = TrackingShot::from_cameras(self.saved_cameras.clone());
             self.debug_lines.set_tracking_shot(&shot);
             let a = Animation::new(
-                Duration::from_secs_f32(self.saved_cameras.len() as f32 *2.),
+                Duration::from_secs_f32(self.saved_cameras.len() as f32 * 2.),
                 true,
                 Box::new(shot),
             );
@@ -599,7 +607,7 @@ impl WindowContext {
             log::info!("view moved to camera {i}");
             if let Some(camera) = scene.camera(i) {
                 self.set_camera(camera, Duration::from_millis(200));
-            }else{
+            } else {
                 log::error!("camera {i} not found");
             }
         }
@@ -715,7 +723,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
             .expect("couldn't append canvas to document body");
     }
 
-    let mut state = WindowContext::new(window, file, &config).await;
+    let mut state = WindowContext::new(window, file, &config).await.unwrap();
     state.pointcloud_file_path = pointcloud_file_path;
 
     if let Some(scene) = scene {

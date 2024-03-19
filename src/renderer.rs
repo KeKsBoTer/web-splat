@@ -671,10 +671,10 @@ pub struct SplattingArgs {
     pub show_env_map: bool,
     pub mip_splatting: Option<bool>,
     pub kernel_size: Option<f32>,
-    pub clipping_box: Aabb<f32>,
+    pub clipping_box: Option<Aabb<f32>>,
     pub walltime: Duration,
-    pub scene_center: Point3<f32>,
-    pub scene_extend: f32,
+    pub scene_center: Option<Point3<f32>>,
+    pub scene_extend: Option<f32>,
 }
 
 impl Hash for SplattingArgs {
@@ -687,8 +687,14 @@ impl Hash for SplattingArgs {
         self.mip_splatting.hash(state);
         self.kernel_size.map(f32::to_bits).hash(state);
         self.walltime.hash(state);
-        bytemuck::bytes_of(&self.clipping_box.min).hash(state);
-        bytemuck::bytes_of(&self.clipping_box.max).hash(state);
+        self.clipping_box
+            .as_ref()
+            .map(|b| bytemuck::bytes_of(&b.min))
+            .hash(state);
+        self.clipping_box
+            .as_ref()
+            .map(|b| bytemuck::bytes_of(&b.max))
+            .hash(state);
     }
 }
 
@@ -725,11 +731,22 @@ impl SplattingArgsUniform {
             kernel_size: args
                 .kernel_size
                 .unwrap_or(pc.dilation_kernel_size().unwrap_or(DEFAULT_KERNEL_SIZE)),
-            clipping_box_min: args.clipping_box.min.to_vec().extend(0.),
-            clipping_box_max: args.clipping_box.max.to_vec().extend(0.),
+            clipping_box_min: args
+                .clipping_box
+                .map_or(pc.bbox().min, |b| b.min)
+                .to_vec()
+                .extend(0.),
+            clipping_box_max: args
+                .clipping_box
+                .map_or(pc.bbox().max, |b| b.max)
+                .to_vec()
+                .extend(0.),
             walltime: args.walltime.as_secs_f32(),
             scene_center: pc.center().to_vec().extend(0.),
-            scene_extend: args.scene_extend.max(pc.bbox().radius()),
+            scene_extend: args
+                .scene_extend
+                .unwrap_or(pc.bbox().radius())
+                .max(pc.bbox().radius()),
             ..Default::default()
         }
     }
