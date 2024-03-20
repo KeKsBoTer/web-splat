@@ -5,8 +5,8 @@ use image::{ImageBuffer, Rgba};
 use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
 use std::{fs::File, path::PathBuf, time::Duration};
 use web_splats::{
-    io::GenericGaussianPointCloud, GaussianRenderer, PointCloud, Scene, SceneCamera, SplattingArgs,
-    Split, WGPUContext,
+    io::GenericGaussianPointCloud, GaussianRenderer, PerspectiveCamera, PointCloud, Scene,
+    SceneCamera, SplattingArgs, Split, WGPUContext,
 };
 
 #[derive(Debug, Parser)]
@@ -79,13 +79,15 @@ async fn render_views(
             label: Some("render encoder"),
         });
 
+        let mut camera: PerspectiveCamera = s.clone().into();
+        camera.fit_near_far(pc.bbox());
         renderer.prepare(
             &mut encoder,
             device,
             queue,
             &pc,
             SplattingArgs {
-                camera: s.clone().into(),
+                camera: camera,
                 viewport: resolution,
                 gaussian_scaling: 1.,
                 max_sh_deg: pc.sh_deg(),
@@ -106,7 +108,7 @@ async fn render_views(
                     view: &target_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
