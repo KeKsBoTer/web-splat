@@ -1,8 +1,10 @@
 use cgmath::Vector2;
 use clap::Parser;
-use std::{fs::File, path::PathBuf, time::Instant};
+#[allow(unused_imports)]
+use std::{fs::File, path::PathBuf, time::{Duration, Instant}};
+#[allow(unused_imports)]
 use web_splats::{
-    GaussianRenderer, PointCloud, Scene, SceneCamera, SplattingArgs, Split, WGPUContext,
+    io, GaussianRenderer, PerspectiveCamera, PointCloud, Scene, SceneCamera, SplattingArgs, Split, WGPUContext
 };
 
 #[derive(Debug, Parser)]
@@ -16,6 +18,7 @@ struct Opt {
     scene: PathBuf,
 }
 
+#[allow(unused)]
 async fn render_views(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -23,7 +26,7 @@ async fn render_views(
     pc: &PointCloud,
     cameras: Vec<SceneCamera>,
 ) {
-    let resolution: Vector2<u32> = Vector2::new(1920, 1080);
+    let resolution: Vector2<u32> = Vector2::new(2048, 2048);
 
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: None,
@@ -42,34 +45,98 @@ async fn render_views(
     let start = Instant::now();
     let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
 
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("render encoder"),
+    });
+    let mut camera: PerspectiveCamera = cameras[0].clone().into();
+    camera.fit_near_far(pc.bbox());
     // first render to lazy init sorter stuff
-    renderer.render(
+    renderer.prepare(
+        &mut encoder,
         device,
         queue,
         &pc,
-        &target_view,
         SplattingArgs {
-            camera: cameras[0].clone().into(),
+            camera: camera,
             viewport: resolution,
             gaussian_scaling: 1.,
+            max_sh_deg: pc.sh_deg(),
+            show_env_map: false,
+            mip_splatting: None,
+            kernel_size: None,
+            clipping_box: None,
+            walltime: Duration::from_secs(100),
+            scene_center: None,
+            scene_extend: None,
         },
+        &mut None,
     );
-    device.poll(wgpu::MaintainBase::Wait);
+    {
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("render pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        renderer.render(&mut render_pass, &pc);
+    }
+    queue.submit(std::iter::once(encoder.finish()));
 
-    let num_samples = 50;
-    for s in cameras.iter() {
+    let num_samples = 10;
+    for (i,s) in cameras.iter().enumerate() {
         for _ in 0..num_samples {
-            renderer.render(
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("render encoder"),
+            });
+            let mut camera: PerspectiveCamera = s.clone().into();
+            camera.fit_near_far(pc.bbox());
+            // first render to lazy init sorter stuff
+            renderer.prepare(
+                &mut encoder,
                 device,
                 queue,
                 &pc,
-                &target_view,
                 SplattingArgs {
-                    camera: s.clone().into(),
+                    camera: camera,
                     viewport: resolution,
                     gaussian_scaling: 1.,
+                    max_sh_deg: pc.sh_deg(),
+                    show_env_map: false,
+                    mip_splatting: None,
+                    kernel_size: None,
+                    clipping_box: None,
+                    walltime: Duration::from_secs(100),
+                    scene_center: None,
+                    scene_extend: None,
                 },
+                &mut None,
             );
+            {
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("render pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &target_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                renderer.render(&mut render_pass, &pc);
+            }
+            queue.submit(std::iter::once(encoder.finish()));
         }
     }
     device.poll(wgpu::MaintainBase::Wait);
@@ -81,6 +148,7 @@ async fn render_views(
     );
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[pollster::main]
 async fn main() {
     #[cfg(not(target_arch = "wasm32"))]
@@ -102,7 +170,8 @@ async fn main() {
     let file = File::open(&opt.input).unwrap();
     let mut reader = std::io::BufReader::new(file);
 
-    let pc = PointCloud::load(device, &mut reader).unwrap();
+    let pc_raw = io::GenericGaussianPointCloud::load(&mut reader).unwrap();
+    let pc = PointCloud::new(&device, pc_raw).unwrap();
 
     let mut renderer = GaussianRenderer::new(
         device,
@@ -122,3 +191,7 @@ async fn main() {
     )
     .await;
 }
+
+#[cfg(target_arch = "wasm32")]
+fn main(){todo!("not implemented")}
+

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use winit::keyboard::KeyCode;
 
-use crate::camera::{Camera, PerspectiveCamera};
+use crate::camera::PerspectiveCamera;
 
 #[derive(Debug)]
 pub struct CameraController {
@@ -127,17 +127,17 @@ impl CameraController {
 
         dir = dir.normalize_to((distance.ln() + self.scroll * dt * 10. * self.speed).exp());
 
-        let inv_view = camera.view_matrix().transpose();
+        let view_t: Matrix3<f32> = camera.rotation.invert().into();
 
-        let x_axis = inv_view.x.truncate();
-        let y_axis = self.up.unwrap_or(inv_view.y.truncate());
-        let z_axis = inv_view.z.truncate();
+        let x_axis = view_t.x;
+        let y_axis = self.up.unwrap_or(view_t.y);
+        let z_axis = view_t.z;
 
         let offset =
             (self.shift.y * x_axis - self.shift.x * y_axis) * dt * self.speed * 0.1 * distance;
         self.center += offset;
         camera.position += offset;
-        let mut theta = Rad((-self.rotation.x) * dt * self.sensitivity);
+        let mut theta = Rad((self.rotation.x) * dt * self.sensitivity);
         let mut phi = Rad((-self.rotation.y) * dt * self.sensitivity);
         let mut eta = Rad::zero();
 
@@ -147,21 +147,21 @@ impl CameraController {
             phi = Rad::zero();
         }
 
-        let rot_theta = Quaternion::from_axis_angle(y_axis, -theta);
+        let rot_theta = Quaternion::from_axis_angle(y_axis, theta);
         let rot_phi = Quaternion::from_axis_angle(x_axis, phi);
         let rot_eta = Quaternion::from_axis_angle(z_axis, eta);
         let rot = rot_theta * rot_phi * rot_eta;
 
-        let up = y_axis; // rot.rotate_vector(y_axis);
         let mut new_dir = rot.rotate_vector(dir);
 
         if angle_short(y_axis, new_dir) < Rad(0.1) {
             new_dir = dir;
         }
-
         camera.position = self.center + new_dir;
 
-        camera.rotation = Quaternion::look_at(-new_dir, up);
+        // update rotation
+        // camera.rotation = (rot * camera.rotation.invert()).invert();
+        camera.rotation = Quaternion::look_at(-new_dir, y_axis);
 
         // decay based on fps
         let mut decay = (0.8).powf(dt * 60.);

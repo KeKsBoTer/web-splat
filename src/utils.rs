@@ -1,12 +1,10 @@
 use cgmath::{BaseFloat, Matrix, Matrix3, Quaternion, SquareMatrix, Vector3};
-#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::{fmt::Debug, mem::MaybeUninit};
 use winit::keyboard::KeyCode;
 
-#[cfg(not(target_arch = "wasm32"))]
 use std::{collections::HashMap, mem::size_of};
 
 pub fn key_to_num(key: KeyCode) -> Option<u32> {
@@ -25,7 +23,6 @@ pub fn key_to_num(key: KeyCode) -> Option<u32> {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub struct GPUStopwatch {
     query_set: wgpu::QuerySet,
     query_buffer: wgpu::Buffer,
@@ -34,7 +31,6 @@ pub struct GPUStopwatch {
     labels: HashMap<String, u32>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl GPUStopwatch {
     pub fn new(device: &wgpu::Device, capacity: Option<u32>) -> Self {
         let capacity = capacity.unwrap_or(wgpu::QUERY_SET_MAX_QUERIES / 2);

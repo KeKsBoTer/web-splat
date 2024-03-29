@@ -12,14 +12,18 @@ use instant::Instant;
 use std::time::Instant;
 
 use crate::{
-    pointcloud::{Gaussian, GeometricInfo, PointCloudReader, Quantization, QuantizationUniform},
+    pointcloud::{Covariance3D, GaussianCompressed, GaussianQuantization, Quantization},
     utils::{build_cov, sh_deg_from_num_coefs, sh_num_coefficients},
 };
+
+use super::{GenericGaussianPointCloud, PointCloudReader};
 
 pub struct NpzReader<'a, R: Read + Seek> {
     npz_file: NpzArchive<&'a mut R>,
     sh_deg: u32,
-    num_points: usize,
+    kernel_size: Option<f32>,
+    mip_splatting: Option<bool>,
+    background_color: Option<[f32; 3]>,
 }
 
 impl<'a, R: Read + Seek> NpzReader<'a, R> {
@@ -31,36 +35,28 @@ impl<'a, R: Read + Seek> NpzReader<'a, R> {
             sh_deg = sh_deg_from_num_coefs(rest.shape()[1] as u32 + 1)
                 .ok_or(anyhow::anyhow!("num sh coefs not valid"))?;
         }
-        let num_points = npz_file
-            .by_name("xyz")?
-            .ok_or(anyhow::anyhow!("array xyz missing"))?
-            .shape()[0] as usize;
 
+        let kernel_size: Option<f32> = get_npz_value(&mut npz_file, "kernel_size")?;
+        let mip_splatting: Option<bool> = get_npz_value(&mut npz_file, "mip_splatting")?;
+
+        let background_color: Option<[f32; 3]> =
+            if let Some(bg) = get_npz_array_optional::<f32>(&mut npz_file, "background_color")? {
+                Some(bg.as_slice().try_into()?)
+            } else {
+                None
+            };
         Ok(NpzReader {
             npz_file,
             sh_deg,
-            num_points,
+            kernel_size,
+            mip_splatting,
+            background_color,
         })
-    }
-
-    pub fn magic_bytes() -> &'static [u8] {
-        (b"\x50\x4B\x03\x04").as_bytes()
     }
 }
 
 impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
-    fn read(
-        &mut self,
-        _sh_deg: u32,
-    ) -> Result<
-        (
-            Vec<Gaussian>,
-            Vec<u8>,
-            Vec<GeometricInfo>,
-            QuantizationUniform,
-        ),
-        anyhow::Error,
-    > {
+    fn read(&mut self) -> Result<GenericGaussianPointCloud, anyhow::Error> {
         let now = Instant::now();
         let opacity_scale: f32 = get_npz_value(&mut self.npz_file, "opacity_scale")?.unwrap_or(1.0);
         let opacity_zero_point: i32 =
@@ -165,8 +161,8 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
         let sh_deg = self.sh_deg;
         let num_sh_coeffs = sh_num_coefficients(sh_deg);
 
-        let gaussians: Vec<Gaussian> = (0..num_points)
-            .map(|i| Gaussian {
+        let gaussians: Vec<GaussianCompressed> = (0..num_points)
+            .map(|i| GaussianCompressed {
                 xyz: xyz[i],
                 opacity: opacity[i],
                 scale_factor: match scaling_factor {
@@ -201,36 +197,41 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
         let covars = (0..rotation.len())
             .map(|i| {
                 let cov = build_cov(rotation[i], scaling[i]);
-                GeometricInfo {
-                    covariance: cov.map(|v| f16::from_f32(v)),
-                    ..Default::default()
-                }
+                Covariance3D(cov.map(|v| f16::from_f32(v)))
             })
             .collect();
 
         let duration = now.elapsed();
         log::info!("reading took {:?}", duration);
 
-        let quantization = QuantizationUniform {
+        let quantization = GaussianQuantization {
             color_dc: Quantization::new(features_dc_zero_point, features_dc_scale),
             color_rest: Quantization::new(features_rest_zero_point, features_rest_scale),
             opacity: Quantization::new(opacity_zero_point, opacity_scale),
             scaling_factor: Quantization::new(scaling_factor_zero_point, scaling_factor_scale),
         };
 
-
-        return Ok((gaussians, sh_coefs, covars, quantization));
+        return Ok(GenericGaussianPointCloud::new_compressed(
+            gaussians,
+            sh_coefs,
+            sh_deg,
+            num_points,
+            self.kernel_size,
+            self.mip_splatting,
+            self.background_color,
+            Some(covars),
+            Some(quantization),
+        ));
     }
 
-    fn file_sh_deg(&self) -> Result<u32, anyhow::Error> {
-        Ok(self.sh_deg)
+    fn magic_bytes() -> &'static [u8] {
+        (b"\x50\x4B\x03\x04").as_bytes()
     }
 
-    fn num_points(&self) -> Result<usize, anyhow::Error> {
-        Ok(self.num_points)
+    fn file_ending() -> &'static str {
+        "npz"
     }
 }
-
 
 // tries to read an array
 // if the array is not present None is returned

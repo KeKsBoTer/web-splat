@@ -1,38 +1,39 @@
+use std::ops::RangeInclusive;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
+#[cfg(target_arch = "wasm32")]
+use instant::Duration;
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::renderer::DEFAULT_KERNEL_SIZE;
+use crate::{ SceneCamera, Split, WindowContext};
+use cgmath::{Euler, Matrix3, Quaternion};
 #[cfg(not(target_arch = "wasm32"))]
 use egui::Vec2b;
-use egui::{epaint::Shadow, Align2, Color32, Vec2, Visuals};
+use egui::{emath::Numeric,  Align2, Color32, RichText, Vec2};
 #[cfg(not(target_arch = "wasm32"))]
 use egui_plot::{Legend, PlotPoints};
-
-use crate::{SceneCamera, Split, WindowContext};
 
 pub(crate) fn ui(state: &mut WindowContext) {
     let ctx = state.ui_renderer.winit.egui_ctx();
     #[cfg(not(target_arch = "wasm32"))]
-    let stats = pollster::block_on(
-        state
-            .renderer
-            .render_stats(&state.wgpu_context.device, &state.wgpu_context.queue),
-    );
+    if let Some(stopwatch) = state.stopwatch.as_mut() {
+        let durations = pollster::block_on(
+            stopwatch.take_measurements(&state.wgpu_context.device, &state.wgpu_context.queue),
+        );
+        state.history.push((
+            *durations.get("preprocess").unwrap_or(&Duration::ZERO),
+            *durations.get("sorting").unwrap_or(&Duration::ZERO),
+            *durations.get("rasterization").unwrap_or(&Duration::ZERO),
+        ));
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     let num_drawn = pollster::block_on(
         state
             .renderer
             .num_visible_points(&state.wgpu_context.device, &state.wgpu_context.queue),
     );
-
-    #[cfg(not(target_arch = "wasm32"))]
-    state.history.push((
-        stats.preprocess_time,
-        stats.sort_time,
-        stats.rasterization_time,
-    ));
-    ctx.set_visuals(Visuals {
-        window_shadow: Shadow::small_light(),
-        ..Default::default()
-    });
 
     #[cfg(not(target_arch = "wasm32"))]
     egui::Window::new("Render Stats")
@@ -47,7 +48,7 @@ pub(crate) fn ui(state: &mut WindowContext) {
                 ui.colored_label(egui::Color32::WHITE, "Visible points");
                 ui.label(format!(
                     "{:} ({:.2}%)",
-                    num_drawn,
+                    format_thousands(num_drawn),
                     (num_drawn as f32 / state.pc.num_points() as f32) * 100.
                 ));
             });
@@ -84,63 +85,6 @@ pub(crate) fn ui(state: &mut WindowContext) {
                 });
         });
 
-    egui::Window::new("🎮")
-        .default_width(200.)
-        .resizable(false)
-        .default_height(100.)
-        .default_open(false)
-        .movable(false)
-        .anchor(Align2::LEFT_BOTTOM, Vec2::new(10., -10.))
-        .show(ctx, |ui| {
-            egui::Grid::new("controls")
-                .num_columns(2)
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.strong("Camera");
-                    ui.end_row();
-                    ui.label("Rotate Camera");
-                    ui.label("Left click + drag");
-                    ui.end_row();
-
-                    ui.label("Move Target/Center");
-                    ui.label("Right click + drag");
-                    ui.end_row();
-
-                    ui.label("Tilt Camera");
-                    ui.label("Alt + drag mouse");
-                    ui.end_row();
-
-                    ui.label("Zoom");
-                    ui.label("Mouse wheel");
-                    ui.end_row();
-
-                    ui.label("Toggle UI");
-                    ui.label("U");
-                    ui.end_row();
-
-                    ui.strong("Scene Views");
-                    ui.end_row();
-                    ui.label("Views 0-9");
-                    ui.label("0-9");
-                    ui.end_row();
-                    ui.label("Random view");
-                    ui.label("R");
-                    ui.end_row();
-                    ui.label("Next View");
-                    ui.label("Page Up");
-                    ui.end_row();
-                    ui.label("Previous View");
-                    ui.label("Page Down");
-                    ui.end_row();
-                    ui.label("Snap to nearest view");
-                    ui.label("N");
-                    ui.end_row();
-                    ui.label("Start/Pause Tracking shot");
-                    ui.label("T");
-                    ui.end_row();
-                });
-        });
-
     egui::Window::new("⚙ Render Settings").show(ctx, |ui| {
         egui::Grid::new("render_settings")
             .num_columns(2)
@@ -149,20 +93,19 @@ pub(crate) fn ui(state: &mut WindowContext) {
                 ui.label("Gaussian Scaling");
                 ui.add(
                     egui::DragValue::new(&mut state.splatting_args.gaussian_scaling)
-                        .clamp_range(1e-4..=1.)
+                        .clamp_range((1e-4)..=1.)
                         .speed(1e-2),
                 );
                 ui.end_row();
                 ui.label("Directional Color");
                 let mut dir_color = state.splatting_args.max_sh_deg > 0;
-                ui.checkbox(&mut dir_color, "");
-                state.splatting_args.max_sh_deg = if dir_color { state.pc.sh_deg() } else { 0 };
-                ui.end_row();
-                ui.label("Show Env Map");
                 ui.add_enabled(
-                    state.display.has_env_map(),
-                    egui::Checkbox::new(&mut state.splatting_args.show_env_map, ""),
+                    state.pc.sh_deg() > 0,
+                    egui::Checkbox::new(&mut dir_color, ""),
                 );
+                state.splatting_args.max_sh_deg = if dir_color { state.pc.sh_deg() } else { 0 };
+
+              
                 ui.end_row();
                 let enable_bg = !state.splatting_args.show_env_map && !state.display.has_env_map();
                 ui.add_enabled(enable_bg, egui::Label::new("Background Color"));
@@ -173,6 +116,31 @@ pub(crate) fn ui(state: &mut WindowContext) {
                         egui::color_picker::Alpha::BlendOrAdditive,
                     )
                 });
+                ui.end_row();
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    ui.label("Dilation Kernel Size");
+                    optional_drag(
+                        ui,
+                        &mut state.splatting_args.kernel_size,
+                        Some(0.0..=10.0),
+                        Some(0.1),
+                        Some(
+                            state
+                                .pc
+                                .dilation_kernel_size()
+                                .unwrap_or(DEFAULT_KERNEL_SIZE),
+                        ),
+                    );
+                    ui.end_row();
+                    ui.label("Mip Splatting");
+                    optional_checkbox(
+                        ui,
+                        &mut state.splatting_args.mip_splatting,
+                        state.pc.mip_splatting().unwrap_or(false),
+                    );
+                    ui.end_row();
+                }
             });
     });
 
@@ -196,6 +164,24 @@ pub(crate) fn ui(state: &mut WindowContext) {
                     ui.end_row();
                     ui.strong("Compressed:");
                     ui.label(state.pc.compressed().to_string());
+                    ui.end_row();
+                    ui.strong("Mip Splatting:");
+                    ui.label(
+                        state
+                            .pc
+                            .mip_splatting()
+                            .map(|v| v.to_string())
+                            .unwrap_or("-".to_string()),
+                    );
+                    ui.end_row();
+                    ui.strong("Dilation Kernel Size:");
+                    ui.label(
+                        state
+                            .pc
+                            .dilation_kernel_size()
+                            .map(|v| v.to_string())
+                            .unwrap_or("-".to_string()),
+                    );
                     ui.end_row();
                     if let Some(path) = &state.pointcloud_file_path {
                         ui.strong("File:");
@@ -267,6 +253,7 @@ pub(crate) fn ui(state: &mut WindowContext) {
                                     }
                                     return None;
                                 })
+                                .min_col_width(50.)
                                 .show(ui, |ui| {
                                     let style = ui.style().clone();
                                     for c in cameras2 {
@@ -280,9 +267,19 @@ pub(crate) fn ui(state: &mut WindowContext) {
                                                 Split::Test => Color32::LIGHT_GREEN,
                                             },
                                             c.split.to_string(),
+                                        )
+                                        .on_hover_text(
+                                            RichText::new(format!(
+                                                "{:#?}",
+                                                Euler::from(Quaternion::from(Matrix3::from(
+                                                    c.rotation
+                                                )))
+                                            )),
                                         );
 
-                                        let resp = ui.label(c.img_name.clone());
+                                        let resp = ui.add(
+                                            egui::Label::new(c.img_name.clone()).truncate(true),
+                                        );
                                         if let Some(view_id) = curr_view {
                                             if c.id == view_id {
                                                 resp.scroll_to_me(None);
@@ -305,196 +302,64 @@ pub(crate) fn ui(state: &mut WindowContext) {
             }
         });
 
-    #[cfg(feature = "video")]
-    {
-        use std::{
-            fs::{create_dir_all, File},
-            path::Path,
-        };
+    #[cfg(target_arch = "wasm32")]
+    egui::Window::new("🎮")
+        .default_width(200.)
+        .resizable(false)
+        .default_height(100.)
+        .default_open(false)
+        .movable(false)
+        .anchor(Align2::LEFT_BOTTOM, Vec2::new(10., -10.))
+        .show(ctx, |ui| {
+            egui::Grid::new("controls")
+                .num_columns(2)
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.strong("Camera");
+                    ui.end_row();
+                    ui.label("Rotate Camera");
+                    ui.label("Left click + drag");
+                    ui.end_row();
 
-        use egui::{epaint::Shadow, Align2, Color32, Margin, Vec2, Vec2b, Visuals};
-        use egui_dnd::dnd;
+                    ui.label("Move Target/Center");
+                    ui.label("Right click + drag");
+                    ui.end_row();
 
-        let mut save_view = false;
-        let mut cancle_animation = false;
-        egui::Window::new("Tracking Shot")
-            .default_width(200.)
-            .resizable(false)
-            .default_height(100.)
-            .max_height(500.)
-            .default_open(false)
-            .show(ctx, |ui| {
-                ui.vertical(|ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        if let Some(scene) = &state.scene {
-                            ui.menu_button("Scene Cameras", |ui| {
-                                if ui.button("Train").clicked() {
-                                    state.saved_cameras = scene.cameras(Some(Split::Train)).clone();
-                                    cancle_animation = true;
-                                    ui.close_menu();
-                                }
-                                if ui.button("Test").clicked() {
-                                    state.saved_cameras = scene.cameras(Some(Split::Test)).clone();
-                                    cancle_animation = true;
-                                    ui.close_menu();
-                                }
-                                if ui.button("All").clicked() {
-                                    state.saved_cameras = scene.cameras(None).clone();
-                                    cancle_animation = true;
-                                    ui.close_menu();
-                                }
-                            });
-                        }
-                        if ui.button("Clear").clicked() {
-                            state.saved_cameras.clear();
-                            cancle_animation = true;
-                        }
-                        if ui.button("Add Current View").clicked() {
-                            save_view = true;
-                            cancle_animation = true;
-                        }
-                    });
-                    ui.heading("Cameras");
-                    egui::ScrollArea::new(Vec2b::new(false, true))
-                        .max_height(300.)
-                        .show(ui, |ui| {
-                            let mut trash = Vec::new();
-                            let playing =
-                                state.animation.as_ref().map(|(_, p)| *p).unwrap_or(false);
-                            ui.add_enabled_ui(!playing, |ui| {
-                                let resp = dnd(ui, "dnd_cameras").show_vec(
-                                    &mut state.saved_cameras,
-                                    |ui, c, handle, state| {
-                                        let style = (*ctx.style()).clone();
-                                        let bg = if state.dragged {
-                                            style.visuals.extreme_bg_color
-                                        } else {
-                                            style.visuals.panel_fill
-                                        };
-                                        egui::Frame::default()
-                                            .fill(bg)
-                                            .inner_margin(Margin::same(3.))
-                                            .show(ui, |ui| {
-                                                ui.horizontal(|ui| {
-                                                    handle.ui(ui, |ui| {
-                                                        ui.label("|||");
-                                                    });
-                                                    ui.horizontal(|ui| {
-                                                        ui.set_width(120.);
+                    ui.label("Tilt Camera");
+                    ui.label("Alt + drag mouse");
+                    ui.end_row();
 
-                                                        ui.colored_label(
-                                                            style.visuals.strong_text_color(),
-                                                            c.id.to_string(),
-                                                        );
-                                                        ui.colored_label(
-                                                            match c.split {
-                                                                Split::Train => Color32::DARK_GREEN,
-                                                                Split::Test => Color32::LIGHT_GREEN,
-                                                            },
-                                                            c.split.to_string(),
-                                                        );
-                                                        ui.label(c.img_name.clone());
-                                                    });
-                                                    if ui.button("🗑").clicked() {
-                                                        trash.push(state.index);
-                                                    }
-                                                    if ui.button("🎥").clicked() {
-                                                        new_camera =
-                                                            Some(SetCamera::Camera(c.clone()));
-                                                    }
-                                                });
-                                            });
-                                    },
-                                );
+                    ui.label("Zoom");
+                    ui.label("Mouse wheel");
+                    ui.end_row();
 
-                                if resp.final_update().is_some() {
-                                    cancle_animation = true;
-                                }
-                            });
-                            for t in trash {
-                                state.saved_cameras.remove(t);
-                            }
-                        });
-                    ui.separator();
+                    ui.label("Toggle UI");
+                    ui.label("U");
+                    ui.end_row();
 
-                    ui.heading("Animation");
-                    ui.add_enabled_ui(state.saved_cameras.len() > 1, |ui| {
-                        let text = if state
-                            .animation
-                            .as_ref()
-                            .and_then(|(_, playing)| Some(!*playing))
-                            .unwrap_or(true)
-                        {
-                            "Play"
-                        } else {
-                            "Pause"
-                        };
-                        ui.horizontal(|ui| {
-                            if ui.add(egui::Button::new(text).shortcut_text("T")).clicked() {
-                                toggle_tracking_shot = true;
-                            }
-
-                            if ui
-                                .add_enabled(state.animation.is_some(), egui::Button::new("Cancel"))
-                                .clicked()
-                            {
-                                cancle_animation = true;
-                            }
-                        });
-                        if let Some((animation, playing)) = &mut state.animation {
-                            egui::Grid::new("animation grid")
-                                .num_columns(2)
-                                .show(ui, |ui| {
-                                    ui.strong("Progress");
-                                    let mut progress = animation.progress();
-                                    if ui
-                                        .add(egui::Slider::new(&mut progress, (0.)..=(1.)))
-                                        .changed()
-                                    {
-                                        *playing = false;
-                                    }
-                                    animation.set_progress(progress);
-                                    ui.end_row();
-
-                                    let mut duration = animation.duration().as_secs_f32();
-                                    ui.strong("Duration");
-                                    if ui
-                                        .add(
-                                            egui::DragValue::new(&mut duration)
-                                                .clamp_range(0.1..=1e4)
-                                                .speed(0.5)
-                                                .suffix("s"),
-                                        )
-                                        .changed()
-                                    {
-                                        animation.set_duration(Duration::from_secs_f32(duration));
-                                    }
-                                });
-                        }
-                        ui.heading("Save Animation");
-                        ui.horizontal_wrapped(|ui| {
-                            ui.text_edit_singleline(&mut state.cameras_save_path);
-                            if ui.button("Save").clicked() {
-                                let path = Path::new(&state.cameras_save_path);
-                                if let Some(parent) = path.parent() {
-                                    create_dir_all(parent).unwrap();
-                                }
-                                let mut file = File::create(path).unwrap();
-                                serde_json::to_writer_pretty(&mut file, &state.saved_cameras)
-                                    .unwrap();
-                            }
-                        });
-                    });
+                    ui.strong("Scene Views");
+                    ui.end_row();
+                    ui.label("Views 0-9");
+                    ui.label("0-9");
+                    ui.end_row();
+                    ui.label("Random view");
+                    ui.label("R");
+                    ui.end_row();
+                    ui.label("Next View");
+                    ui.label("Page Up");
+                    ui.end_row();
+                    ui.label("Previous View");
+                    ui.label("Page Down");
+                    ui.end_row();
+                    ui.label("Snap to nearest view");
+                    ui.label("N");
+                    ui.end_row();
+                    ui.label("Start/Pause Tracking shot");
+                    ui.label("T");
+                    ui.end_row();
                 });
-            });
+        });
 
-        if save_view {
-            state.save_view();
-        }
-        if cancle_animation {
-            state.animation.take();
-        }
-    }
     if let Some(c) = new_camera {
         match c {
             SetCamera::ID(id) => state.set_scene_camera(id),
@@ -530,4 +395,64 @@ fn format_thousands(n: u32) -> String {
         }
     }
     result
+}
+
+#[allow(unused)]
+fn optional_drag<T: Numeric>(
+    ui: &mut egui::Ui,
+    opt: &mut Option<T>,
+    range: Option<RangeInclusive<T>>,
+    speed: Option<impl Into<f64>>,
+    default: Option<T>,
+) {
+    let mut placeholder = default.unwrap_or(T::from_f64(0.));
+    let mut drag = if let Some(ref mut val) = opt {
+        egui_winit::egui::DragValue::new(val)
+    } else {
+        egui_winit::egui::DragValue::new(&mut placeholder).custom_formatter(|_, _| {
+            if let Some(v) = default {
+                format!("{:.2}", v.to_f64())
+            } else {
+                "—".into()
+            }
+        })
+    };
+    if let Some(range) = range {
+        drag = drag.clamp_range(range);
+    }
+    if let Some(speed) = speed {
+        drag = drag.speed(speed);
+    }
+    let changed = ui.add(drag).changed();
+    if ui
+        .add_enabled(opt.is_some(), egui::Button::new("↺"))
+        .on_hover_text("Reset to default")
+        .clicked()
+    {
+        *opt = None;
+    }
+    if changed && opt.is_none() {
+        *opt = Some(placeholder);
+    }
+}
+
+#[allow(unused)]
+fn optional_checkbox(ui: &mut egui::Ui, opt: &mut Option<bool>, default: bool) {
+    let mut val = default;
+    let checkbox = if let Some(ref mut val) = opt {
+        egui::Checkbox::new(val, "")
+    } else {
+        egui::Checkbox::new(&mut val, "")
+    };
+    let changed = ui.add(checkbox).changed();
+    if ui
+        .add_enabled(opt.is_some(), egui::Button::new("↺"))
+        .on_hover_text("Reset to default")
+        .clicked()
+    {
+        *opt = None;
+    }
+    if changed && opt.is_none() {
+        *opt = Some(val);
+    }
 }

@@ -1,21 +1,15 @@
 use cgmath::Vector2;
 use clap::Parser;
-use core::num;
+
 use image::{ImageBuffer, Rgb};
 use indicatif::{ProgressIterator, ProgressStyle};
-use minimp4::Mp4Muxer;
-use openh264::{
-    encoder::{Encoder, EncoderConfig},
-    OpenH264API,
-};
 use std::{
     fs::{create_dir_all, File},
-    io::BufWriter,
     path::PathBuf,
     time::Duration,
 };
 use web_splats::{
-    Animation, GaussianRenderer, PointCloud, Scene, SceneCamera, TrackingShot, WGPUContext,
+    io, smoothstep, Animation, GaussianRenderer, PointCloud, Scene, SceneCamera, SplattingArgs, TrackingShot, WGPUContext
 };
 
 #[derive(Debug, Parser)]
@@ -48,7 +42,7 @@ async fn render_tracking_shot(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     renderer: &mut GaussianRenderer,
-    pc: &mut PointCloud,
+    pc: PointCloud,
     cameras: Vec<SceneCamera>,
     video_out: &PathBuf,
     duration: Option<Duration>,
@@ -56,7 +50,7 @@ async fn render_tracking_shot(
 ) {
     println!("saving video to '{}'", video_out.to_string_lossy());
 
-    let resolution: Vector2<u32> = Vector2::new(1600, 1060);
+    let resolution: Vector2<u32> = Vector2::new(1024, 1024)*2;
 
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("render texture"),
@@ -73,25 +67,24 @@ async fn render_tracking_shot(
         view_formats: &[],
     });
 
-    let animation_duration = duration.unwrap_or(Duration::from_secs_f32(cameras.len() as f32 * 2.));
+    let trackshot_duration = duration.unwrap_or(Duration::from_secs_f32(cameras.len() as f32 * 3.));
 
     let mut animation = Animation::new(
-        animation_duration,
-        false,
-        Box::new(TrackingShot::from_scene(cameras)),
+        trackshot_duration,
+        true,
+        Box::new(TrackingShot::from_cameras(cameras)),
     );
-    println!("{:?}", animation_duration);
 
-    let config = EncoderConfig::new(resolution.x, resolution.y);
-    let api = OpenH264API::from_source();
-    let mut encoder = Encoder::with_config(api, config).unwrap();
+    let init_duration = Duration::from_secs_f32(4.);
+    let video_duration = trackshot_duration + init_duration;
+
+    println!("video duration: {:?}", video_duration);
 
     let bg = wgpu::Color::BLACK;
 
-    // let mut buf = Vec::new();
 
     let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
-    let num_frames = (animation_duration.as_secs_f32() * fps as f32).ceil() as u32;
+    let num_frames = (video_duration.as_secs_f32() * fps as f32).ceil() as u32;
 
     let pb_style =
         ProgressStyle::with_template("rendering {bar:40.cyan/blue} {pos:>7}/{len:7} {eta_precise}")
@@ -99,40 +92,69 @@ async fn render_tracking_shot(
 
     create_dir_all(video_out).unwrap();
 
+    let mut state_time = Duration::ZERO;
     for i in (0..num_frames).progress_with_style(pb_style) {
-        animation.set_progress(i as f32 / num_frames as f32);
-        let cam = animation.update(Duration::ZERO);
+        let dt = Duration::from_secs_f32(1. / (fps as f32));
+        state_time += dt;
+        // let mut cam = animation.update(if state_time >= init_duration {
+        //     dt
+        // } else {
+        //     Duration::ZERO
+        //     // dt.mul_f32()
+        // });
+        animation.set_progress(smoothstep(state_time.as_secs_f32()/video_duration.as_secs_f32()));
+        let mut cam = animation.update(Duration::ZERO);
 
-        renderer.render(device, queue, &pc, cam, resolution, &target_view, bg);
-
-        renderer.stopwatch.reset();
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("render encoder"),
+        });
+        cam.fit_near_far(pc.bbox());
+        // first render to lazy init sorter stuff
+        renderer.prepare(
+            &mut encoder,
+            device,
+            queue,
+            &pc,
+            SplattingArgs {
+                camera: cam,
+                viewport: resolution,
+                gaussian_scaling: 1.,
+                max_sh_deg: pc.sh_deg(),
+                show_env_map: false,
+                mip_splatting: None,
+                kernel_size: None,
+                clipping_box: None,
+                walltime: state_time,
+                scene_center: None,
+                scene_extend: None,
+            },
+            &mut None,
+        );
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("render pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(bg),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            renderer.render(&mut render_pass, &pc);
+        }
+        queue.submit(std::iter::once(encoder.finish()));
 
         let img = download_texture(&target, device, queue).await;
 
-        // let yuv = openh264::formats::YUVBuffer::with_rgb(
-        //     img.width() as usize,
-        //     img.height() as usize,
-        //     img.as_raw(),
-        // );
-
-        // // Encode YUV into H.264.
-        // let bitstream = encoder.encode(&yuv).unwrap();
-        // bitstream.write_vec(&mut buf);
         img.save(&video_out.join(format!("frame_{:04}.png", i)))
             .unwrap();
     }
 
-    // let mut out_file = std::fs::File::create(video_out).unwrap();
-    // let mut writer = BufWriter::new(&mut out_file);
-    // let mut mp4muxer = Mp4Muxer::new(&mut writer);
-    // mp4muxer.init_video(
-    //     resolution.x as i32,
-    //     resolution.y as i32,
-    //     false,
-    //     "scene tracking shot",
-    // );
-    // mp4muxer.write_video_with_fps(&buf, fps);
-    // mp4muxer.close();
 }
 
 #[pollster::main]
@@ -144,7 +166,7 @@ async fn main() {
     println!("reading scene file '{}'", opt.scene.to_string_lossy());
 
     // TODO this is suboptimal as it is never closed
-    let ply_file = File::open(&opt.input).unwrap();
+    let mut ply_file = File::open(&opt.input).unwrap();
     let scene_file = File::open(opt.scene).unwrap();
 
     let scene = Scene::from_json(scene_file).unwrap();
@@ -154,7 +176,8 @@ async fn main() {
     let queue = &wgpu_context.queue;
 
     println!("reading point cloud file '{}'", opt.input.to_string_lossy());
-    let mut pc = PointCloud::load(&wgpu_context.device, ply_file).unwrap();
+    let pc_raw = io::GenericGaussianPointCloud::load(&mut ply_file).unwrap();
+    let pc = PointCloud::new(device, pc_raw).unwrap();
 
     let mut renderer = GaussianRenderer::new(
         device,
@@ -169,7 +192,7 @@ async fn main() {
         device,
         queue,
         &mut renderer,
-        &mut pc,
+        pc,
         scene.cameras(None),
         &opt.video_out,
         opt.duration.map(Duration::from_secs_f32),
@@ -187,7 +210,7 @@ pub async fn download_texture(
 ) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
     let texture_format = texture.format();
 
-    let texel_size: u32 = texture_format.block_size(None).unwrap();
+    let texel_size: u32 = texture_format.block_copy_size(None).unwrap();
     let fb_size = texture.size();
     let align: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT - 1;
     let bytes_per_row = (texel_size * fb_size.width) + align & !align;

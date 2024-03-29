@@ -1,5 +1,7 @@
 use clap::Parser;
+#[allow(unused_imports)]
 use std::{fmt::Debug, fs::File, path::PathBuf};
+#[allow(unused_imports)]
 use web_splats::{open_window, RenderConfig};
 
 #[derive(Debug, Parser)]
@@ -24,17 +26,22 @@ struct Opt {
 }
 
 /// check if there is a scene file in the same directory or parent directory as the input file
+#[allow(unused)]
 fn try_find_scene_file(input: &PathBuf, depth: u32) -> Option<PathBuf> {
     if let Some(parent) = input.parent() {
         let scene = parent.join("cameras.json");
         if scene.exists() {
             return Some(scene);
         }
+        if depth == 0 {
+            return None;
+        }   
         return try_find_scene_file(&parent.to_path_buf(), depth - 1);
     }
     return None;
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[pollster::main]
 async fn main() {
     let mut opt = Opt::parse();
@@ -64,3 +71,5 @@ async fn main() {
     )
     .await;
 }
+#[cfg(target_arch = "wasm32")]
+fn main(){todo!("not implemented")}

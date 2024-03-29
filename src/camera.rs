@@ -1,7 +1,7 @@
 use cgmath::*;
 use std::hash::{Hash, Hasher};
 
-use crate::animation::Lerp;
+use crate::{animation::Lerp, pointcloud::Aabb};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PerspectiveCamera {
@@ -21,6 +21,17 @@ impl PerspectiveCamera {
             rotation,
             projection: projection,
         }
+    }
+
+    pub fn fit_near_far(&mut self, aabb: &Aabb<f32>) {
+        // set camera near and far plane
+        let center = aabb.center();
+        let radius = aabb.radius();
+        let distance = self.position.distance(center);
+        let zfar = distance + radius;
+        let znear = (distance - radius).max(zfar / 1000.);
+        self.projection.zfar = zfar;
+        self.projection.znear = znear;
     }
 }
 
@@ -125,7 +136,7 @@ impl PerspectiveProjection {
 
     pub fn resize(&mut self, width: u32, height: u32) {
         let ratio = width as f32 / height as f32;
-        if ratio > 1.0 {
+        if width > height {
             self.fovy = self.fovx / ratio * self.fov2view_ratio;
         } else {
             self.fovx = self.fovy * ratio * self.fov2view_ratio;
@@ -151,9 +162,46 @@ impl PerspectiveProjection {
     }
 }
 
+pub struct FrustumPlanes {
+    pub near: Vector4<f32>,
+    pub far: Vector4<f32>,
+    pub left: Vector4<f32>,
+    pub right: Vector4<f32>,
+    pub top: Vector4<f32>,
+    pub bottom: Vector4<f32>,
+}
+
 pub trait Camera {
     fn view_matrix(&self) -> Matrix4<f32>;
     fn proj_matrix(&self) -> Matrix4<f32>;
+
+    fn position(&self) -> Point3<f32> {
+        Point3::from_homogeneous(self.view_matrix().inverse_transform().unwrap().w)
+    }
+
+    fn frustum_planes(&self) -> FrustumPlanes {
+        let p = self.proj_matrix();
+        let v = self.view_matrix();
+        let pv = p * v;
+        let mut planes = [Vector4::zero(); 6];
+        planes[0] = pv.row(3) + pv.row(0);
+        planes[1] = pv.row(3) - pv.row(0);
+        planes[2] = pv.row(3) + pv.row(1);
+        planes[3] = pv.row(3) - pv.row(1);
+        planes[4] = pv.row(3) + pv.row(2);
+        planes[5] = pv.row(3) - pv.row(2);
+        for i in 0..6 {
+            planes[i] = planes[i].normalize();
+        }
+        return FrustumPlanes {
+            near: planes[4],
+            far: planes[5],
+            left: planes[0],
+            right: planes[1],
+            top: planes[3],
+            bottom: planes[2],
+        };
+    }
 }
 
 pub fn world2view(r: Matrix3<f32>, t: Vector3<f32>) -> Matrix4<f32> {
@@ -162,7 +210,7 @@ pub fn world2view(r: Matrix3<f32>, t: Vector3<f32>) -> Matrix4<f32> {
     rt[1].w = t.y;
     rt[2].w = t.z;
     rt[3].w = 1.;
-    return rt.invert().unwrap().transpose();
+    return rt.inverse_transform().unwrap().transpose();
 }
 
 pub fn build_proj(znear: f32, zfar: f32, fov_x: Rad<f32>, fov_y: Rad<f32>) -> Matrix4<f32> {

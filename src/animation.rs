@@ -45,7 +45,7 @@ pub struct TrackingShot {
 }
 
 impl TrackingShot {
-    pub fn from_scene<C>(cameras: Vec<C>) -> Self
+    pub fn from_cameras<C>(cameras: Vec<C>) -> Self
     where
         C: Into<PerspectiveCamera>,
     {
@@ -65,6 +65,10 @@ impl TrackingShot {
         );
 
         Self { spline }
+    }
+
+    pub fn num_control_points(&self) -> usize {
+        self.spline.len()
     }
 }
 

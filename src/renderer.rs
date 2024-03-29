@@ -1,32 +1,31 @@
 use crate::gpu_rs::{GPURSSorter, PointCloudSortStuff};
+use crate::pointcloud::Aabb;
+use crate::utils::GPUStopwatch;
 use crate::{
     camera::{Camera, PerspectiveCamera, VIEWPORT_Y_FLIP},
     pointcloud::PointCloud,
     uniform::UniformBuffer,
 };
 
-#[cfg(not(target_arch = "wasm32"))]
-use crate::utils::GPUStopwatch;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroU64;
-
-#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
+
 use wgpu::{include_wgsl, Extent3d, MultisampleState};
 
-use cgmath::{Matrix4, SquareMatrix, Vector2};
+use cgmath::{EuclideanSpace, Matrix4, Point3, SquareMatrix, Vector2, Vector4};
 
 pub struct GaussianRenderer {
     pipeline: wgpu::RenderPipeline,
     camera: UniformBuffer<CameraUniform>,
+
     render_settings: UniformBuffer<SplattingArgsUniform>,
     preprocess: PreprocessPipeline,
+
     draw_indirect_buffer: wgpu::Buffer,
     #[allow(dead_code)]
     draw_indirect: wgpu::BindGroup,
     color_format: wgpu::TextureFormat,
-    #[cfg(not(target_arch = "wasm32"))]
-    stopwatch: GPUStopwatch,
     sorter: GPURSSorter,
     sorter_suff: Option<PointCloudSortStuff>,
 }
@@ -100,8 +99,6 @@ impl GaussianRenderer {
                 resource: draw_indirect_buffer.as_entire_binding(),
             }],
         });
-        #[cfg(not(target_arch = "wasm32"))]
-        let stopwatch = GPUStopwatch::new(device, Some(3));
 
         let sorter = GPURSSorter::new(device, queue).await;
 
@@ -114,8 +111,6 @@ impl GaussianRenderer {
             draw_indirect_buffer,
             draw_indirect,
             color_format,
-            #[cfg(not(target_arch = "wasm32"))]
-            stopwatch,
             sorter,
             sorter_suff: None,
             render_settings: UniformBuffer::new_default(
@@ -144,9 +139,7 @@ impl GaussianRenderer {
         self.camera.sync(queue);
 
         let settings_uniform = self.render_settings.as_mut();
-        settings_uniform.gaussian_scaling = render_settings.gaussian_scaling;
-        settings_uniform.max_sh_deg = render_settings.max_sh_deg;
-        settings_uniform.show_env_map = render_settings.show_env_map as u32;
+        *settings_uniform = SplattingArgsUniform::from_args_and_pc(render_settings, pc);
         self.render_settings.sync(queue);
 
         // TODO perform this in vertex buffer after draw call
@@ -193,116 +186,75 @@ impl GaussianRenderer {
         return n;
     }
 
-    pub fn render<'a>(
-        &'a mut self,
+    pub fn prepare(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        pc: &'a PointCloud,
-        target: &wgpu::TextureView,
+        pc: &PointCloud,
         render_settings: SplattingArgs,
+        stopwatch: &mut Option<GPUStopwatch>,
     ) {
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Render Encoder"),
-        });
+        if self.sorter_suff.is_none()
+            || self
+                .sorter_suff
+                .as_ref()
+                .is_some_and(|s| s.num_points != pc.num_points() as usize)
         {
-
-            #[cfg(not(target_arch = "wasm32"))]
-            self.stopwatch.reset();
-            if self.sorter_suff.is_none()
-                || self
-                    .sorter_suff
-                    .as_ref()
-                    .is_some_and(|s| s.num_points != pc.num_points() as usize)
-            {
-                log::debug!("created sort buffers for {:} points", pc.num_points());
-                self.sorter_suff = Some(
-                    self.sorter
-                        .create_sort_stuff(device, pc.num_points() as usize),
-                );
-            }
-
-            GPURSSorter::record_reset_indirect_buffer(
-                &self.sorter_suff.as_ref().unwrap().sorter_dis,
-                &self.sorter_suff.as_ref().unwrap().sorter_uni,
-                &queue,
+            log::debug!("created sort buffers for {:} points", pc.num_points());
+            self.sorter_suff = Some(
+                self.sorter
+                    .create_sort_stuff(device, pc.num_points() as usize),
             );
-
-            // convert 3D gaussian splats to 2D gaussian splats
-            #[cfg(not(target_arch = "wasm32"))]
-            self.stopwatch.start(&mut encoder, "preprocess").unwrap();
-            self.preprocess(&mut encoder, queue, &pc, render_settings);
-            #[cfg(not(target_arch = "wasm32"))]
-            self.stopwatch.stop(&mut encoder, "preprocess").unwrap();
-
-            // sort 2d splats
-            #[cfg(not(target_arch = "wasm32"))]
-            self.stopwatch.start(&mut encoder, "sorting").unwrap();
-            self.sorter.record_sort_indirect(
-                &self.sorter_suff.as_ref().unwrap().sorter_bg,
-                &self.sorter_suff.as_ref().unwrap().sorter_dis,
-                &mut encoder,
-            );
-            #[cfg(not(target_arch = "wasm32"))]
-            self.stopwatch.stop(&mut encoder, "sorting").unwrap();
-
-            encoder.copy_buffer_to_buffer(
-                &self.sorter_suff.as_ref().unwrap().sorter_uni,
-                0,
-                &self.draw_indirect_buffer,
-                std::mem::size_of::<u32>() as u64,
-                std::mem::size_of::<u32>() as u64,
-            );
-
-            // rasterize splats
-            encoder.push_debug_group("render");
-            #[cfg(not(target_arch = "wasm32"))]
-            self.stopwatch.start(&mut encoder, "rasterization").unwrap();
-            {
-                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("render pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: target,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    ..Default::default()
-                });
-
-                render_pass.set_bind_group(0, &pc.render_bind_group, &[]);
-                render_pass.set_bind_group(
-                    1,
-                    &self.sorter_suff.as_ref().unwrap().sorter_render_bg,
-                    &[],
-                );
-                render_pass.set_pipeline(&self.pipeline);
-
-                render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
-            }
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        self.stopwatch.stop(&mut encoder, "rasterization").unwrap();
-        encoder.pop_debug_group();
-        #[cfg(not(target_arch = "wasm32"))]
-        self.stopwatch.end(&mut encoder);
-        queue.submit([encoder.finish()]);
+
+        GPURSSorter::record_reset_indirect_buffer(
+            &self.sorter_suff.as_ref().unwrap().sorter_dis,
+            &self.sorter_suff.as_ref().unwrap().sorter_uni,
+            &queue,
+        );
+
+        // convert 3D gaussian splats to 2D gaussian splats
+        if let Some(stopwatch) = stopwatch {
+            stopwatch.start(encoder, "preprocess").unwrap();
+        }
+
+        self.preprocess(encoder, queue, &pc, render_settings);
+        if let Some(stopwatch) = stopwatch {
+            stopwatch.stop(encoder, "preprocess").unwrap();
+        }
+        // sort 2d splats
+        if let Some(stopwatch) = stopwatch {
+            stopwatch.start(encoder, "sorting").unwrap();
+        }
+        self.sorter.record_sort_indirect(
+            &self.sorter_suff.as_ref().unwrap().sorter_bg,
+            &self.sorter_suff.as_ref().unwrap().sorter_dis,
+            encoder,
+        );
+        if let Some(stopwatch) = stopwatch {
+            stopwatch.stop(encoder, "sorting").unwrap();
+        }
+
+        encoder.copy_buffer_to_buffer(
+            &self.sorter_suff.as_ref().unwrap().sorter_uni,
+            0,
+            &self.draw_indirect_buffer,
+            std::mem::size_of::<u32>() as u64,
+            std::mem::size_of::<u32>() as u64,
+        );
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn render_stats(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) -> RenderStatistics {
-        let durations = self.stopwatch.take_measurements(device, queue).await;
-        self.stopwatch.reset();
-        RenderStatistics {
-            preprocess_time: *durations.get("preprocess").unwrap_or(&Duration::ZERO),
-            sort_time: *durations.get("sorting").unwrap_or(&Duration::ZERO),
-            rasterization_time: *durations.get("rasterization").unwrap_or(&Duration::ZERO),
-        }
+    pub fn render<'rpass>(
+        &'rpass self,
+        render_pass: &mut wgpu::RenderPass<'rpass>,
+        pc: &'rpass PointCloud,
+    ) {
+        render_pass.set_bind_group(0, pc.render_bind_group(), &[]);
+        render_pass.set_bind_group(1, &self.sorter_suff.as_ref().unwrap().sorter_render_bg, &[]);
+        render_pass.set_pipeline(&self.pipeline);
+
+        render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
     }
 
     pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -397,9 +349,9 @@ impl PreprocessPipeline {
             bind_group_layouts: &[
                 &UniformBuffer::<CameraUniform>::bind_group_layout(device),
                 &if !compressed {
-                    PointCloud::bind_group_layout_float(device)
-                } else {
                     PointCloud::bind_group_layout(device)
+                } else {
+                    PointCloud::bind_group_layout_compressed(device)
                 },
                 &GPURSSorter::bind_group_layout_preprocess(device),
                 &UniformBuffer::<SplattingArgsUniform>::bind_group_layout(device),
@@ -422,9 +374,9 @@ impl PreprocessPipeline {
 
     fn build_shader(sh_deg: u32, compressed: bool) -> String {
         let shader_src: &str = if !compressed {
-            include_str!("shaders/preprocess_f32.wgsl")
-        } else {
             include_str!("shaders/preprocess.wgsl")
+        } else {
+            include_str!("shaders/preprocess_compressed.wgsl")
         };
         let shader = format!(
             "
@@ -456,13 +408,6 @@ impl PreprocessPipeline {
         let wgs_x = (pc.num_points() as f32 / 256.0).ceil() as u32;
         pass.dispatch_workgroups(wgs_x, 1, 1);
     }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub struct RenderStatistics {
-    pub preprocess_time: Duration,
-    pub rasterization_time: Duration,
-    pub sort_time: Duration,
 }
 
 pub struct Display {
@@ -721,6 +666,12 @@ pub struct SplattingArgs {
     pub gaussian_scaling: f32,
     pub max_sh_deg: u32,
     pub show_env_map: bool,
+    pub mip_splatting: Option<bool>,
+    pub kernel_size: Option<f32>,
+    pub clipping_box: Option<Aabb<f32>>,
+    pub walltime: Duration,
+    pub scene_center: Option<Point3<f32>>,
+    pub scene_extend: Option<f32>,
 }
 
 impl Hash for SplattingArgs {
@@ -729,23 +680,94 @@ impl Hash for SplattingArgs {
         self.viewport.hash(state);
         self.max_sh_deg.hash(state);
         self.gaussian_scaling.to_bits().hash(state);
-        self.show_env_map.hash(state)
+        self.show_env_map.hash(state);
+        self.mip_splatting.hash(state);
+        self.kernel_size.map(f32::to_bits).hash(state);
+        self.walltime.hash(state);
+        self.clipping_box
+            .as_ref()
+            .map(|b| bytemuck::bytes_of(&b.min))
+            .hash(state);
+        self.clipping_box
+            .as_ref()
+            .map(|b| bytemuck::bytes_of(&b.max))
+            .hash(state);
     }
 }
 
+pub const DEFAULT_KERNEL_SIZE: f32 = 0.3;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SplattingArgsUniform {
+    clipping_box_min: Vector4<f32>,
+    clipping_box_max: Vector4<f32>,
     gaussian_scaling: f32,
     max_sh_deg: u32,
     show_env_map: u32,
+    mip_splatting: u32,
+
+    kernel_size: f32,
+    walltime: f32,
+    scene_extend: f32,
+    _pad: u32,
+
+    scene_center: Vector4<f32>,
 }
+
+impl SplattingArgsUniform {
+    /// replaces values with default values for point cloud
+    pub fn from_args_and_pc(args: SplattingArgs, pc: &PointCloud) -> Self {
+        Self {
+            gaussian_scaling: args.gaussian_scaling,
+            max_sh_deg: args.max_sh_deg,
+            show_env_map: args.show_env_map as u32,
+            mip_splatting: args
+                .mip_splatting
+                .map(|v| v as u32)
+                .unwrap_or(pc.mip_splatting().unwrap_or(false) as u32),
+            kernel_size: args
+                .kernel_size
+                .unwrap_or(pc.dilation_kernel_size().unwrap_or(DEFAULT_KERNEL_SIZE)),
+            clipping_box_min: args
+                .clipping_box
+                .map_or(pc.bbox().min, |b| b.min)
+                .to_vec()
+                .extend(0.),
+            clipping_box_max: args
+                .clipping_box
+                .map_or(pc.bbox().max, |b| b.max)
+                .to_vec()
+                .extend(0.),
+            walltime: args.walltime.as_secs_f32(),
+            scene_center: pc.center().to_vec().extend(0.),
+            scene_extend: args
+                .scene_extend
+                .unwrap_or(pc.bbox().radius())
+                .max(pc.bbox().radius()),
+            ..Default::default()
+        }
+    }
+}
+
 impl Default for SplattingArgsUniform {
     fn default() -> Self {
         Self {
             gaussian_scaling: 1.0,
             max_sh_deg: 3,
-            show_env_map: 1,
+            show_env_map: true as u32,
+            mip_splatting: false as u32,
+            kernel_size: DEFAULT_KERNEL_SIZE,
+            clipping_box_max: Vector4::new(f32::INFINITY, f32::INFINITY, f32::INFINITY, 0.),
+            clipping_box_min: Vector4::new(
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+                0.,
+            ),
+            walltime: 0.,
+            scene_center: Vector4::new(0., 0., 0., 0.),
+            scene_extend: 1.,
+            _pad: 0,
         }
     }
 }
