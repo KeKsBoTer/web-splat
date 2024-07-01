@@ -92,13 +92,15 @@ impl WGPUContext {
             | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
             | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
 
+        let adapter_limits = adapter.limits();
+
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     required_features,
                     #[cfg(not(target_arch = "wasm32"))]
                     required_limits: wgpu::Limits {
-                        max_storage_buffer_binding_size: (1 << 30) - 1,
+                        max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
                         max_buffer_size: (1 << 30) - 1,
                         max_storage_buffers_per_shader_stage: 12,
                         max_compute_workgroup_storage_size: 1 << 15,
