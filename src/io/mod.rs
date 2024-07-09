@@ -1,4 +1,3 @@
-
 #[cfg(feature = "npz")]
 use std::io::BufReader;
 use std::io::{Read, Seek};

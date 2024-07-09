@@ -101,7 +101,7 @@ async fn render_views(
                 walltime: Duration::from_secs(100),
                 scene_center: None,
                 scene_extend: None,
-                time: Duration::ZERO
+                time: Duration::ZERO,
             },
             &mut None,
         );
@@ -181,7 +181,9 @@ async fn main() {
     println!("done!");
 }
 #[cfg(target_arch = "wasm32")]
-fn main(){todo!("not implemented")}
+fn main() {
+    todo!("not implemented")
+}
 
 pub async fn download_texture(
     texture: &wgpu::Texture,

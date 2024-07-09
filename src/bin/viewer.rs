@@ -35,7 +35,7 @@ fn try_find_scene_file(input: &PathBuf, depth: u32) -> Option<PathBuf> {
         }
         if depth == 0 {
             return None;
-        }   
+        }
         return try_find_scene_file(&parent.to_path_buf(), depth - 1);
     }
     return None;
@@ -72,4 +72,6 @@ async fn main() {
     .await;
 }
 #[cfg(target_arch = "wasm32")]
-fn main(){todo!("not implemented")}
+fn main() {
+    todo!("not implemented")
+}

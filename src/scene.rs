@@ -1,5 +1,4 @@
 use std::{
-    collections::{HashMap, HashSet},
     hash::Hash,
     io::{self, BufReader},
 };
@@ -7,7 +6,7 @@ use std::{
 use cgmath::{Matrix3, MetricSpace, Point3, SquareMatrix, Vector2};
 use serde::{Deserialize, Serialize};
 
-use crate::camera::{self, focal2fov, fov2focal, PerspectiveCamera, PerspectiveProjection};
+use crate::camera::{ focal2fov, fov2focal, PerspectiveCamera, PerspectiveProjection};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SceneCamera {
@@ -23,6 +22,11 @@ pub struct SceneCamera {
     pub split: Split,
 }
 
+impl PartialEq for SceneCamera {
+    fn eq(&self, other: &Self) -> bool {
+        self.width == other.width && self.height == other.height && self.position == other.position && self.rotation == other.rotation && self.fx == other.fx && self.fy == other.fy
+    }
+}
 
 impl SceneCamera {
     pub fn from_perspective(
@@ -98,7 +102,7 @@ impl Into<PerspectiveCamera> for SceneCamera {
 
 #[derive(Debug)]
 pub struct Scene {
-    cameras: HashMap<usize, SceneCamera>,
+    cameras: Vec<SceneCamera>,
     /// maximum distance between two cameras
     extend: f32,
 }
@@ -106,28 +110,21 @@ pub struct Scene {
 impl Scene {
     pub fn from_cameras(mut cameras:Vec<SceneCamera>) -> Self {
         let extend = max_distance(cameras.iter().map(|c| Point3::from(c.position)).collect());
-        let mut map = HashMap::with_capacity(cameras.len());
+        let mut list = Vec::new();
         cameras.sort_by_key(|c|c.img_name.clone());
-        cameras = cameras.iter().fold(vec![], |mut acc:Vec<SceneCamera>, c:&SceneCamera| {
-            if let Some(last) = acc.last(){
-                if last.img_name != c.img_name{
-                    acc.push(c.clone());
+
+        let mut last: Option<SceneCamera> = None;
+        for c in cameras{
+            if let Some(l) = last{
+                if l != c{
+                    list.push(l);
                 }
-            }else{
-                acc.push(c.clone())}
-            acc
-        });
-        for c in cameras {
-            let id = c.id;
-            if map.insert(c.id, c).is_some() {
-                log::warn!(
-                    "duplicate camera id {:?} in scene (duplicates were removed)",
-                    id,
-                );
             }
+            last = Some(c);
+        
         }
         Self {
-            cameras: map,
+            cameras:list,
             extend,
         }
     }
@@ -149,7 +146,10 @@ impl Scene {
     }
 
     pub fn camera(&self, i: usize) -> Option<SceneCamera> {
-        self.cameras.get(&i).cloned()
+        self.cameras.get(i).cloned()
+    }
+    pub fn camera_by_id(&self, id: usize) -> Option<&SceneCamera> {
+        self.cameras.iter().find(|c| c.id == id)
     }
 
     pub fn num_cameras(&self) -> usize {
@@ -157,33 +157,41 @@ impl Scene {
     }
 
     pub fn cameras(&self, split: Option<Split>) -> Vec<SceneCamera> {
-        let mut c: Vec<SceneCamera> = if let Some(split) = split {
+        return if let Some(split) = split {
             self.cameras
                 .iter()
-                .filter_map(|(_, c)| (c.split == split).then_some(c.clone()))
+                .filter_map(|c| (c.split == split).then_some(c.clone()))
                 .collect()
         } else {
-            self.cameras.iter().map(|(_, c)| c.clone()).collect()
+            self.cameras.iter().cloned().collect()
         };
-        c.sort_by_key(|c| c.id);
-        return c;
     }
 
     pub fn extend(&self) -> f32 {
         self.extend
     }
 
+    pub fn next_camera(&self,i: usize) -> Option<usize> {
+        Some((i+1)%(self.num_cameras()-1))
+    }
+
+    pub fn prev_camera(&self,i: usize) -> Option<usize> {
+        Some((i-1)%(self.num_cameras()-1))
+    }
+
     /// index of nearest camera
     pub fn nearest_camera(&self, pos: Point3<f32>, split: Option<Split>) -> Option<usize> {
         self.cameras
             .iter()
-            .filter_map(|(_, c)| match split {
-                Some(s) => (s == c.split).then_some(c),
-                None => Some(c),
+            .enumerate()
+            .filter(|(_,c)| match split {
+                Some(s) => s == c.split,
+                None => true,
             })
-            .min_by_key(|c| (Point3::from(c.position).distance2(pos) * 1e6) as u32)
-            .map(|c| c.id)
+            .min_by_key(|(_,c)| (Point3::from(c.position).distance2(pos) * 1e6) as u32)
+            .map(|(i,_)| i)
     }
+    
 }
 
 /// calculate the maximum distance between any two points

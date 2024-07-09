@@ -1,10 +1,15 @@
 use cgmath::Vector2;
 use clap::Parser;
 #[allow(unused_imports)]
-use std::{fs::File, path::PathBuf, time::{Duration, Instant}};
+use std::{
+    fs::File,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 #[allow(unused_imports)]
 use web_splats::{
-    io, GaussianRenderer, PerspectiveCamera, PointCloud, Scene, SceneCamera, SplattingArgs, Split, WGPUContext
+    io, GaussianRenderer, PerspectiveCamera, PointCloud, Scene, SceneCamera, SplattingArgs, Split,
+    WGPUContext,
 };
 
 #[derive(Debug, Parser)]
@@ -91,7 +96,7 @@ async fn render_views(
     queue.submit(std::iter::once(encoder.finish()));
 
     let num_samples = 10;
-    for (i,s) in cameras.iter().enumerate() {
+    for (i, s) in cameras.iter().enumerate() {
         for _ in 0..num_samples {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("render encoder"),
@@ -193,5 +198,6 @@ async fn main() {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn main(){todo!("not implemented")}
-
+fn main() {
+    todo!("not implemented")
+}

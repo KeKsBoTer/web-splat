@@ -1,11 +1,15 @@
 use std::{
-    collections::hash_map::DefaultHasher, hash::{Hash, Hasher}, io::{Read, Seek}, os::linux::raw::stat, path::{Path, PathBuf}, sync::Arc
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+    io::{Read, Seek},
+    path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use image::Pixel;
 #[cfg(target_arch = "wasm32")]
 use instant::{Duration, Instant};
-use renderer::{Display, PostProcessPipeline};
+use renderer::Display;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 use wgpu::{util::DeviceExt, Backends, Extent3d};
@@ -79,7 +83,7 @@ impl WGPUContext {
         let adapter = wgpu::util::initialize_adapter_from_env_or_default(instance, surface)
             .await
             .unwrap();
-        log::info!("using {}",adapter.get_info().name);
+        log::info!("using {}", adapter.get_info().name);
 
         #[cfg(target_arch = "wasm32")]
         let required_features = wgpu::Features::default();
@@ -96,7 +100,8 @@ impl WGPUContext {
                     required_features,
                     #[cfg(not(target_arch = "wasm32"))]
                     required_limits: wgpu::Limits {
-                        max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
+                        max_storage_buffer_binding_size: adapter_limits
+                            .max_storage_buffer_binding_size,
                         max_buffer_size: (1 << 30) - 1,
                         max_storage_buffers_per_shader_stage: 12,
                         max_compute_workgroup_storage_size: 1 << 15,
@@ -150,7 +155,6 @@ pub struct WindowContext {
     #[cfg(not(target_arch = "wasm32"))]
     history: RingBuffer<(Duration, Duration, Duration)>,
     display: Display,
-    postprocess:PostProcessPipeline,
 
     background_color: egui::Color32,
 
@@ -202,8 +206,11 @@ impl WindowContext {
             .unwrap_or(&surface_caps.formats[0])
             .clone();
 
-
-        let render_format =wgpu::TextureFormat::Rgba16Float;// if render_config.hdr{ wgpu::TextureFormat::Rgba16Float}else{wgpu::TextureFormat::Rgba8Unorm};
+        let render_format = if render_config.hdr {
+            wgpu::TextureFormat::Rgba16Float
+        } else {
+            wgpu::TextureFormat::Rgba8Unorm
+        };
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -255,14 +262,11 @@ impl WindowContext {
             size.height,
         );
 
-
         let stopwatch = if cfg!(not(target_arch = "wasm32")) {
             Some(GPUStopwatch::new(device, Some(3)))
         } else {
             None
         };
-
-        let postprocess = PostProcessPipeline::new(device,render_format,display.format());
 
         Ok(Self {
             wgpu_context,
@@ -283,7 +287,7 @@ impl WindowContext {
                 walltime: Duration::ZERO,
                 scene_center: None,
                 scene_extend: None,
-                time:Duration::ZERO
+                time: Duration::ZERO,
             },
             pc,
             // camera: view_camera,
@@ -306,9 +310,8 @@ impl WindowContext {
             scene_file_path: None,
 
             stopwatch,
-            playing:true,
-            playing_speed:1.,
-            postprocess
+            playing: true,
+            playing_speed: 1.,
         })
     }
 
@@ -343,8 +346,10 @@ impl WindowContext {
                 .projection
                 .resize(new_size.width, new_size.height);
             self.splatting_args.viewport = Vector2::new(new_size.width, new_size.height);
-            self.splatting_args.camera.projection
-            .resize(new_size.width,new_size.height);
+            self.splatting_args
+                .camera
+                .projection
+                .resize(new_size.width, new_size.height);
         }
         if let Some(scale_factor) = scale_factor {
             if scale_factor > 0. {
@@ -359,8 +364,11 @@ impl WindowContext {
         self.splatting_args.walltime += dt;
 
         // add dt and make sure it is between 0 and 1
-        if self.playing{
-            self.splatting_args.time = Duration::from_secs_f32((self.splatting_args.time.as_secs_f32() + dt.as_secs_f32()*self.playing_speed).fract());
+        if self.playing {
+            self.splatting_args.time = Duration::from_secs_f32(
+                (self.splatting_args.time.as_secs_f32() + dt.as_secs_f32() * self.playing_speed)
+                    .fract(),
+            );
         }
         if let Some((next_camera, playing)) = &mut self.animation {
             if self.controller.user_inptut {
@@ -368,7 +376,10 @@ impl WindowContext {
             } else {
                 let dt = if *playing { dt } else { Duration::ZERO };
                 self.splatting_args.camera = next_camera.update(dt);
-                self.splatting_args.camera.projection.resize(self.config.width, self.config.height);
+                self.splatting_args
+                    .camera
+                    .projection
+                    .resize(self.config.width, self.config.height);
                 if next_camera.done() {
                     self.animation.take();
                     self.controller.reset_to_camera(self.splatting_args.camera);
@@ -451,41 +462,22 @@ impl WindowContext {
         if let Some(stopwatch) = &mut self.stopwatch {
             stopwatch.start(&mut encoder, "rasterization").unwrap();
         }
-        let intermediate_textures = [0,1,2].map(|_|self.wgpu_context.device.create_texture(&wgpu::TextureDescriptor{ 
-            label: Some("intermediate texture"),
-            size: Extent3d {
-                width: self.config.width,
-                height: self.config.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1, 
-            sample_count: 1, 
-            dimension: wgpu::TextureDimension::D2, 
-            format: self.renderer.color_format(), 
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::STORAGE_BINDING, 
-            view_formats: &[],
-        }));
-
-        let intermediate_texture_view:Vec<wgpu::TextureView> = intermediate_textures.iter().map(|t|t.create_view(&Default::default())).collect();
-
         if redraw {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("render pass"),
-                color_attachments:&intermediate_texture_view.iter().map(|v|{
-                    Some(wgpu::RenderPassColorAttachment {
-                            view: &v,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color {
-                                    r: self.background_color.r() as f64 / 255.,
-                                    g: self.background_color.g() as f64 / 255.,
-                                    b: self.background_color.b() as f64 / 255.,
-                                    a: 1.,
-                                }),
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })
-                }).collect::<Vec<Option<wgpu::RenderPassColorAttachment>>>(),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: self.display.texture_view(),
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: self.background_color.r() as f64 / 255.,
+                            g: self.background_color.g() as f64 / 255.,
+                            b: self.background_color.b() as f64 / 255.,
+                            a: 1.,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
                 ..Default::default()
             });
             self.renderer.render(&mut render_pass, &self.pc);
@@ -493,83 +485,6 @@ impl WindowContext {
         if let Some(stopwatch) = &mut self.stopwatch {
             stopwatch.stop(&mut encoder, "rasterization").unwrap();
         }
-
-
-        let intermediate_bind_group_layout = self.wgpu_context.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("intermediate bind group layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::ReadOnly,
-                        format: wgpu::TextureFormat::Rgba16Float,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::ReadOnly,
-                        format: wgpu::TextureFormat::Rgba16Float,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::ReadOnly,
-                        format: wgpu::TextureFormat::Rgba16Float,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-            ], 
-        });
-        let intermediate_bind_group = self.wgpu_context.device.create_bind_group(&wgpu::BindGroupDescriptor { 
-            label: Some("intermediate bind group"), 
-            layout: &intermediate_bind_group_layout, 
-            entries: &[wgpu::BindGroupEntry { 
-                binding: 0, 
-                resource: wgpu::BindingResource::TextureView(&intermediate_texture_view[0]), 
-            },wgpu::BindGroupEntry { 
-                binding: 1, 
-                resource: wgpu::BindingResource::TextureView(&intermediate_texture_view[1]), 
-            },wgpu::BindGroupEntry { 
-                binding: 2, 
-                resource: wgpu::BindingResource::TextureView(&intermediate_texture_view[2]), 
-            }],
-        });
-
-        let resolve_bind_group_layout = self.wgpu_context.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("resolve bind group layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: self.display.format(),
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-            ], 
-        });
-        let resolve_bind_group = self.wgpu_context.device.create_bind_group(&wgpu::BindGroupDescriptor { 
-            label: Some("resolve bind group"), 
-            layout: &resolve_bind_group_layout, 
-            entries: &[wgpu::BindGroupEntry { 
-                binding: 0, 
-                resource: wgpu::BindingResource::TextureView(&self.display.texture()), 
-            }],
-        });
-        self.postprocess.run(&mut encoder,&intermediate_bind_group, &resolve_bind_group, Vector2::new(self.config.width, self.config.height));
-
 
         self.display.render(
             &mut encoder,
@@ -581,7 +496,7 @@ impl WindowContext {
                 a: rgba[3] as f64 / 255.,
             },
             self.renderer.camera(),
-            &self.renderer.render_settings(),
+            self.renderer.render_settings(),
         );
         self.stopwatch.as_mut().map(|s| s.end(&mut encoder));
         self.wgpu_context.queue.submit([encoder.finish()]);
@@ -626,7 +541,7 @@ impl WindowContext {
                 .scene
                 .as_ref()
                 .unwrap()
-                .cameras(Some(Split::Test))
+                .cameras(Some(Split::Train))
                 .clone();
         }
     }
@@ -693,10 +608,10 @@ impl WindowContext {
 
     fn set_scene_camera(&mut self, i: usize) {
         if let Some(scene) = &self.scene {
-            self.current_view.replace(i);
-            log::info!("view moved to camera {i}");
             if let Some(camera) = scene.camera(i) {
                 self.set_camera(camera, Duration::from_millis(200));
+                self.current_view.replace(i);
+                log::debug!("set camera {i}")
             } else {
                 log::error!("camera {i} not found");
             }
@@ -728,7 +643,10 @@ impl WindowContext {
 
     fn update_camera(&mut self, camera: PerspectiveCamera) {
         self.splatting_args.camera = camera;
-        self.splatting_args.camera.projection.resize(self.config.width, self.config.height);
+        self.splatting_args
+            .camera
+            .projection
+            .resize(self.config.width, self.config.height);
     }
 
     fn save_view(&mut self) {
@@ -773,12 +691,15 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
     });
 
     let window_size = if let Some(scene) = &scene {
-        let camera = scene.camera(0).unwrap();
-        let factor = 1200. / camera.width as f32;
-        PhysicalSize::new(
-            (camera.width as f32 * factor) as u32,
-            (camera.height as f32 * factor) as u32,
-        )
+        if let Some(camera) = scene.camera(0) {
+            let factor = 1200. / camera.width as f32;
+            PhysicalSize::new(
+                (camera.width as f32 * factor) as u32,
+                (camera.height as f32 * factor) as u32,
+            )
+        } else {
+            PhysicalSize::new(800, 600)
+        }
     } else {
         PhysicalSize::new(800, 600)
     };
@@ -892,12 +813,9 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
                         }else if key == KeyCode::KeyN{
                             scene.nearest_camera(state.splatting_args.camera.position,None)
                         }else if key == KeyCode::PageUp{
-                            Some(state.current_view.map_or(0, |v|v+1) % scene.num_cameras())
-                        }else if key == KeyCode::KeyT{
-                            Some(state.current_view.map_or(0, |v|v+1) % scene.num_cameras())
-                        }
-                        else if key == KeyCode::PageDown{
-                            Some(state.current_view.map_or(0, |v|v-1) % scene.num_cameras())
+                            state.current_view.map_or(Some(0), |v|scene.next_camera(v))
+                        }else if key == KeyCode::PageDown{
+                            state.current_view.map_or(Some(0), |v|scene.prev_camera(v))
                         }else{None};
 
                         if let Some(new_camera) = new_camera{
@@ -961,7 +879,12 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
-pub async fn run_wasm(pc: Vec<u8>, scene: Option<Vec<u8>>,pc_file:Option<String>,scene_file:Option<String>) {
+pub async fn run_wasm(
+    pc: Vec<u8>,
+    scene: Option<Vec<u8>>,
+    pc_file: Option<String>,
+    scene_file: Option<String>,
+) {
     use std::{io::Cursor, str::FromStr};
 
     std::panic::set_hook(Box::new(console_error_panic_hook::hook));
@@ -972,8 +895,12 @@ pub async fn run_wasm(pc: Vec<u8>, scene: Option<Vec<u8>>,pc_file:Option<String>
     wasm_bindgen_futures::spawn_local(open_window(
         pc_reader,
         scene_reader,
-        RenderConfig { no_vsync: false,skybox:None,hdr:false },
-        pc_file.and_then(|s|PathBuf::from_str(s.as_str()).ok()),
-        scene_file.and_then(|s|PathBuf::from_str(s.as_str()).ok()),
+        RenderConfig {
+            no_vsync: false,
+            skybox: None,
+            hdr: false,
+        },
+        pc_file.and_then(|s| PathBuf::from_str(s.as_str()).ok()),
+        scene_file.and_then(|s| PathBuf::from_str(s.as_str()).ok()),
     ));
 }

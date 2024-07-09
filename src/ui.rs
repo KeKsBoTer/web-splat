@@ -1,16 +1,16 @@
+#[cfg(target_arch = "wasm32")]
+use instant::Duration;
 use std::ops::RangeInclusive;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
-#[cfg(target_arch = "wasm32")]
-use instant::Duration;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::renderer::DEFAULT_KERNEL_SIZE;
-use crate::{ SceneCamera, Split, WindowContext};
+use crate::{SceneCamera, Split, WindowContext};
 use cgmath::{Euler, Matrix3, Quaternion};
 #[cfg(not(target_arch = "wasm32"))]
 use egui::Vec2b;
-use egui::{emath::Numeric,  Align2, Color32, RichText, Vec2};
+use egui::{emath::Numeric, Align2, Color32, RichText, Vec2};
 #[cfg(not(target_arch = "wasm32"))]
 use egui_plot::{Legend, PlotPoints};
 
@@ -105,7 +105,6 @@ pub(crate) fn ui(state: &mut WindowContext) {
                 );
                 state.splatting_args.max_sh_deg = if dir_color { state.pc.sh_deg() } else { 0 };
 
-              
                 ui.end_row();
                 let enable_bg = !state.splatting_args.show_env_map && !state.display.has_env_map();
                 ui.add_enabled(enable_bg, egui::Label::new("Background Color"));
@@ -144,10 +143,14 @@ pub(crate) fn ui(state: &mut WindowContext) {
                 let mut time = state.splatting_args.time.as_secs_f32();
                 ui.add(egui::Slider::new(&mut time, 0f32..=1f32).clamp_to_range(true));
                 state.splatting_args.time = Duration::from_secs_f32(time);
-                if ui.button(if state.playing{"||"}else{">"}).clicked(){
+                if ui.button(if state.playing { "||" } else { ">" }).clicked() {
                     state.playing = !state.playing;
                 }
-                ui.add(egui::DragValue::new(&mut state.playing_speed).clamp_range(0.0..=1.0).speed(0.1));
+                ui.add(
+                    egui::DragValue::new(&mut state.playing_speed)
+                        .clamp_range(0.0..=1.0)
+                        .speed(0.1),
+                );
             });
     });
 
@@ -224,9 +227,13 @@ pub(crate) fn ui(state: &mut WindowContext) {
                                             0..=(scene.num_cameras().saturating_sub(1)),
                                         ));
                                     if drag.changed() {
-                                        new_camera = Some(SetCamera::ID(*c));
+                                        new_camera = Some(SetCamera::Index(*c));
                                     }
-                                    ui.label(scene.camera(*c as usize).unwrap().split.to_string());
+                                    ui.label(
+                                        scene
+                                            .camera(*c as usize)
+                                            .map_or("-".to_string(), |c| c.split.to_string()),
+                                    );
                                 });
                             } else {
                                 ui.label("-");
@@ -263,7 +270,7 @@ pub(crate) fn ui(state: &mut WindowContext) {
                                 .min_col_width(50.)
                                 .show(ui, |ui| {
                                     let style = ui.style().clone();
-                                    for c in cameras2 {
+                                    for (i,c )in cameras2.iter().enumerate()   {
                                         ui.colored_label(
                                             style.visuals.strong_text_color(),
                                             c.id.to_string(),
@@ -284,16 +291,9 @@ pub(crate) fn ui(state: &mut WindowContext) {
                                             )),
                                         );
 
-                                        let resp = ui.add(
-                                            egui::Label::new(c.img_name.clone()).truncate(true),
-                                        );
-                                        if let Some(view_id) = curr_view {
-                                            if c.id == view_id {
-                                                resp.scroll_to_me(None);
-                                            }
-                                        }
+                                        ui.add(egui::Label::new(c.img_name.clone()).truncate(true));
                                         if ui.button("🎥").clicked() {
-                                            new_camera = Some(SetCamera::ID(c.id));
+                                            new_camera = Some(SetCamera::Index(i));
                                         }
                                         ui.end_row();
                                     }
@@ -302,7 +302,7 @@ pub(crate) fn ui(state: &mut WindowContext) {
                     if let Some(nearest) = nearest {
                         ui.separator();
                         if ui.button(format!("Snap to closest ({nearest})")).clicked() {
-                            new_camera = Some(SetCamera::ID(nearest));
+                            new_camera = Some(SetCamera::Index(nearest));
                         }
                     }
                 });
@@ -369,7 +369,7 @@ pub(crate) fn ui(state: &mut WindowContext) {
 
     if let Some(c) = new_camera {
         match c {
-            SetCamera::ID(id) => state.set_scene_camera(id),
+            SetCamera::Index(id) => state.set_scene_camera(id),
             SetCamera::Camera(c) => state.set_camera(c, Duration::from_millis(200)),
         }
     }
@@ -383,7 +383,7 @@ pub(crate) fn ui(state: &mut WindowContext) {
 }
 
 enum SetCamera {
-    ID(usize),
+    Index(usize),
     #[allow(dead_code)]
     Camera(SceneCamera),
 }

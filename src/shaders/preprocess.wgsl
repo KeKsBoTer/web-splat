@@ -47,7 +47,7 @@ struct Splat {
     // 2x f16 packed as u32
     pos: u32,
     // 9 color features and opacity as f16 packed as u32
-    color_opacity:array<u32,5>
+    color_opacity:array<u32,2>
 };
 
 struct DrawIndirect {
@@ -301,19 +301,14 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let v = vec4<f32>(v1 / viewport, v2 / viewport);
 
 
-    let feat_1 = sh_coef(idx, 0u);
-    let feat_2 = sh_coef(idx, 1u);
-    let feat_3 = sh_coef(idx, 2u);
+    let color = sh_coef(idx, 0u);
 
     points_2d[store_idx] = Splat(
         pack2x16float(v.xy), pack2x16float(v.zw),
         pack2x16float(v_center.xy),
-        array<u32,5>(
-            pack2x16float(feat_1.rg),
-            pack2x16float(vec2<f32>(feat_1.b,feat_2.r)),
-            pack2x16float(feat_2.gb),
-            pack2x16float(feat_3.rg),
-            pack2x16float(vec2<f32>(feat_3.b,opacity)),
+        array<u32,2>(
+            pack2x16float(color.rg),
+            pack2x16float(vec2<f32>(color.b, opacity)),
         )
     );
     // filling the sorting buffers and the indirect sort dispatch buffer

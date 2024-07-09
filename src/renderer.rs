@@ -11,7 +11,7 @@ use std::hash::{Hash, Hasher};
 use std::num::NonZeroU64;
 use std::time::Duration;
 
-use wgpu::{include_wgsl, BindGroupLayout, Extent3d, MultisampleState};
+use wgpu::{include_wgsl, Extent3d, MultisampleState};
 
 use cgmath::{EuclideanSpace, Matrix4, Point3, SquareMatrix, Vector2, Vector4};
 
@@ -62,16 +62,6 @@ impl GaussianRenderer {
                 entry_point: "fs_main",
                 // we need 3 target buffers becase we have 9 color channels
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: color_format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-                Some(wgpu::ColorTargetState {
-                    format: color_format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                }),
-                Some(wgpu::ColorTargetState {
                     format: color_format,
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
@@ -486,14 +476,6 @@ impl Display {
         }
     }
 
-    pub fn texture(&self) -> &wgpu::TextureView {
-        &self.view
-    }
-
-    pub fn format(&self)->wgpu::TextureFormat{
-        self.format 
-    }
-
     fn env_map_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("env map bind group layout"),
@@ -587,7 +569,9 @@ impl Display {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::STORAGE_BINDING,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::STORAGE_BINDING,
             view_formats: &[],
         });
         let texture_view = texture.create_view(&Default::default());
@@ -671,6 +655,10 @@ impl Display {
 
         render_pass.draw(0..4, 0..1);
     }
+
+    pub(crate) fn texture_view(&self) -> &wgpu::TextureView {
+        &self.view
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -724,7 +712,7 @@ pub struct SplattingArgsUniform {
     kernel_size: f32,
     walltime: f32,
     scene_extend: f32,
-    time:f32,
+    time: f32,
 
     scene_center: Vector4<f32>,
 }
@@ -785,108 +773,5 @@ impl Default for SplattingArgsUniform {
             scene_extend: 1.,
             time: 0.,
         }
-    }
-}
-
-
-
-
-
-pub struct PostProcessPipeline(wgpu::ComputePipeline);
-
-impl PostProcessPipeline {
-    pub fn new(device: &wgpu::Device,in_format:wgpu::TextureFormat,out_format:wgpu::TextureFormat) -> Self {
-        let intermediate_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("intermediate bind group layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::ReadOnly,
-                        format: in_format,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::ReadOnly,
-                        format: in_format,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::ReadOnly,
-                        format: in_format,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-            ], 
-        });
-
-        let resolve_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("resolve bind group layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: out_format,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-            ], 
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("postprocess pipeline layout"),
-            bind_group_layouts: &[
-                &intermediate_bind_group_layout,
-                &resolve_bind_group_layout,
-            ],
-            push_constant_ranges: &[],
-        });
-
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("postprocess shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/postprocess.wgsl").into()),
-        });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("postprocess pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: "main",
-        });
-        Self(pipeline)
-    }
-
-    pub fn run<'a>(
-        &mut self,
-        encoder: &'a mut wgpu::CommandEncoder,
-        image_in:&wgpu::BindGroup,
-        image_out:&wgpu::BindGroup,
-        resolution:Vector2<u32>
-    ) {
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("preprocess compute pass"),
-            ..Default::default()
-        });
-        pass.set_pipeline(&self.0);
-        pass.set_bind_group(0, image_in, &[]);
-        pass.set_bind_group(1, image_out, &[]);
-
-        let wgs_x = (resolution.x as f32 / 16.0).ceil() as u32;
-        let wgs_y = (resolution.y as f32 / 16.0).ceil() as u32;
-        pass.dispatch_workgroups(wgs_x, wgs_y, 1);
     }
 }

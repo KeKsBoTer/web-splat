@@ -4,9 +4,7 @@ const CUTOFF:f32 = 2.3539888583335364; // = sqrt(log(255))
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) screen_pos: vec2<f32>,
-    @location(1) color1: vec4<f32>,
-    @location(2) color2: vec4<f32>,
-    @location(3) color3: vec4<f32>,
+    @location(1) color_opacity: vec4<f32>,
 };
 
 struct Splat {
@@ -14,8 +12,8 @@ struct Splat {
     v_0: u32, v_1: u32,
     // 2x f16 packed as u32
     pos: u32,
-    // 9 color features and opacity as f16 packed as u32
-    color_opacity:array<u32,5>
+    // rgb color features and opacity as f16 packed as u32
+    color_opacity:array<u32,2>
 };
 
 @group(0) @binding(2)
@@ -49,30 +47,17 @@ fn vs_main(
     out.position = vec4<f32>(v_center + offset, 0., 1.);
     out.screen_pos = position;
 
-    out.color1 = vec4<f32>(unpack2x16float(vertex.color_opacity[0]),unpack2x16float(vertex.color_opacity[1]));
-    out.color2 = vec4<f32>(unpack2x16float(vertex.color_opacity[2]),unpack2x16float(vertex.color_opacity[3]));
-    out.color3 = vec4<f32>(unpack2x16float(vertex.color_opacity[4]),0.,0.);
+    out.color_opacity = vec4<f32>(unpack2x16float(vertex.color_opacity[0]),unpack2x16float(vertex.color_opacity[1]));
     return out;
 }
 
-struct FragmentOutput {
-    @location(0) color1: vec4<f32>,
-    @location(1) color2: vec4<f32>,
-    @location(2) color3: vec4<f32>,
-};
-
 
 @fragment
-fn fs_main(in: VertexOutput) ->FragmentOutput{
-
+fn fs_main(in: VertexOutput) ->@location(0) vec4<f32>{
     let a = dot(in.screen_pos, in.screen_pos);
     if a > 2. * CUTOFF {
         discard;
     }
-    let b = min(0.99, exp(-a) * in.color3.g);
-    return FragmentOutput(
-        vec4<f32>(in.color1.rgb, 1.) * b,
-        vec4<f32>(in.color2.a,in.color2.rg, 1.) * b,
-        vec4<f32>(in.color2.ba,in.color3.r, 1.) * b,
-    );
+    let b = min(0.99, exp(-a) * in.color_opacity.a);
+    return vec4<f32>(in.color_opacity.rgb, 1.) * b;
 }

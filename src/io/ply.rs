@@ -29,8 +29,7 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
         let mut reader = BufReader::new(reader);
         let parser = ply_rs::parser::Parser::<ply_rs::ply::DefaultElement>::new();
         let header = parser.read_header(&mut reader).unwrap();
-        // let sh_deg = Self::file_sh_deg(&header)?;
-        let sh_deg = 0;
+        let sh_deg = Self::file_sh_deg(&header)?;
         let num_points = Self::num_points(&header)?;
         let mip_splatting = Self::mip_splatting(&header)?;
         let kernel_size = Self::kernel_size(&header)?;
@@ -50,11 +49,10 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
 
     fn read_line<B: ByteOrder>(
         &mut self,
-        sh_deg: usize,
+        _sh_deg: usize,
     ) -> anyhow::Result<(Gaussian, [[f16; 3]; 16])> {
         let mut pos = [0.; 3];
         self.reader.read_f32_into::<B>(&mut pos)?;
-
 
         let trbf_center = self.reader.read_f32::<B>()?;
         let trbf_scale = self.reader.read_f32::<B>()?.exp();
@@ -64,10 +62,10 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
         let mut _normals = [0.; 3];
         self.reader.read_f32_into::<B>(&mut _normals)?;
 
-        let mut motion = [0.;10];
+        let mut motion = [0.; 10];
         self.reader.read_f32_into::<B>(&mut motion[..9])?;
 
-        let mut color = [0.; 6];
+        let mut color = [0.; 3];
         self.reader.read_f32_into::<B>(&mut color)?;
 
         let opacity = sigmoid(self.reader.read_f32::<B>()?);
@@ -83,19 +81,13 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
         let rot_3 = self.reader.read_f32::<B>()?;
         let rot = Quaternion::new(rot_0, rot_1, rot_2, rot_3).normalize();
 
-        let mut omega = [0.;4];
+        let mut omega = [0.; 4];
         self.reader.read_f32_into::<B>(&mut omega)?;
-
-        let mut f_t = [0.; 3];
-        self.reader.read_f32_into::<B>(&mut f_t)?;
 
         let cov = build_cov(rot, scale);
 
-
-        let mut color_sh = [[0.;3];16];
+        let mut color_sh = [[0.; 3]; 16];
         color_sh[0] = [color[0], color[1], color[2]];
-        color_sh[1] = [color[3], color[4], color[5]];
-        color_sh[2] = f_t;
         return Ok((
             Gaussian {
                 xyz: Point3::from(pos).cast().unwrap(),
