@@ -101,6 +101,7 @@ async fn render_views(
                 walltime: Duration::from_secs(100),
                 scene_center: None,
                 scene_extend: None,
+                time: Duration::ZERO
             },
             &mut None,
         );

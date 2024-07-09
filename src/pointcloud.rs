@@ -39,6 +39,9 @@ pub struct Gaussian {
     pub xyz: Point3<f16>,
     pub opacity: f16,
     pub cov: [f16; 6],
+    pub trbf: [f16;2],
+    pub motion: [f16; 10],
+    pub omega: [f16;4]
 }
 
 #[repr(C)]
@@ -337,7 +340,9 @@ impl PointCloud {
 pub struct Splat {
     pub v: Vector4<f16>,
     pub pos: Vector2<f16>,
-    pub color: Vector4<f16>,
+    pub color_dc: [f16;6],
+    pub color_t: Vector3<f16>,
+    pub opacity: f16,
 }
 
 #[repr(C)]

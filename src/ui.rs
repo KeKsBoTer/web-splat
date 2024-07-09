@@ -141,6 +141,13 @@ pub(crate) fn ui(state: &mut WindowContext) {
                     );
                     ui.end_row();
                 }
+                let mut time = state.splatting_args.time.as_secs_f32();
+                ui.add(egui::Slider::new(&mut time, 0f32..=1f32).clamp_to_range(true));
+                state.splatting_args.time = Duration::from_secs_f32(time);
+                if ui.button(if state.playing{"||"}else{">"}).clicked(){
+                    state.playing = !state.playing;
+                }
+                ui.add(egui::DragValue::new(&mut state.playing_speed).clamp_range(0.0..=1.0).speed(0.1));
             });
     });
 

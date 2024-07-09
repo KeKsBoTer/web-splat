@@ -35,7 +35,10 @@ struct CameraUniforms {
 
 struct Gaussian {
     pos_opacity: array<u32,2>,
-    cov: array<u32,3>
+    cov: array<u32,3>,
+    trbf:u32,
+    motion:array<u32,5>,
+    omega:array<u32,2>
 }
 
 struct Splat {
@@ -43,8 +46,8 @@ struct Splat {
     v_0: u32, v_1: u32,
     // 2x f16 packed as u32
     pos: u32,
-    // rgba packed as f16
-    color_0: u32,color_1: u32
+    // 9 color features and opacity as f16 packed as u32
+    color_opacity:array<u32,5>
 };
 
 struct DrawIndirect {
@@ -83,6 +86,7 @@ struct RenderSettings {
     kernel_size: f32,
     walltime: f32,
     scene_extend: f32,
+    time: f32,
     center: vec3<f32>,
 }
 
@@ -160,6 +164,19 @@ fn cov_coefs(v_idx: u32) -> array<f32,6> {
     return array<f32,6>(a.x, a.y, b.x, b.y, c.x, c.y);
 }
 
+fn trbf_function(x: f32) -> f32 {
+    return exp(-pow(x,2.));
+}
+
+fn unpack_motion(motion: array<u32,5>) -> array<vec3<f32>,3> {
+    let a = unpack2x16float(motion[0]);
+    let b = unpack2x16float(motion[1]);
+    let c = unpack2x16float(motion[2]);
+    let d = unpack2x16float(motion[3]);
+    let e = unpack2x16float(motion[4]);
+    return array<vec3<f32>,3>(vec3<f32>(a.x, a.y, b.x), vec3<f32>(b.y, c.x, c.y), vec3<f32>(d.x, d.y, e.x));
+}
+
 @compute @workgroup_size(256,1,1)
 fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) wgs: vec3<u32>) {
     let idx = gid.x;
@@ -172,8 +189,27 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let vertex = gaussians[idx];
     let a = unpack2x16float(vertex.pos_opacity[0]);
     let b = unpack2x16float(vertex.pos_opacity[1]);
-    let xyz = vec3<f32>(a.x, a.y, b.x);
+    var xyz = vec3<f32>(a.x, a.y, b.x);
     var opacity = b.y;
+
+
+
+    let trbf = unpack2x16float(vertex.trbf);
+    let trbf_center = trbf.x;
+    let trbf_scale = trbf.y;
+
+    let trbf_distance = render_settings.time-trbf_center;
+    let trbf_distance2 = trbf_distance*trbf_distance;
+    let trbf_distance3 = trbf_distance2*trbf_distance;
+
+    let motion = unpack_motion(vertex.motion);
+
+    xyz += trbf_distance*motion[0] + trbf_distance2*motion[1] + trbf_distance3*motion[2];
+
+    // scale opacity based on time
+    let trbf_scale2 = trbf_scale*trbf_scale;
+    opacity *= exp(-trbf_distance2/trbf_scale2);
+
 
     if any(xyz < render_settings.clipping_box_min.xyz) || any(xyz > render_settings.clipping_box_max.xyz) {
         return;
@@ -202,6 +238,8 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     }
 
     let scaling = render_settings.gaussian_scaling * scale_mod;
+    // TODO: we need to store scaling and rotation seperately
+    // rotation needs to be adjusted over time
     let Vrk = mat3x3<f32>(
         cov_sparse[0], cov_sparse[1], cov_sparse[2],
         cov_sparse[1], cov_sparse[3], cov_sparse[4],
@@ -255,17 +293,28 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
 
     let camera_pos = camera.view_inv[3].xyz;
     let dir = normalize(xyz - camera_pos);
-    let color = vec4<f32>(
-        max(vec3<f32>(0.), evaluate_sh(dir, idx, render_settings.max_sh_deg)),
-        opacity
-    );
-
+    // let color = vec4<f32>(
+    //     max(vec3<f32>(0.), evaluate_sh(dir, idx, render_settings.max_sh_deg)),
+    //     opacity
+    // );
     let store_idx = atomicAdd(&sort_infos.keys_size, 1u);
     let v = vec4<f32>(v1 / viewport, v2 / viewport);
+
+
+    let feat_1 = sh_coef(idx, 0u);
+    let feat_2 = sh_coef(idx, 1u);
+    let feat_3 = sh_coef(idx, 2u);
+
     points_2d[store_idx] = Splat(
         pack2x16float(v.xy), pack2x16float(v.zw),
         pack2x16float(v_center.xy),
-        pack2x16float(color.rg), pack2x16float(color.ba),
+        array<u32,5>(
+            pack2x16float(feat_1.rg),
+            pack2x16float(vec2<f32>(feat_1.b,feat_2.r)),
+            pack2x16float(feat_2.gb),
+            pack2x16float(feat_3.rg),
+            pack2x16float(vec2<f32>(feat_3.b,opacity)),
+        )
     );
     // filling the sorting buffers and the indirect sort dispatch buffer
     let znear = -camera.proj[3][2] / camera.proj[2][2];

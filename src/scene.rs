@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     hash::Hash,
     io::{self, BufReader},
 };
@@ -7,7 +7,7 @@ use std::{
 use cgmath::{Matrix3, MetricSpace, Point3, SquareMatrix, Vector2};
 use serde::{Deserialize, Serialize};
 
-use crate::camera::{focal2fov, fov2focal, PerspectiveCamera, PerspectiveProjection};
+use crate::camera::{self, focal2fov, fov2focal, PerspectiveCamera, PerspectiveProjection};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SceneCamera {
@@ -23,17 +23,6 @@ pub struct SceneCamera {
     pub split: Split,
 }
 
-impl std::hash::Hash for SceneCamera {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.img_name.hash(state);
-        self.width.hash(state);
-        self.height.hash(state);
-        bytemuck::cast_slice::<_, u8>(&self.position).hash(state);
-        bytemuck::cast_slice::<_, u8>(&self.rotation).hash(state);
-        bytemuck::cast_slice::<_, u8>(&[self.fx, self.fy]).hash(state);
-        self.split.hash(state);
-    }
-}
 
 impl SceneCamera {
     pub fn from_perspective(
@@ -115,9 +104,19 @@ pub struct Scene {
 }
 
 impl Scene {
-    pub fn from_cameras(cameras: Vec<SceneCamera>) -> Self {
+    pub fn from_cameras(mut cameras:Vec<SceneCamera>) -> Self {
         let extend = max_distance(cameras.iter().map(|c| Point3::from(c.position)).collect());
         let mut map = HashMap::with_capacity(cameras.len());
+        cameras.sort_by_key(|c|c.img_name.clone());
+        cameras = cameras.iter().fold(vec![], |mut acc:Vec<SceneCamera>, c:&SceneCamera| {
+            if let Some(last) = acc.last(){
+                if last.img_name != c.img_name{
+                    acc.push(c.clone());
+                }
+            }else{
+                acc.push(c.clone())}
+            acc
+        });
         for c in cameras {
             let id = c.id;
             if map.insert(c.id, c).is_some() {

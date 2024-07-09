@@ -1,15 +1,11 @@
 use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
-    io::{Read, Seek},
-    path::{Path, PathBuf},
-    sync::Arc,
+    collections::hash_map::DefaultHasher, hash::{Hash, Hasher}, io::{Read, Seek}, os::linux::raw::stat, path::{Path, PathBuf}, sync::Arc
 };
 
 use image::Pixel;
 #[cfg(target_arch = "wasm32")]
 use instant::{Duration, Instant};
-use renderer::Display;
+use renderer::{Display, PostProcessPipeline};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 use wgpu::{util::DeviceExt, Backends, Extent3d};
@@ -154,6 +150,7 @@ pub struct WindowContext {
     #[cfg(not(target_arch = "wasm32"))]
     history: RingBuffer<(Duration, Duration, Duration)>,
     display: Display,
+    postprocess:PostProcessPipeline,
 
     background_color: egui::Color32,
 
@@ -166,6 +163,8 @@ pub struct WindowContext {
     #[cfg(feature = "video")]
     cameras_save_path: String,
     stopwatch: Option<GPUStopwatch>,
+    playing: bool,
+    playing_speed: f32,
 }
 
 impl WindowContext {
@@ -203,7 +202,8 @@ impl WindowContext {
             .unwrap_or(&surface_caps.formats[0])
             .clone();
 
-        let render_format = if render_config.hdr{ wgpu::TextureFormat::Rgba16Float}else{wgpu::TextureFormat::Rgba8Unorm};
+
+        let render_format =wgpu::TextureFormat::Rgba16Float;// if render_config.hdr{ wgpu::TextureFormat::Rgba16Float}else{wgpu::TextureFormat::Rgba8Unorm};
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -262,6 +262,8 @@ impl WindowContext {
             None
         };
 
+        let postprocess = PostProcessPipeline::new(device,render_format,display.format());
+
         Ok(Self {
             wgpu_context,
             scale_factor: window.scale_factor() as f32,
@@ -281,6 +283,7 @@ impl WindowContext {
                 walltime: Duration::ZERO,
                 scene_center: None,
                 scene_extend: None,
+                time:Duration::ZERO
             },
             pc,
             // camera: view_camera,
@@ -303,6 +306,9 @@ impl WindowContext {
             scene_file_path: None,
 
             stopwatch,
+            playing:true,
+            playing_speed:1.,
+            postprocess
         })
     }
 
@@ -351,6 +357,11 @@ impl WindowContext {
         // ema fps update
         self.fps = (1. / dt.as_secs_f32()) * 0.05 + self.fps * 0.95;
         self.splatting_args.walltime += dt;
+
+        // add dt and make sure it is between 0 and 1
+        if self.playing{
+            self.splatting_args.time = Duration::from_secs_f32((self.splatting_args.time.as_secs_f32() + dt.as_secs_f32()*self.playing_speed).fract());
+        }
         if let Some((next_camera, playing)) = &mut self.animation {
             if self.controller.user_inptut {
                 self.cancle_animation()
@@ -440,22 +451,41 @@ impl WindowContext {
         if let Some(stopwatch) = &mut self.stopwatch {
             stopwatch.start(&mut encoder, "rasterization").unwrap();
         }
+        let intermediate_textures = [0,1,2].map(|_|self.wgpu_context.device.create_texture(&wgpu::TextureDescriptor{ 
+            label: Some("intermediate texture"),
+            size: Extent3d {
+                width: self.config.width,
+                height: self.config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1, 
+            sample_count: 1, 
+            dimension: wgpu::TextureDimension::D2, 
+            format: self.renderer.color_format(), 
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::STORAGE_BINDING, 
+            view_formats: &[],
+        }));
+
+        let intermediate_texture_view:Vec<wgpu::TextureView> = intermediate_textures.iter().map(|t|t.create_view(&Default::default())).collect();
+
         if redraw {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("render pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: self.display.texture(),
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: self.background_color.r() as f64 / 255.,
-                            g: self.background_color.g() as f64 / 255.,
-                            b: self.background_color.b() as f64 / 255.,
-                            a: 1.,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
+                color_attachments:&intermediate_texture_view.iter().map(|v|{
+                    Some(wgpu::RenderPassColorAttachment {
+                            view: &v,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: self.background_color.r() as f64 / 255.,
+                                    g: self.background_color.g() as f64 / 255.,
+                                    b: self.background_color.b() as f64 / 255.,
+                                    a: 1.,
+                                }),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })
+                }).collect::<Vec<Option<wgpu::RenderPassColorAttachment>>>(),
                 ..Default::default()
             });
             self.renderer.render(&mut render_pass, &self.pc);
@@ -463,6 +493,83 @@ impl WindowContext {
         if let Some(stopwatch) = &mut self.stopwatch {
             stopwatch.stop(&mut encoder, "rasterization").unwrap();
         }
+
+
+        let intermediate_bind_group_layout = self.wgpu_context.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("intermediate bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::ReadOnly,
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::ReadOnly,
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::ReadOnly,
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+            ], 
+        });
+        let intermediate_bind_group = self.wgpu_context.device.create_bind_group(&wgpu::BindGroupDescriptor { 
+            label: Some("intermediate bind group"), 
+            layout: &intermediate_bind_group_layout, 
+            entries: &[wgpu::BindGroupEntry { 
+                binding: 0, 
+                resource: wgpu::BindingResource::TextureView(&intermediate_texture_view[0]), 
+            },wgpu::BindGroupEntry { 
+                binding: 1, 
+                resource: wgpu::BindingResource::TextureView(&intermediate_texture_view[1]), 
+            },wgpu::BindGroupEntry { 
+                binding: 2, 
+                resource: wgpu::BindingResource::TextureView(&intermediate_texture_view[2]), 
+            }],
+        });
+
+        let resolve_bind_group_layout = self.wgpu_context.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("resolve bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: self.display.format(),
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+            ], 
+        });
+        let resolve_bind_group = self.wgpu_context.device.create_bind_group(&wgpu::BindGroupDescriptor { 
+            label: Some("resolve bind group"), 
+            layout: &resolve_bind_group_layout, 
+            entries: &[wgpu::BindGroupEntry { 
+                binding: 0, 
+                resource: wgpu::BindingResource::TextureView(&self.display.texture()), 
+            }],
+        });
+        self.postprocess.run(&mut encoder,&intermediate_bind_group, &resolve_bind_group, Vector2::new(self.config.width, self.config.height));
+
 
         self.display.render(
             &mut encoder,
@@ -711,7 +818,6 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
     state.pointcloud_file_path = pointcloud_file_path;
 
     if let Some(scene) = scene {
-        let init_camera = scene.cameras(None)[0].clone();
         state.set_scene(scene);
         state.set_scene_camera(0);
         state.scene_file_path = scene_file_path;
