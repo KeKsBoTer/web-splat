@@ -1,3 +1,4 @@
+
 const KERNEL_SIZE:f32 = 0.3;
 //const MAX_SH_DEG:u32 = <injected>u;
 
@@ -177,6 +178,35 @@ fn unpack_motion(motion: array<u32,5>) -> array<vec3<f32>,3> {
     return array<vec3<f32>,3>(vec3<f32>(a.x, a.y, b.x), vec3<f32>(b.y, c.x, c.y), vec3<f32>(d.x, d.y, e.x));
 }
 
+fn sigmoid(x: vec3<f32>) -> vec3<f32> {
+    return 1. / (1. + exp(-x));
+}
+
+fn color_mlp(albedo:vec3<f32>,spec:vec3<f32>,time_feat:vec3<f32>,ray_orig:vec3<f32>,ray_dir:vec3<f32>)->vec3<f32>{
+    var mlp1 : array<array<f32,12>,6> = array<array<f32,12>,6>(array<f32,12>(-0.0764581, 0.170045, -0.341065, -0.316554, -0.397263, 0.60541, -0.0487644, 0.46762, -0.492666, -0.608386, -0.388123, -0.0795279), array<f32,12>(-0.428134, -0.151137, -0.18704, 0.0859264, 0.20289, 0.15569, -0.115888, -0.224246, -0.0454225, 0.215253, -0.153351, 0.237849), array<f32,12>(0.00433196, -0.031205, 0.112535, -0.714577, 0.294032, -0.34347, -0.138293, 0.28709, -0.37755, 0.0471253, 0.273744, -0.252829), array<f32,12>(-0.256201, 0.30846, 0.145912, 0.0773302, -0.158516, -0.39936, 0.121725, -0.200109, -0.274571, -0.782735, 0.324434, 0.103502), array<f32,12>(-0.21846, 0.175172, 0.517699, 0.594082, 0.190023, 0.0877373, 0.162639, -0.459426, -0.137107, -0.604462, -0.167372, -0.17335), array<f32,12>(0.166613, 0.246467, -0.231782, 0.137591, 0.425635, 0.0627863, 0.115301, 0.000860692, 0.103035, 0.703461, 0.127458, -0.0520856), );
+    var mlp2 : array<array<f32,6>,3> = array<array<f32,6>,3>(array<f32,6>(0.369828, 0.0960574, -0.264857, 0.546437, 0.326002, -0.382786), array<f32,6>(0.38865, -0.186996, -0.421143, 0.486149, 0.457953, -0.490252), array<f32,6>(0.416593, -0.561169, -0.614522, 0.451366, 0.613093, -0.619846), );
+
+    var mlp_in = array<f32,12>(spec.r,spec.g,spec.b,time_feat.r,time_feat.g,time_feat.b,ray_orig.x,ray_orig.y,ray_orig.z,ray_dir.x,ray_dir.y,ray_dir.z);
+    var out_1 = array<f32,6>(0.,0.,0.,0.,0.,0.);
+    // mlp 1
+    for(var i=0u;i<6;i++){
+        for(var j=0u;j<12;j++){
+            out_1[i] += mlp_in[j]*mlp1[i][j];
+        }
+        out_1[i] = max(out_1[i],0.); // relu
+    }
+    var out_2 = vec3<f32>(0.,0.,0.);
+    // mlp2
+    for(var i=0u;i<3;i++){
+        for(var j=0u;j<6;j++){
+            out_2[i] += out_1[j]*mlp2[i][j];
+        }
+    } 
+    // sigmoid
+    return sigmoid(albedo + out_2);
+}
+
+
 @compute @workgroup_size(256,1,1)
 fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) wgs: vec3<u32>) {
     let idx = gid.x;
@@ -301,7 +331,12 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let v = vec4<f32>(v1 / viewport, v2 / viewport);
 
 
-    let color = sh_coef(idx, 0u);
+    let albedo =  sh_coef(idx, 0u);
+    let spec = sh_coef(idx, 1u);
+    let time_feat = sh_coef(idx, 2u);
+    let ray_pos = camera_pos;
+    let ray_dir = dir;
+    let color = color_mlp(albedo,spec,time_feat,ray_pos,ray_dir);
 
     points_2d[store_idx] = Splat(
         pack2x16float(v.xy), pack2x16float(v.zw),
