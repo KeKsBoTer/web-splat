@@ -80,7 +80,7 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
         let rot_1 = self.reader.read_f32::<B>()?;
         let rot_2 = self.reader.read_f32::<B>()?;
         let rot_3 = self.reader.read_f32::<B>()?;
-        let rot = Quaternion::new(rot_0, rot_1, rot_2, rot_3).normalize();
+        let rot = Quaternion::new(rot_0, rot_1, rot_2, rot_3);//.normalize();
 
         let mut omega = [0.; 4];
         self.reader.read_f32_into::<B>(&mut omega)?;
@@ -88,7 +88,8 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
         let mut f_t = [0.; 3];
         self.reader.read_f32_into::<B>(&mut f_t)?;
 
-        let cov = build_cov(rot, scale);
+        // let cov = build_cov(rot, scale);
+        let cov = [rot.v.x, rot.v.y, rot.v.z,rot.s, scale.x,scale.y,scale.z,0.];
 
         let mut color_sh = [[0.; 3]; 16];
         color_sh[0] = [color[0], color[1], color[2]];

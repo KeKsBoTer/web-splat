@@ -38,7 +38,7 @@ impl Default for Gaussian {
 pub struct Gaussian {
     pub xyz: Point3<f16>,
     pub opacity: f16,
-    pub cov: [f16; 6],
+    pub cov: [f16; 8],
     pub trbf: [f16; 2],
     pub motion: [f16; 10],
     pub omega: [f16; 4],

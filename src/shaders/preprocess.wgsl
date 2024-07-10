@@ -36,7 +36,7 @@ struct CameraUniforms {
 
 struct Gaussian {
     pos_opacity: array<u32,2>,
-    cov: array<u32,3>,
+    cov: array<u32,4>,
     trbf:u32,
     motion:array<u32,5>,
     omega:array<u32,2>
@@ -158,11 +158,12 @@ fn evaluate_sh(dir: vec3<f32>, v_idx: u32, sh_deg: u32) -> vec3<f32> {
     return result;
 }
 
-fn cov_coefs(v_idx: u32) -> array<f32,6> {
+fn cov_coefs(v_idx: u32) -> array<f32,8> {
     let a = unpack2x16float(gaussians[v_idx].cov[0]);
     let b = unpack2x16float(gaussians[v_idx].cov[1]);
     let c = unpack2x16float(gaussians[v_idx].cov[2]);
-    return array<f32,6>(a.x, a.y, b.x, b.y, c.x, c.y);
+    let d = unpack2x16float(gaussians[v_idx].cov[3]);
+    return array<f32,8>(a.x, a.y, b.x, b.y, c.x, c.y,d.x,d.y);
 }
 
 fn trbf_function(x: f32) -> f32 {
@@ -206,6 +207,41 @@ fn color_mlp(albedo:vec3<f32>,spec:vec3<f32>,time_feat:vec3<f32>,ray_orig:vec3<f
     return sigmoid(albedo + out_2);
 }
 
+fn quaternion_to_matrix(q:vec4<f32>)->mat3x3<f32>{
+    let x2 = q.x + q.x;
+    let y2 = q.y + q.y;
+    let z2 = q.z + q.z;
+
+    let xx2 = x2 * q.x;
+    let xy2 = x2 * q.y;
+    let xz2 = x2 * q.z;
+
+    let yy2 = y2 * q.y;
+    let yz2 = y2 * q.z;
+    let zz2 = z2 * q.z;
+
+    let sy2 = y2 * q.w;
+    let sz2 = z2 * q.w;
+    let sx2 = x2 * q.w;
+
+    return mat3x3<f32>(
+        1.0 - yy2 - zz2, xy2 + sz2, xz2 - sy2,
+        xy2 - sz2, 1.0 - xx2 - zz2, yz2 + sx2,
+        xz2 + sy2, yz2 - sx2, 1.0 - xx2 - yy2,
+    );
+}
+
+fn build_cov(q:vec4<f32>,s:vec3<f32>)->mat3x3<f32>{
+    let R = quaternion_to_matrix(q);
+    let S = mat3x3<f32>(
+        s.x, 0., 0.,
+        0., s.y, 0.,
+        0., 0., s.z
+    );
+    let l = R*S;
+    let m = l*transpose(l);
+    return m;
+}
 
 @compute @workgroup_size(256,1,1)
 fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) wgs: vec3<u32>) {
@@ -260,6 +296,14 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
 
     let cov_sparse = cov_coefs(idx);
 
+    var q = vec4<f32>(cov_sparse[0], cov_sparse[1], cov_sparse[2],cov_sparse[3]);
+    let s = vec3<f32>(cov_sparse[4], cov_sparse[5], cov_sparse[6]);
+
+    // time dependent rotation
+    let omega = vec4<f32>(unpack2x16float(vertex.omega[0]),unpack2x16float(vertex.omega[1]));
+    // q = normalize(q+ trbf_distance *omega);
+    q = normalize(q);
+
     let walltime = render_settings.walltime;
     var scale_mod = 0.;
     let dd = 5. * distance(render_settings.center, xyz) / render_settings.scene_extend;
@@ -270,11 +314,12 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let scaling = render_settings.gaussian_scaling * scale_mod;
     // TODO: we need to store scaling and rotation seperately
     // rotation needs to be adjusted over time
-    let Vrk = mat3x3<f32>(
-        cov_sparse[0], cov_sparse[1], cov_sparse[2],
-        cov_sparse[1], cov_sparse[3], cov_sparse[4],
-        cov_sparse[2], cov_sparse[4], cov_sparse[5]
-    ) * scaling * scaling;
+    // let Vrk = mat3x3<f32>(
+    //     cov_sparse[0], cov_sparse[1], cov_sparse[2],
+    //     cov_sparse[1], cov_sparse[3], cov_sparse[4],
+    //     cov_sparse[2], cov_sparse[4], cov_sparse[5]
+    // ) * scaling * scaling;
+    let Vrk = build_cov(q,s) * scaling * scaling;
     let J = mat3x3<f32>(
         focal.x / camspace.z,
         0.,
@@ -330,10 +375,9 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let store_idx = atomicAdd(&sort_infos.keys_size, 1u);
     let v = vec4<f32>(v1 / viewport, v2 / viewport);
 
-
     let albedo =  sh_coef(idx, 0u);
     let spec = sh_coef(idx, 1u);
-    let time_feat = sh_coef(idx, 2u);
+    let time_feat = sh_coef(idx, 2u) * trbf_distance;
     let ray_pos = camera_pos;
     let ray_dir = dir;
 
