@@ -336,7 +336,11 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let time_feat = sh_coef(idx, 2u);
     let ray_pos = camera_pos;
     let ray_dir = dir;
-    let color = color_mlp(albedo,spec,time_feat,ray_pos,ray_dir);
+
+    var color = sigmoid(albedo);
+    if render_settings.max_sh_deg > 0u{
+        color=color_mlp(albedo,spec,time_feat,ray_pos,ray_dir);
+    }
 
     points_2d[store_idx] = Splat(
         pack2x16float(v.xy), pack2x16float(v.zw),
