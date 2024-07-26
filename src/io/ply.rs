@@ -29,8 +29,7 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
         let mut reader = BufReader::new(reader);
         let parser = ply_rs::parser::Parser::<ply_rs::ply::DefaultElement>::new();
         let header = parser.read_header(&mut reader).unwrap();
-        // let sh_deg = Self::file_sh_deg(&header)?;
-        let sh_deg = 1;
+        let sh_deg = Self::file_sh_deg(&header)?;
         let num_points = Self::num_points(&header)?;
         let mip_splatting = Self::mip_splatting(&header)?;
         let kernel_size = Self::kernel_size(&header)?;
@@ -50,24 +49,30 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
 
     fn read_line<B: ByteOrder>(
         &mut self,
-        _sh_deg: usize,
+        sh_deg: usize,
     ) -> anyhow::Result<(Gaussian, [[f16; 3]; 16])> {
         let mut pos = [0.; 3];
         self.reader.read_f32_into::<B>(&mut pos)?;
 
-        let trbf_center = self.reader.read_f32::<B>()?;
-        let trbf_scale = self.reader.read_f32::<B>()?.exp();
         // skip normals
         // for what ever reason it is faster to call read than seek ...
         // so we just read them and never use them again
         let mut _normals = [0.; 3];
         self.reader.read_f32_into::<B>(&mut _normals)?;
 
-        let mut motion = [0.; 10];
-        self.reader.read_f32_into::<B>(&mut motion[..9])?;
+        let mut sh: [[f32; 3]; 16] = [[0.; 3]; 16];
+        self.reader.read_f32_into::<B>(&mut sh[0])?;
+        let mut sh_rest = [0.; 15 * 3];
+        let num_coefs = (sh_deg + 1) * (sh_deg + 1);
+        self.reader
+            .read_f32_into::<B>(&mut sh_rest[..(num_coefs - 1) * 3])?;
 
-        let mut color = [0.; 6];
-        self.reader.read_f32_into::<B>(&mut color)?;
+        // higher order coefficients are stored with channel first (shape:[N,3,C])
+        for i in 0..(num_coefs - 1) {
+            for j in 0..3 {
+                sh[i + 1][j] = sh_rest[j * (num_coefs - 1) + i];
+            }
+        }
 
         let opacity = sigmoid(self.reader.read_f32::<B>()?);
 
@@ -80,32 +85,17 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
         let rot_1 = self.reader.read_f32::<B>()?;
         let rot_2 = self.reader.read_f32::<B>()?;
         let rot_3 = self.reader.read_f32::<B>()?;
-        let rot = Quaternion::new(rot_0, rot_1, rot_2, rot_3);//.normalize();
+        let rot = Quaternion::new(rot_0, rot_1, rot_2, rot_3).normalize();
 
-        let mut omega = [0.; 4];
-        self.reader.read_f32_into::<B>(&mut omega)?;
-
-        let mut f_t = [0.; 3];
-        self.reader.read_f32_into::<B>(&mut f_t)?;
-
-        // let cov = build_cov(rot, scale);
-        let cov = [rot.v.x, rot.v.y, rot.v.z,rot.s, scale.x,scale.y,scale.z,0.];
-
-        let mut color_sh = [[0.; 3]; 16];
-        color_sh[0] = [color[0], color[1], color[2]];
-        color_sh[1] = [color[3], color[4], color[5]];
-        color_sh[2] = f_t;
+        let cov = build_cov(rot, scale);
 
         return Ok((
             Gaussian {
                 xyz: Point3::from(pos).cast().unwrap(),
                 opacity: f16::from_f32(opacity),
                 cov: cov.map(|x| f16::from_f32(x)),
-                trbf: [f16::from_f32(trbf_center), f16::from_f32(trbf_scale)],
-                motion: motion.map(|x| f16::from_f32(x)),
-                omega: omega.map(|x| f16::from_f32(x)),
             },
-            color_sh.map(|x| x.map(|y| f16::from_f32(y))),
+            sh.map(|x| x.map(|y| f16::from_f32(y))),
         ));
     }
 
