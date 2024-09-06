@@ -180,7 +180,9 @@ async fn main() {
     println!("done!");
 }
 #[cfg(target_arch = "wasm32")]
-fn main(){todo!("not implemented")}
+fn main() {
+    todo!("not implemented")
+}
 
 pub async fn download_texture(
     texture: &wgpu::Texture,

@@ -8,7 +8,7 @@ description = "3D Gaussian Splatting Viewer"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-wgpu = { version = "0.19.3" }
+wgpu = { version = "0.20.1" }
 winit = "0.29.14"
 cgmath = { version = "0.18.0", features = [
     "bytemuck",
@@ -29,11 +29,11 @@ image = "0.25.0"
 indicatif = "0.17.8"
 
 
-egui = "0.27.1"
-egui-wgpu = "0.27.1"
-egui-winit = { version = "0.27.1", features = [], default-features = false }
-egui_plot = "0.27.1"
-egui_dnd = "0.7.0"
+egui = "0.28.1"
+egui-wgpu = "0.28.1"
+egui-winit = { version = "0.28.1", features = [], default-features = false }
+egui_plot = "0.28.1"
+egui_dnd = "0.9.1"
 
 rand = "0.8.5"
 npyz = { version = "0.8.3", features = ["npz", "half"], optional = true }

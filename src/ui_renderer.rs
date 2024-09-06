@@ -48,19 +48,19 @@ impl EguiWGPU {
         output
     }
 
-    pub fn paint(
+    pub fn prepare(
         &mut self,
         size: PhysicalSize<u32>,
         scale_factor: f32,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        color_attachment: &wgpu::TextureView,
+        encoder: &mut wgpu::CommandEncoder,
         output: FullOutput,
-    ) {
+    ) -> UIRenderState {
         let clipped_meshes = self
             .winit
             .egui_ctx()
-            .tessellate(output.shapes, scale_factor);
+            .tessellate(output.shapes.clone(), scale_factor);
 
         // let size = window.inner_size();l
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
@@ -68,43 +68,38 @@ impl EguiWGPU {
             pixels_per_point: self.winit.egui_ctx().pixels_per_point(),
         };
 
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("egui_wgpu_encoder"),
-        });
-
-        for (id, delta) in output.textures_delta.set {
-            self.renderer.update_texture(device, queue, id, &delta);
+        for (id, delta) in &output.textures_delta.set {
+            self.renderer.update_texture(device, queue, *id, &delta);
         }
 
-        self.renderer.update_buffers(
-            device,
-            queue,
-            &mut encoder,
-            &clipped_meshes,
-            &screen_descriptor,
-        );
+        self.renderer
+            .update_buffers(device, queue, encoder, &clipped_meshes, &screen_descriptor);
 
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &color_attachment,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                label: Some("egui_render"),
-                ..Default::default()
-            });
-            self.renderer
-                .render(&mut render_pass, &clipped_meshes, &screen_descriptor);
+        UIRenderState {
+            clipped_meshes,
+            screen_descriptor,
+            output,
         }
+    }
 
-        for id in output.textures_delta.free {
+    pub fn render<'pass>(
+        &'pass mut self,
+        render_pass: &mut wgpu::RenderPass<'pass>,
+        state: &'pass UIRenderState,
+    ) {
+        self.renderer
+            .render(render_pass, &state.clipped_meshes, &state.screen_descriptor);
+    }
+
+    pub fn cleanup(&mut self, state: UIRenderState) {
+        for id in &state.output.textures_delta.free {
             self.renderer.free_texture(&id);
         }
-
-        queue.submit(Some(encoder.finish()));
     }
+}
+
+pub struct UIRenderState {
+    clipped_meshes: Vec<egui::ClippedPrimitive>,
+    screen_descriptor: egui_wgpu::ScreenDescriptor,
+    output: FullOutput,
 }

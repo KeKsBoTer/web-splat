@@ -234,30 +234,35 @@ impl GPURSSorter {
             layout: Some(&pipeline_layout),
             module: &shader,
             entry_point: "zero_histograms",
+            compilation_options: Default::default(),
         });
         let histogram_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("calculate_histogram"),
             layout: Some(&pipeline_layout),
             module: &shader,
             entry_point: "calculate_histogram",
+            compilation_options: Default::default(),
         });
         let prefix_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("prefix_histogram"),
             layout: Some(&pipeline_layout),
             module: &shader,
             entry_point: "prefix_histogram",
+            compilation_options: Default::default(),
         });
         let scatter_even_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("scatter_even"),
             layout: Some(&pipeline_layout),
             module: &shader,
             entry_point: "scatter_even",
+            compilation_options: Default::default(),
         });
         let scatter_odd_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("scatter_odd"),
             layout: Some(&pipeline_layout),
             module: &shader,
             entry_point: "scatter_odd",
+            compilation_options: Default::default(),
         });
 
         return Self {

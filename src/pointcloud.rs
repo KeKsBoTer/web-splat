@@ -379,7 +379,7 @@ pub struct GaussianQuantization {
 }
 
 #[repr(C)]
-#[derive(Zeroable, Clone, Copy, Debug)]
+#[derive(Zeroable, Clone, Copy, Debug, PartialEq)]
 pub struct Aabb<F: Float + BaseNum> {
     pub min: Point3<F>,
     pub max: Point3<F>,

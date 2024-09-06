@@ -1,20 +1,26 @@
+#[cfg(target_arch = "wasm32")]
+use instant::Duration;
 use std::ops::RangeInclusive;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
-#[cfg(target_arch = "wasm32")]
-use instant::Duration;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::renderer::DEFAULT_KERNEL_SIZE;
-use crate::{ SceneCamera, Split, WindowContext};
+use crate::{SceneCamera, Split, WindowContext};
 use cgmath::{Euler, Matrix3, Quaternion};
 #[cfg(not(target_arch = "wasm32"))]
 use egui::Vec2b;
-use egui::{emath::Numeric,  Align2, Color32, RichText, Vec2};
+
+#[cfg(target_arch = "wasm32")]
+use egui::{Align2,Vec2};
+
+use egui::{emath::Numeric, Color32, RichText};
+
+
 #[cfg(not(target_arch = "wasm32"))]
 use egui_plot::{Legend, PlotPoints};
 
-pub(crate) fn ui(state: &mut WindowContext) {
+pub(crate) fn ui(state: &mut WindowContext) -> bool {
     let ctx = state.ui_renderer.winit.egui_ctx();
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(stopwatch) = state.stopwatch.as_mut() {
@@ -63,7 +69,7 @@ pub(crate) fn ui(state: &mut WindowContext) {
                 .allow_boxed_zoom(false)
                 .allow_zoom(false)
                 .allow_scroll(false)
-                .y_axis_width(1)
+                .y_axis_min_width(1.0)
                 .y_axis_label("ms")
                 .auto_bounds(Vec2b::TRUE)
                 .show_axes([false, true])
@@ -93,7 +99,8 @@ pub(crate) fn ui(state: &mut WindowContext) {
                 ui.label("Gaussian Scaling");
                 ui.add(
                     egui::DragValue::new(&mut state.splatting_args.gaussian_scaling)
-                        .clamp_range((1e-4)..=1.)
+                        .range((1e-4)..=1.)
+                        .clamp_to_range(true)
                         .speed(1e-2),
                 );
                 ui.end_row();
@@ -105,17 +112,29 @@ pub(crate) fn ui(state: &mut WindowContext) {
                 );
                 state.splatting_args.max_sh_deg = if dir_color { state.pc.sh_deg() } else { 0 };
 
-              
                 ui.end_row();
                 let enable_bg = !state.splatting_args.show_env_map && !state.display.has_env_map();
                 ui.add_enabled(enable_bg, egui::Label::new("Background Color"));
+                let mut color = egui::Color32::from_rgba_premultiplied(
+                    (state.splatting_args.background_color.r*255.) as u8,
+                    (state.splatting_args.background_color.g*255.) as u8,
+                    (state.splatting_args.background_color.b*255.) as u8,
+                    (state.splatting_args.background_color.a*255.) as u8,
+                );
                 ui.add_enabled_ui(enable_bg, |ui| {
                     egui::color_picker::color_edit_button_srgba(
                         ui,
-                        &mut state.background_color,
+                        &mut color,
                         egui::color_picker::Alpha::BlendOrAdditive,
                     )
                 });
+
+                let color32 = color.to_normalized_gamma_f32();
+                state.splatting_args.background_color.r = color32[0] as f64;
+                state.splatting_args.background_color.g = color32[1] as f64;
+                state.splatting_args.background_color.b = color32[2] as f64;
+                state.splatting_args.background_color.a = color32[3] as f64;
+
                 ui.end_row();
                 #[cfg(not(target_arch = "wasm32"))]
                 {
@@ -212,10 +231,11 @@ pub(crate) fn ui(state: &mut WindowContext) {
 
                             if let Some(c) = &mut state.current_view {
                                 ui.horizontal(|ui| {
-                                    let drag =
-                                        ui.add(egui::DragValue::new(c).clamp_range(
-                                            0..=(scene.num_cameras().saturating_sub(1)),
-                                        ));
+                                    let drag = ui.add(
+                                        egui::DragValue::new(c)
+                                            .range(0..=(scene.num_cameras().saturating_sub(1)))
+                                            .clamp_to_range(true),
+                                    );
                                     if drag.changed() {
                                         new_camera = Some(SetCamera::ID(*c));
                                     }
@@ -277,9 +297,8 @@ pub(crate) fn ui(state: &mut WindowContext) {
                                             )),
                                         );
 
-                                        let resp = ui.add(
-                                            egui::Label::new(c.img_name.clone()).truncate(true),
-                                        );
+                                        let resp =
+                                            ui.add(egui::Label::new(c.img_name.clone()).truncate());
                                         if let Some(view_id) = curr_view {
                                             if c.id == view_id {
                                                 resp.scroll_to_me(None);
@@ -360,6 +379,8 @@ pub(crate) fn ui(state: &mut WindowContext) {
                 });
         });
 
+    let requested_repaint = ctx.has_requested_repaint();
+
     if let Some(c) = new_camera {
         match c {
             SetCamera::ID(id) => state.set_scene_camera(id),
@@ -373,6 +394,7 @@ pub(crate) fn ui(state: &mut WindowContext) {
             state.start_tracking_shot();
         }
     }
+    return requested_repaint;
 }
 
 enum SetCamera {
@@ -418,7 +440,7 @@ fn optional_drag<T: Numeric>(
         })
     };
     if let Some(range) = range {
-        drag = drag.clamp_range(range);
+        drag = drag.range(range).clamp_to_range(true);
     }
     if let Some(speed) = speed {
         drag = drag.speed(speed);

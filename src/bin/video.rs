@@ -9,7 +9,8 @@ use std::{
     time::Duration,
 };
 use web_splats::{
-    io, smoothstep, Animation, GaussianRenderer, PointCloud, Scene, SceneCamera, SplattingArgs, TrackingShot, WGPUContext
+    io, smoothstep, Animation, GaussianRenderer, PointCloud, Scene, SceneCamera, SplattingArgs,
+    TrackingShot, WGPUContext,
 };
 
 #[derive(Debug, Parser)]
@@ -50,7 +51,7 @@ async fn render_tracking_shot(
 ) {
     println!("saving video to '{}'", video_out.to_string_lossy());
 
-    let resolution: Vector2<u32> = Vector2::new(1024, 1024)*2;
+    let resolution: Vector2<u32> = Vector2::new(1024, 1024) * 2;
 
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("render texture"),
@@ -82,7 +83,6 @@ async fn render_tracking_shot(
 
     let bg = wgpu::Color::BLACK;
 
-
     let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let num_frames = (video_duration.as_secs_f32() * fps as f32).ceil() as u32;
 
@@ -102,7 +102,9 @@ async fn render_tracking_shot(
         //     Duration::ZERO
         //     // dt.mul_f32()
         // });
-        animation.set_progress(smoothstep(state_time.as_secs_f32()/video_duration.as_secs_f32()));
+        animation.set_progress(smoothstep(
+            state_time.as_secs_f32() / video_duration.as_secs_f32(),
+        ));
         let mut cam = animation.update(Duration::ZERO);
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -154,7 +156,6 @@ async fn render_tracking_shot(
         img.save(&video_out.join(format!("frame_{:04}.png", i)))
             .unwrap();
     }
-
 }
 
 #[pollster::main]

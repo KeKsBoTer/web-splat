@@ -7,7 +7,6 @@ use crate::{
     uniform::UniformBuffer,
 };
 
-use std::hash::{Hash, Hasher};
 use std::num::NonZeroU64;
 use std::time::Duration;
 
@@ -56,6 +55,7 @@ impl GaussianRenderer {
                 module: &shader,
                 entry_point: "vs_main",
                 buffers: &[],
+                compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -65,6 +65,7 @@ impl GaussianRenderer {
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
+                compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleStrip,
@@ -368,6 +369,7 @@ impl PreprocessPipeline {
             layout: Some(&pipeline_layout),
             module: &shader,
             entry_point: "preprocess",
+            compilation_options: Default::default(),
         });
         Self(pipeline)
     }
@@ -445,6 +447,7 @@ impl Display {
                 module: &shader,
                 entry_point: "vs_main",
                 buffers: &[],
+                compilation_options: Default::default(),
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleStrip,
@@ -460,6 +463,7 @@ impl Display {
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
+                compilation_options: Default::default(),
             }),
             multiview: None,
         });
@@ -659,7 +663,7 @@ impl Display {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug,PartialEq)]
 pub struct SplattingArgs {
     pub camera: PerspectiveCamera,
     pub viewport: Vector2<u32>,
@@ -672,27 +676,8 @@ pub struct SplattingArgs {
     pub walltime: Duration,
     pub scene_center: Option<Point3<f32>>,
     pub scene_extend: Option<f32>,
-}
-
-impl Hash for SplattingArgs {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.camera.hash(state);
-        self.viewport.hash(state);
-        self.max_sh_deg.hash(state);
-        self.gaussian_scaling.to_bits().hash(state);
-        self.show_env_map.hash(state);
-        self.mip_splatting.hash(state);
-        self.kernel_size.map(f32::to_bits).hash(state);
-        self.walltime.hash(state);
-        self.clipping_box
-            .as_ref()
-            .map(|b| bytemuck::bytes_of(&b.min))
-            .hash(state);
-        self.clipping_box
-            .as_ref()
-            .map(|b| bytemuck::bytes_of(&b.max))
-            .hash(state);
-    }
+    pub background_color: wgpu::Color,
+    pub resolution: Vector2<u32>,
 }
 
 pub const DEFAULT_KERNEL_SIZE: f32 = 0.3;
