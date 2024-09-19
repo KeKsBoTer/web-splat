@@ -25,6 +25,13 @@ pub struct CameraController {
     pub right_mouse_pressed: bool,
     pub alt_pressed: bool,
     pub user_inptut: bool,
+
+    pub touched_count: i32,
+    pub last_touch: Vector3<f32>,//x,y,id
+    pub last_touch_2: Vector3<f32>,//x,y,id
+    pub touch_rotate_sensitivity_threshold: f32,
+    pub touch_rotate_sensitivity: f32,
+    pub touch_zoom_sensitivity: f32,
 }
 
 impl CameraController {
@@ -42,6 +49,12 @@ impl CameraController {
             right_mouse_pressed: false,
             alt_pressed: false,
             user_inptut: false,
+            touched_count: 0,
+            last_touch: Vector3::zero(),
+            last_touch_2: Vector3::zero(),
+            touch_rotate_sensitivity_threshold: 3.0,
+            touch_rotate_sensitivity: 2.0,
+            touch_zoom_sensitivity: 0.01,
         }
     }
 
@@ -102,6 +115,58 @@ impl CameraController {
     pub fn process_scroll(&mut self, dy: f32) {
         self.scroll += -dy;
         self.user_inptut = true;
+    }
+
+    pub fn process_touch(&mut self, touch_id: f32, touch_x: f32, touch_y: f32) {
+        //println!("touched_count {}", self.touched_count);
+        if self.touched_count == 1 {//rotate            
+            let mut touch_dx = 0.0;
+            if touch_x - self.last_touch.x < -self.touch_rotate_sensitivity_threshold {
+                touch_dx = -1.0;
+            }
+            else if touch_x - self.last_touch.x > self.touch_rotate_sensitivity_threshold {
+                touch_dx = 1.0;
+            }
+            let mut touch_dy = 0.0;
+            if touch_y - self.last_touch.y < -self.touch_rotate_sensitivity_threshold {
+                touch_dy = -1.0;
+            }
+            else if touch_y - self.last_touch.y > self.touch_rotate_sensitivity_threshold {
+                touch_dy = 1.0;
+            }
+            self.rotation.x += touch_dx * self.touch_rotate_sensitivity;
+            self.rotation.y += touch_dy * self.touch_rotate_sensitivity;
+            self.user_inptut = true;
+            //save last
+            self.last_touch.x = touch_x;
+            self.last_touch.y = touch_y;
+            self.last_touch.z = touch_id;
+        }
+        else if self.touched_count == 2 {//zoom
+            let last_distance = ((self.last_touch.x - self.last_touch_2.x) * (self.last_touch.x - self.last_touch_2.x) + (self.last_touch.y - self.last_touch_2.y) * (self.last_touch.y - self.last_touch_2.y)).sqrt();
+            let mut cur_distance = 0.0;
+            if self.last_touch.z == touch_id {//1st point
+                cur_distance = ((self.last_touch_2.x - touch_x) * (self.last_touch_2.x - touch_x) + (self.last_touch_2.y - touch_y) * (self.last_touch_2.y - touch_y)).sqrt();
+                //save last
+                self.last_touch.x = touch_x;
+                self.last_touch.y = touch_y;
+            }
+            else if self.last_touch_2.z == touch_id{//2nd point
+                cur_distance = ((self.last_touch.x - touch_x) * (self.last_touch.x - touch_x) + (self.last_touch.y - touch_y) * (self.last_touch.y - touch_y)).sqrt();
+                //save last
+                self.last_touch_2.x = touch_x;
+                self.last_touch_2.y = touch_y;
+                }           
+            let delta_distance = cur_distance - last_distance;
+            if delta_distance > 0.0 {
+                self.scroll -= self.touch_zoom_sensitivity;
+                self.user_inptut = true;
+            }
+            else if delta_distance < 0.0 {
+                self.scroll += self.touch_zoom_sensitivity;
+                self.user_inptut = true;
+            }
+        }
     }
 
     /// moves the controller center to the closest point on a line defined by the camera position and rotation

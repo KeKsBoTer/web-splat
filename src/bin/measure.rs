@@ -73,6 +73,8 @@ async fn render_views(
             walltime: Duration::from_secs(100),
             scene_center: None,
             scene_extend: None,
+            background_color: wgpu::Color::BLACK,
+            resolution: resolution,
         },
         &mut None,
     );
@@ -121,6 +123,8 @@ async fn render_views(
                     walltime: Duration::from_secs(100),
                     scene_center: None,
                     scene_extend: None,
+                    background_color: wgpu::Color::BLACK,
+                    resolution: resolution,
                 },
                 &mut None,
             );

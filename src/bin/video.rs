@@ -37,6 +37,15 @@ struct Opt {
 
     #[arg(long, default_value_t = 30)]
     fps: u32,
+
+    #[arg(long, default_value_t = 2880)]
+    output_width: u32,
+
+    #[arg(long, default_value_t = 4320)]
+    output_height: u32,
+
+    #[arg(long, default_value_t = 0)]
+    beginning_scale_up_seconds: u64,
 }
 
 async fn render_tracking_shot(
@@ -48,10 +57,13 @@ async fn render_tracking_shot(
     video_out: &PathBuf,
     duration: Option<Duration>,
     fps: u32,
+    output_width: u32,
+    output_height: u32,
+    beginning_scale_up_seconds: u64,
 ) {
     println!("saving video to '{}'", video_out.to_string_lossy());
 
-    let resolution: Vector2<u32> = Vector2::new(1024, 1024) * 2;
+    let resolution: Vector2<u32> = Vector2::new(output_width, output_height);
 
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("render texture"),
@@ -126,9 +138,11 @@ async fn render_tracking_shot(
                 mip_splatting: None,
                 kernel_size: None,
                 clipping_box: None,
-                walltime: state_time,
+                walltime: state_time + Duration::from_secs(beginning_scale_up_seconds),
                 scene_center: None,
                 scene_extend: None,
+                background_color: wgpu::Color::BLACK,
+                resolution: resolution,
             },
             &mut None,
         );
@@ -198,6 +212,9 @@ async fn main() {
         &opt.video_out,
         opt.duration.map(Duration::from_secs_f32),
         opt.fps,
+        opt.output_width,
+        opt.output_height,
+        opt.beginning_scale_up_seconds,
     )
     .await;
 

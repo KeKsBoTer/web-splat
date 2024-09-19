@@ -839,6 +839,32 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
                     _=>{}
                 }
             }
+            WindowEvent::Touch(touch) => {
+                //println!("Touch {}/{}/{}", touch.id, touch.location.x, touch.location.y);
+                match touch.phase
+                {
+                    winit::event::TouchPhase::Started => {
+                        //println!("start");
+                        state.controller.touched_count += 1; 
+                        if state.controller.touched_count == 1 {
+                            state.controller.last_touch.x = touch.location.x as f32; 
+                            state.controller.last_touch.y = touch.location.y as f32;
+                            state.controller.last_touch.z = touch.id as f32;
+                        } 
+                        else if state.controller.touched_count == 2 {
+                            state.controller.last_touch_2.x = touch.location.x as f32; 
+                            state.controller.last_touch_2.y = touch.location.y as f32;
+                            state.controller.last_touch_2.z = touch.id as f32;
+                        }
+                    },
+                    winit::event::TouchPhase::Ended => {
+                        //println!("end");
+                        state.controller.touched_count -= 1;
+                    },
+                    winit::event::TouchPhase::Moved =>  state.controller.process_touch(touch.id as f32, touch.location.x as f32, touch.location.y as f32),
+                    winit::event::TouchPhase::Cancelled => state.controller.touched_count = 0,
+                }
+            }
             WindowEvent::RedrawRequested => {
                 if !config.no_vsync{
                     // make sure the next redraw is called with a small delay
