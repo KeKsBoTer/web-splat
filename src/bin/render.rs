@@ -27,6 +27,12 @@ struct Opt {
     /// maximum allowed Spherical Harmonics (SH) degree
     #[arg(long, default_value_t = 3)]
     max_sh_deg: u32,
+
+    #[arg(long, default_value_t = 0)]
+    output_width: u32,
+
+    #[arg(long, default_value_t = 0)]
+    output_height: u32,
 }
 
 #[allow(unused)]
@@ -38,6 +44,8 @@ async fn render_views(
     cameras: Vec<SceneCamera>,
     img_out: &PathBuf,
     split: &str,
+    output_width: u32,
+    output_height: u32,
 ) {
     let img_out = img_out.join(&split);
     println!("saving images to '{}'", img_out.to_string_lossy());
@@ -55,10 +63,22 @@ async fn render_views(
     for (i, s) in cameras.iter().enumerate().progress_with(pb) {
         let mut resolution: Vector2<u32> = Vector2::new(s.width, s.height);
 
-        if resolution.x > 1600 {
-            let s = resolution.x as f32 / 1600.;
-            resolution.x = 1600;
-            resolution.y = (resolution.y as f32 / s) as u32;
+        if output_width != 0 && output_height != 0 {
+            resolution.x = output_width;
+            resolution.y = output_height;
+        }
+        else
+        {
+            if resolution.x > 1600 {
+                let s = resolution.x as f32 / 1600.;
+                resolution.x = 1600;
+                resolution.y = (resolution.y as f32 / s) as u32;
+            }
+            if resolution.y > 1600 {
+                let s = resolution.y as f32 / 1600.;
+                resolution.x = (resolution.x as f32 / s) as u32;
+                resolution.y = 1600;
+            }
         }
 
         let target = device.create_texture(&wgpu::TextureDescriptor {
@@ -101,6 +121,8 @@ async fn render_views(
                 walltime: Duration::from_secs(100),
                 scene_center: None,
                 scene_extend: None,
+                background_color: wgpu::Color::BLACK,
+                resolution: resolution,
             },
             &mut None,
         );
@@ -164,6 +186,8 @@ async fn main() {
         scene.cameras(Some(Split::Test)),
         &opt.img_out,
         "test",
+        opt.output_width,
+        opt.output_height,
     )
     .await;
     render_views(
@@ -174,6 +198,8 @@ async fn main() {
         scene.cameras(Some(Split::Train)),
         &opt.img_out,
         "train",
+        opt.output_width,
+        opt.output_height,
     )
     .await;
 
