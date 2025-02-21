@@ -78,7 +78,6 @@ struct RenderSettings {
     clipping_box_max: vec4<f32>,
     gaussian_scaling: f32,
     max_sh_deg: u32,
-    show_env_map: u32,
     mip_spatting: u32,
     kernel_size: f32,
     walltime: f32,
@@ -224,21 +223,31 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let cov = transpose(T) * Vrk * T;
 
     let kernel_size = render_settings.kernel_size;
-    if bool(render_settings.mip_spatting) {
-        // according to Mip-Splatting by Yu et al. 2023
-        let det_0 = max(1e-6, cov[0][0] * cov[1][1] - cov[0][1] * cov[0][1]);
-        let det_1 = max(1e-6, (cov[0][0] + kernel_size) * (cov[1][1] + kernel_size) - cov[0][1] * cov[0][1]);
-        var coef = sqrt(det_0 / (det_1 + 1e-6) + 1e-6);
 
-        if det_0 <= 1e-6 || det_1 <= 1e-6 {
-            coef = 0.0;
-        }
-        opacity *= coef;
-    }
+
+    let det_cov = cov[0][0] * cov[1][1] - cov[1][0]*cov[1][0];
 
     let diagonal1 = cov[0][0] + kernel_size;
     let offDiagonal = cov[0][1];
     let diagonal2 = cov[1][1] + kernel_size;
+
+	let det_cov_plus_h_cov = diagonal1 * diagonal2 - offDiagonal * offDiagonal;
+
+	var h_convolution_scaling = 1.0;
+    if bool(render_settings.mip_spatting) {
+        // // according to Mip-Splatting by Yu et al. 2023
+        let det_0 = max(1e-6, cov[0][0] * cov[1][1] - cov[0][1] * cov[0][1]);
+        let det_1 = max(1e-6, (cov[0][0] + kernel_size) * (cov[1][1] + kernel_size) - cov[0][1] * cov[0][1]);
+        h_convolution_scaling = sqrt(det_0 / (det_1 + 1e-6) + 1e-6);
+// 
+        if det_0 <= 1e-6 || det_1 <= 1e-6 {
+            h_convolution_scaling = 0.0;
+        }
+        // h_convolution_scaling = sqrt(max(0.000025, det_cov / det_cov_plus_h_cov)); // max for numerical stability
+
+    }
+    opacity *= h_convolution_scaling;
+
 
     let mid = 0.5 * (diagonal1 + diagonal2);
     let radius = length(vec2<f32>((diagonal1 - diagonal2) / 2.0, offDiagonal));

@@ -107,7 +107,7 @@ impl Into<PerspectiveCamera> for SceneCamera {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone,Debug)]
 pub struct Scene {
     cameras: HashMap<usize, SceneCamera>,
     /// maximum distance between two cameras

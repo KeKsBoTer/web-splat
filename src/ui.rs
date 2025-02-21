@@ -6,7 +6,7 @@ use std::time::Duration;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::renderer::DEFAULT_KERNEL_SIZE;
-use crate::{SceneCamera, Split, WindowContext};
+use crate::{SceneCamera, Split, WebSplat};
 use cgmath::{Euler, Matrix3, Quaternion};
 #[cfg(not(target_arch = "wasm32"))]
 use egui::Vec2b;
@@ -20,12 +20,12 @@ use egui::{emath::Numeric, Color32, RichText};
 #[cfg(not(target_arch = "wasm32"))]
 use egui_plot::{Legend, PlotPoints};
 
-pub(crate) fn ui(state: &mut WindowContext) -> bool {
+pub(crate) fn ui(state: &mut WebSplat) -> bool {
     let ctx = state.ui_renderer.winit.egui_ctx();
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(stopwatch) = state.stopwatch.as_mut() {
         let durations = pollster::block_on(
-            stopwatch.take_measurements(&state.wgpu_context.device, &state.wgpu_context.queue),
+            stopwatch.take_measurements(&state.device, &state.queue),
         );
         state.history.push((
             *durations.get("preprocess").unwrap_or(&Duration::ZERO),
@@ -38,7 +38,7 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
     let num_drawn = pollster::block_on(
         state
             .renderer
-            .num_visible_points(&state.wgpu_context.device, &state.wgpu_context.queue),
+            .num_visible_points(&state.device, &state.queue),
     );
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -99,8 +99,8 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
                 ui.label("Gaussian Scaling");
                 ui.add(
                     egui::DragValue::new(&mut state.splatting_args.gaussian_scaling)
-                        .range((1e-4)..=1.)
-                        .clamp_to_range(true)
+                        .range((1e-4)..=2.)
+                        .clamp_existing_to_range(true)
                         .speed(1e-2),
                 );
                 ui.end_row();
@@ -113,21 +113,18 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
                 state.splatting_args.max_sh_deg = if dir_color { state.pc.sh_deg() } else { 0 };
 
                 ui.end_row();
-                let enable_bg = !state.splatting_args.show_env_map && !state.display.has_env_map();
-                ui.add_enabled(enable_bg, egui::Label::new("Background Color"));
+                ui.label("Background Color");
                 let mut color = egui::Color32::from_rgba_premultiplied(
                     (state.splatting_args.background_color.r*255.) as u8,
                     (state.splatting_args.background_color.g*255.) as u8,
                     (state.splatting_args.background_color.b*255.) as u8,
                     (state.splatting_args.background_color.a*255.) as u8,
                 );
-                ui.add_enabled_ui(enable_bg, |ui| {
-                    egui::color_picker::color_edit_button_srgba(
-                        ui,
-                        &mut color,
-                        egui::color_picker::Alpha::BlendOrAdditive,
-                    )
-                });
+                egui::color_picker::color_edit_button_srgba(
+                    ui,
+                    &mut color,
+                    egui::color_picker::Alpha::BlendOrAdditive,
+                );
 
                 let color32 = color.to_normalized_gamma_f32();
                 state.splatting_args.background_color.r = color32[0] as f64;
@@ -234,7 +231,7 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
                                     let drag = ui.add(
                                         egui::DragValue::new(c)
                                             .range(0..=(scene.num_cameras().saturating_sub(1)))
-                                            .clamp_to_range(true),
+                                            .clamp_existing_to_range(true),
                                     );
                                     if drag.changed() {
                                         new_camera = Some(SetCamera::ID(*c));
@@ -440,7 +437,7 @@ fn optional_drag<T: Numeric>(
         })
     };
     if let Some(range) = range {
-        drag = drag.range(range).clamp_to_range(true);
+        drag = drag.range(range).clamp_existing_to_range(true);
     }
     if let Some(speed) = speed {
         drag = drag.speed(speed);

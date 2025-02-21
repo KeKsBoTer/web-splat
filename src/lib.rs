@@ -1,16 +1,13 @@
-use std::{
-    io::{Read, Seek},
-    path::{Path, PathBuf},
-    sync::Arc,
-};
-
-use image::Pixel;
 #[cfg(target_arch = "wasm32")]
 use instant::{Duration, Instant};
 use renderer::Display;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
-use wgpu::{util::DeviceExt, Backends, Extent3d};
+use std::{
+    io::{Cursor, Read, Seek},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use cgmath::{Deg, EuclideanSpace, Point3, Quaternion, UlpsEq, Vector2, Vector3};
 use egui::FullOutput;
@@ -23,11 +20,12 @@ use utils::RingBuffer;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::wasm_bindgen;
 use winit::{
-    dpi::PhysicalSize,
-    event::{DeviceEvent, ElementState, Event, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
+    application::ApplicationHandler,
+    dpi::{LogicalSize, PhysicalSize},
+    event::{DeviceEvent, ElementState, WindowEvent},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     keyboard::{KeyCode, PhysicalKey},
-    window::{Window, WindowBuilder},
+    window::Window,
 };
 
 mod animation;
@@ -57,77 +55,67 @@ mod utils;
 
 pub struct RenderConfig {
     pub no_vsync: bool,
-    pub skybox: Option<PathBuf>,
     pub hdr: bool,
 }
 
-pub struct WGPUContext {
-    pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
-    pub adapter: wgpu::Adapter,
-}
+pub async fn new_wgpu_context(
+    instance: &wgpu::Instance,
+    surface: Option<&wgpu::Surface<'static>>,
+) -> (wgpu::Device, wgpu::Queue, wgpu::Adapter) {
+    let adapter = wgpu::util::initialize_adapter_from_env_or_default(instance, surface)
+        .await
+        .unwrap();
+    log::info!("using {}", adapter.get_info().name);
 
-impl WGPUContext {
-    pub async fn new_instance() -> Self {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: Backends::PRIMARY,
-            ..Default::default()
-        });
+    #[cfg(target_arch = "wasm32")]
+    let required_features = wgpu::Features::default();
+    #[cfg(not(target_arch = "wasm32"))]
+    let required_features = wgpu::Features::TIMESTAMP_QUERY
+        | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+        | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+        | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
 
-        return WGPUContext::new(&instance, None).await;
-    }
+    let adapter_limits = adapter.limits();
 
-    pub async fn new(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'static>>) -> Self {
-        let adapter = wgpu::util::initialize_adapter_from_env_or_default(instance, surface)
-            .await
-            .unwrap();
-        log::info!("using {}", adapter.get_info().name);
 
-        #[cfg(target_arch = "wasm32")]
-        let required_features = wgpu::Features::default();
-        #[cfg(not(target_arch = "wasm32"))]
-        let required_features = wgpu::Features::TIMESTAMP_QUERY
-            | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
-            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
-            | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
-
-        let adapter_limits = adapter.limits();
-
-        let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    required_features,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    required_limits: wgpu::Limits {
-                        max_storage_buffer_binding_size: adapter_limits
-                            .max_storage_buffer_binding_size,
-                        max_storage_buffers_per_shader_stage: 12,
-                        max_compute_workgroup_storage_size: 1 << 15,
-                        ..adapter_limits
-                    },
-
-                    #[cfg(target_arch = "wasm32")]
-                    required_limits: wgpu::Limits {
-                        max_compute_workgroup_storage_size: 1 << 15,
-                        ..adapter_limits
-                    },
-                    label: None,
+    let (device, queue) = adapter
+        .request_device(
+            &wgpu::DeviceDescriptor {
+                required_features,
+                #[cfg(not(target_arch = "wasm32"))]
+                required_limits: wgpu::Limits {
+                    max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
+                    max_storage_buffers_per_shader_stage: 12,
+                    max_compute_workgroup_storage_size: 1 << 15,
+                    ..adapter_limits
                 },
-                None,
-            )
-            .await
-            .unwrap();
 
-        Self {
-            device,
-            queue,
-            adapter,
-        }
-    }
+                #[cfg(target_arch = "wasm32")]
+                required_limits: wgpu::Limits {
+                    max_compute_workgroup_storage_size: 1 << 15,
+                    ..adapter_limits
+                },
+                label: None,
+                memory_hints: Default::default(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    return (device, queue, adapter);
 }
 
-pub struct WindowContext {
-    wgpu_context: WGPUContext,
+pub struct Application {
+    web_splat: Option<WebSplat>,
+    pc: io::GenericGaussianPointCloud,
+    scene: Option<Scene>,
+    config: RenderConfig,
+}
+
+pub struct WebSplat {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     window: Arc<Window>,
@@ -155,34 +143,34 @@ pub struct WindowContext {
     #[cfg(feature = "video")]
     cameras_save_path: String,
     stopwatch: Option<GPUStopwatch>,
+
+    last_draw: Instant,
+    min_wait: Duration,
+
+    vsync: bool,
 }
 
-impl WindowContext {
+impl WebSplat {
     // Creating some of the wgpu types requires async code
-    async fn new<R: Read + Seek>(
+    async fn new(
         window: Window,
-        pc_file: R,
+        pc: &io::GenericGaussianPointCloud,
         render_config: &RenderConfig,
     ) -> anyhow::Result<Self> {
+        let window = Arc::new(window);
         let mut size = window.inner_size();
         if size == PhysicalSize::new(0, 0) {
             size = PhysicalSize::new(800, 600);
         }
 
-        let window = Arc::new(window);
-
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
 
         let surface: wgpu::Surface = instance.create_surface(window.clone())?;
+        let (device, queue, adapter) = new_wgpu_context(&instance, Some(&surface)).await;
 
-        let wgpu_context = WGPUContext::new(&instance, Some(&surface)).await;
+        log::info!("device: {:?}", adapter.get_info().name);
 
-        log::info!("device: {:?}", wgpu_context.adapter.get_info().name);
-
-        let device = &wgpu_context.device;
-        let queue = &wgpu_context.queue;
-
-        let surface_caps = surface.get_capabilities(&wgpu_context.adapter);
+        let surface_caps = surface.get_capabilities(&adapter);
 
         let surface_format = surface_caps
             .formats
@@ -214,8 +202,7 @@ impl WindowContext {
         };
         surface.configure(&device, &config);
 
-        let pc_raw = io::GenericGaussianPointCloud::load(pc_file)?;
-        let pc = PointCloud::new(&device, pc_raw)?;
+        let pc = PointCloud::new(&device, pc)?;
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
         let renderer =
@@ -238,10 +225,10 @@ impl WindowContext {
         let mut controller = CameraController::new(0.1, 0.05);
         controller.center = pc.center();
         // controller.up = pc.up;
-        let ui_renderer = ui_renderer::EguiWGPU::new(device, surface_format, &window);
+        let ui_renderer = ui_renderer::EguiWGPU::new(&device, surface_format, &window);
 
         let display = Display::new(
-            device,
+            &device,
             render_format,
             surface_format.remove_srgb_suffix(),
             size.width,
@@ -249,14 +236,19 @@ impl WindowContext {
         );
 
         let stopwatch = if cfg!(not(target_arch = "wasm32")) {
-            Some(GPUStopwatch::new(device, Some(3)))
+            Some(GPUStopwatch::new(&device, Some(3)))
         } else {
             None
         };
 
+        let min_wait = Duration::from_secs_f32(1000. / 60.);
+
+        let last_draw = Instant::now();
+
         Ok(Self {
-            wgpu_context,
-            scale_factor: window.scale_factor() as f32,
+            device,
+            queue,
+            scale_factor: 1.,
             window,
             surface,
             config,
@@ -266,7 +258,6 @@ impl WindowContext {
                 viewport: Vector2::new(size.width, size.height),
                 gaussian_scaling: 1.,
                 max_sh_deg: pc.sh_deg(),
-                show_env_map: false,
                 mip_splatting: None,
                 kernel_size: None,
                 clipping_box: None,
@@ -293,8 +284,10 @@ impl WindowContext {
             current_view: None,
             pointcloud_file_path: None,
             scene_file_path: None,
-
             stopwatch,
+            last_draw,
+            min_wait,
+            vsync: !render_config.no_vsync,
         })
     }
 
@@ -303,7 +296,7 @@ impl WindowContext {
             log::info!("reloading volume from {:?}", file_path);
             let file = std::fs::File::open(file_path)?;
             let pc_raw = io::GenericGaussianPointCloud::load(file)?;
-            self.pc = PointCloud::new(&self.wgpu_context.device, pc_raw)?;
+            self.pc = PointCloud::new(&self.device, &pc_raw)?;
         } else {
             return Err(anyhow::anyhow!("no pointcloud file path present"));
         }
@@ -320,10 +313,9 @@ impl WindowContext {
         if new_size.width > 0 && new_size.height > 0 {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
-            self.surface
-                .configure(&self.wgpu_context.device, &self.config);
+            self.surface.configure(&self.device, &self.config);
             self.display
-                .resize(&self.wgpu_context.device, new_size.width, new_size.height);
+                .resize(&self.device, new_size.width, new_size.height);
             self.splatting_args
                 .camera
                 .projection
@@ -352,7 +344,7 @@ impl WindowContext {
     }
 
     /// returns whether the sceen changed and we need a redraw
-    fn update(&mut self, dt: Duration)  {
+    fn update(&mut self, dt: Duration) {
         // ema fps update
 
         if self.splatting_args.walltime < Duration::from_secs(5) {
@@ -417,18 +409,17 @@ impl WindowContext {
         let view_srgb = output.texture.create_view(&Default::default());
         // do prepare stuff
 
-        let mut encoder =
-            self.wgpu_context
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("render command encoder"),
-                });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("render command encoder"),
+            });
 
         if redraw_scene {
             self.renderer.prepare(
                 &mut encoder,
-                &self.wgpu_context.device,
-                &self.wgpu_context.queue,
+                &self.device,
+                &self.queue,
                 &self.pc,
                 self.splatting_args,
                 (&mut self.stopwatch).into(),
@@ -442,8 +433,8 @@ impl WindowContext {
                     height: output.texture.size().height,
                 },
                 self.scale_factor,
-                &self.wgpu_context.device,
-                &self.wgpu_context.queue,
+                &self.device,
+                &self.queue,
                 &mut encoder,
                 shapes,
             )
@@ -481,25 +472,27 @@ impl WindowContext {
         self.stopwatch.as_mut().map(|s| s.end(&mut encoder));
 
         if let Some(state) = &ui_state {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("render pass ui"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view_srgb,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
+            let mut render_pass = encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("render pass ui"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view_srgb,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                })
+                .forget_lifetime();
             self.ui_renderer.render(&mut render_pass, state);
         }
 
         if let Some(ui_state) = ui_state {
             self.ui_renderer.cleanup(ui_state)
         }
-        self.wgpu_context.queue.submit([encoder.finish()]);
+        self.queue.submit([encoder.finish()]);
 
         output.present();
         self.splatting_args.resolution = Vector2::new(self.config.width, self.config.height);
@@ -525,42 +518,6 @@ impl WindowContext {
                 .cameras(Some(Split::Test))
                 .clone();
         }
-    }
-
-    fn set_env_map<P: AsRef<Path>>(&mut self, path: P) -> anyhow::Result<()> {
-        let env_map_exr = image::open(path)?;
-        let env_map_data: Vec<[f32; 4]> = env_map_exr
-            .as_rgb32f()
-            .ok_or(anyhow::anyhow!("env map must be rgb"))?
-            .pixels()
-            .map(|p| p.to_rgba().0)
-            .collect();
-
-        let env_texture = self.wgpu_context.device.create_texture_with_data(
-            &self.wgpu_context.queue,
-            &wgpu::TextureDescriptor {
-                label: Some("env map texture"),
-                size: Extent3d {
-                    width: env_map_exr.width(),
-                    height: env_map_exr.height(),
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba32Float,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            },
-            wgpu::util::TextureDataOrder::LayerMajor,
-            bytemuck::cast_slice(&env_map_data.as_slice()),
-        );
-        self.display.set_env_map(
-            &self.wgpu_context.device,
-            Some(&env_texture.create_view(&Default::default())),
-        );
-        self.splatting_args.show_env_map = true;
-        Ok(())
     }
 
     fn start_tracking_shot(&mut self) {
@@ -646,15 +603,222 @@ impl WindowContext {
             Split::Test,
         ));
     }
+
+    fn window_event(
+        &mut self,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        event: WindowEvent,
+    ) {
+        if self.ui_visible && self.ui_renderer.on_event(&self.window, &event) {
+            return;
+        }
+        match event {
+            WindowEvent::Resized(physical_size) => {
+                self.resize(physical_size, None);
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.scale_factor = scale_factor as f32;
+            }
+            WindowEvent::CloseRequested => {
+                log::info!("close!");
+                event_loop.exit()
+            }
+            WindowEvent::ModifiersChanged(m) => {
+                self.controller.alt_pressed = m.state().alt_key();
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if let PhysicalKey::Code(key) = event.physical_key {
+                    if event.state == ElementState::Released {
+                        if key == KeyCode::KeyT {
+                            if self.animation.is_none() {
+                                self.start_tracking_shot();
+                            } else {
+                                self.stop_animation()
+                            }
+                        } else if key == KeyCode::KeyU {
+                            self.ui_visible = !self.ui_visible;
+                        } else if key == KeyCode::KeyC {
+                            self.save_view();
+                        } else if key == KeyCode::KeyR && self.controller.alt_pressed {
+                            if let Err(err) = self.reload() {
+                                log::error!("failed to reload volume: {:?}", err);
+                            }
+                        } else if let Some(scene) = &self.scene {
+                            let new_camera = if let Some(num) = key_to_num(key) {
+                                Some(num as usize)
+                            } else if key == KeyCode::KeyR {
+                                Some(rand::random::<usize>() % scene.num_cameras())
+                            } else if key == KeyCode::KeyN {
+                                scene.nearest_camera(self.splatting_args.camera.position, None)
+                            } else if key == KeyCode::PageUp {
+                                Some(self.current_view.map_or(0, |v| v + 1) % scene.num_cameras())
+                            } else if key == KeyCode::KeyT {
+                                Some(self.current_view.map_or(0, |v| v + 1) % scene.num_cameras())
+                            } else if key == KeyCode::PageDown {
+                                Some(self.current_view.map_or(0, |v| v - 1) % scene.num_cameras())
+                            } else {
+                                None
+                            };
+
+                            if let Some(new_camera) = new_camera {
+                                self.set_scene_camera(new_camera);
+                            }
+                        }
+                    }
+                    self.controller
+                        .process_keyboard(key, event.state == ElementState::Pressed);
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, dy) => {
+                    self.controller.process_scroll(dy)
+                }
+                winit::event::MouseScrollDelta::PixelDelta(p) => {
+                    self.controller.process_scroll(p.y as f32 / 100.)
+                }
+            },
+
+            WindowEvent::MouseInput {
+                state: button_self,
+                button,
+                ..
+            } => match button {
+                winit::event::MouseButton::Left => {
+                    self.controller.left_mouse_pressed = button_self == ElementState::Pressed
+                }
+                winit::event::MouseButton::Right => {
+                    self.controller.right_mouse_pressed = button_self == ElementState::Pressed
+                }
+                _ => {}
+            },
+            WindowEvent::RedrawRequested => {
+                if !self.vsync {
+                    // make sure the next redraw is called with a small delay
+                    event_loop.set_control_flow(ControlFlow::wait_duration(self.min_wait));
+                }
+                let now = Instant::now();
+                let dt = now - self.last_draw;
+                self.last_draw = now;
+
+                let old_settings = self.splatting_args.clone();
+                self.update(dt);
+
+                let (redraw_ui, shapes) = self.ui();
+
+                let resolution_change = self.splatting_args.resolution
+                    != Vector2::new(self.config.width, self.config.height);
+
+                let request_redraw = old_settings != self.splatting_args || resolution_change;
+
+                if request_redraw || redraw_ui {
+                    self.fps = (1. / dt.as_secs_f32()) * 0.05 + self.fps * 0.95;
+                    match self.render(request_redraw, self.ui_visible.then_some(shapes)) {
+                        Ok(_) => {}
+                        // Reconfigure the surface if lost
+                        Err(wgpu::SurfaceError::Lost) => {
+                            self.resize(self.window.inner_size(), None)
+                        }
+                        // The system is out of memory, we should probably quit
+                        Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
+                        // All other errors (Outdated, Timeout) should be resolved by the next frame
+                        Err(e) => println!("error: {:?}", e),
+                    }
+                }
+                if self.vsync {
+                    self.window.request_redraw();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl ApplicationHandler<()> for Application {
+    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        let window_attributes = Window::default_attributes().with_inner_size(LogicalSize::new(800, 600)).with_title(format!(
+            "{} ({})",
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION")
+        ));
+        let window = event_loop.create_window(window_attributes).unwrap();
+
+        let mut state = pollster::block_on(WebSplat::new(
+            window,
+            &self.pc,
+            &RenderConfig {
+                no_vsync: self.config.no_vsync,
+                hdr: self.config.hdr,
+            },
+        ))
+        .unwrap();
+        // state.pointcloud_file_path = pointcloud_file_path;
+
+        if let Some(scene) = &self.scene {
+            state.set_scene(scene.clone());
+            state.set_scene_camera(0);
+            // state.scene_file_path = scene_file_path;
+        }
+
+        self.web_splat = Some(state);
+
+        if let Some(state) = self.web_splat.as_mut() {
+            state.window.request_redraw();
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        window_id: winit::window::WindowId,
+        event: WindowEvent,
+    ) {
+        if let Some(state) = self.web_splat.as_mut() {
+            if window_id == state.window.id() {
+                state.window_event(event_loop, event);
+            }
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &winit::event_loop::ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
+        event: DeviceEvent,
+    ) {
+        match event {
+            DeviceEvent::MouseMotion { delta } => self
+                .web_splat
+                .as_mut()
+                .unwrap()
+                .controller
+                .process_mouse(delta.0 as f32, delta.1 as f32),
+            _ => {}
+        }
+    }
+
+    fn new_events(
+        &mut self,
+        _event_loop: &winit::event_loop::ActiveEventLoop,
+        cause: winit::event::StartCause,
+    ) {
+        match cause {
+            winit::event::StartCause::ResumeTimeReached { .. } => {
+                if let Some(state) = self.web_splat.as_mut() {
+                    state.window.request_redraw();
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 pub fn smoothstep(x: f32) -> f32 {
     return x * x * (3.0 - 2.0 * x);
 }
 
-pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
-    file: R,
-    scene_file: Option<R>,
+pub async fn open_window(
+    mut file: Box<dyn Read>,
+    scene_file: Option<Box<dyn Read>>,
     config: RenderConfig,
     pointcloud_file_path: Option<PathBuf>,
     scene_file_path: Option<PathBuf>,
@@ -671,22 +835,9 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
         }
     });
 
-    let window_size = if let Some(scene) = &scene {
-        let camera = scene.camera(0).unwrap();
-        let factor = 1200. / camera.width as f32;
-        PhysicalSize::new(
-            (camera.width as f32 * factor) as u32,
-            (camera.height as f32 * factor) as u32,
-        )
-    } else {
-        PhysicalSize::new(800, 600)
-    };
-
-    let window = WindowBuilder::new()
-        .with_title("web-splats")
-        .with_inner_size(window_size)
-        .build(&event_loop)
-        .unwrap();
+    let mut data = Vec::new();
+    file.read_to_end(&mut data).unwrap();
+    let pc = io::GenericGaussianPointCloud::load(Cursor::new(data)).unwrap();
 
     #[cfg(target_arch = "wasm32")]
     {
@@ -713,29 +864,13 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
             .expect("couldn't append canvas to document body");
     }
 
+    let mut app = Application {
+        web_splat: None,
+        pc,
+        scene,
+        config,
+    };
     // limit the redraw rate to the monitor refresh rate
-    let min_wait = window
-        .current_monitor()
-        .map(|m| {
-            let hz = m.refresh_rate_millihertz().unwrap_or(60_000);
-            Duration::from_millis(1000000 / hz as u64)
-        })
-        .unwrap_or(Duration::from_millis(17));
-
-    let mut state = WindowContext::new(window, file, &config).await.unwrap();
-    state.pointcloud_file_path = pointcloud_file_path;
-
-    if let Some(scene) = scene {
-        state.set_scene(scene);
-        state.set_scene_camera(0);
-        state.scene_file_path = scene_file_path;
-    }
-
-    if let Some(skybox) = &config.skybox {
-        if let Err(e) = state.set_env_map(skybox.as_path()) {
-            log::error!("failed do set skybox: {e}");
-        }
-    }
 
     #[cfg(target_arch = "wasm32")]
     web_sys::window()
@@ -748,141 +883,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
             doc.body()
         });
 
-    let mut last = Instant::now();
-
-    event_loop.run(move |event,target| 
-        
-        match event {
-            Event::NewEvents(e) =>  match e{
-                winit::event::StartCause::ResumeTimeReached { .. }=>{
-                    state.window.request_redraw();
-                }
-                _=>{}
-            },
-        Event::WindowEvent {
-            ref event,
-            window_id,
-        } if window_id == state.window.id() && !state.ui_renderer.on_event(&state.window,event) => match event {
-            WindowEvent::Resized(physical_size) => {
-                state.resize(*physical_size, None);
-            }
-            WindowEvent::ScaleFactorChanged {
-                scale_factor,
-                ..
-            } => {
-                state.scale_factor = *scale_factor as f32;
-            }
-            WindowEvent::CloseRequested => {log::info!("close!");target.exit()},
-            WindowEvent::ModifiersChanged(m)=>{
-                state.controller.alt_pressed = m.state().alt_key();
-            }
-            WindowEvent::KeyboardInput { event, .. } => {
-                if let PhysicalKey::Code(key) = event.physical_key{
-                if event.state == ElementState::Released{
-
-                    if key == KeyCode::KeyT{
-                        if state.animation.is_none(){
-                            state.start_tracking_shot();
-                        }else{
-                            state.stop_animation()
-                        }
-                    }else if key == KeyCode::KeyU{
-                        state.ui_visible = !state.ui_visible;
-                        
-                    }else if key == KeyCode::KeyC{
-                        state.save_view();
-                    } else  if key == KeyCode::KeyR && state.controller.alt_pressed{
-                        if let Err(err) = state.reload(){
-                            log::error!("failed to reload volume: {:?}", err);
-                        }   
-                    }else if let Some(scene) = &state.scene{
-
-                        let new_camera = 
-                        if let Some(num) = key_to_num(key){
-                            Some(num as usize)
-                        }
-                        else if key == KeyCode::KeyR{
-                            Some(rand::random::<usize>()%scene.num_cameras())
-                        }else if key == KeyCode::KeyN{
-                            scene.nearest_camera(state.splatting_args.camera.position,None)
-                        }else if key == KeyCode::PageUp{
-                            Some(state.current_view.map_or(0, |v|v+1) % scene.num_cameras())
-                        }else if key == KeyCode::KeyT{
-                            Some(state.current_view.map_or(0, |v|v+1) % scene.num_cameras())
-                        }
-                        else if key == KeyCode::PageDown{
-                            Some(state.current_view.map_or(0, |v|v-1) % scene.num_cameras())
-                        }else{None};
-
-                        if let Some(new_camera) = new_camera{
-                            state.set_scene_camera(new_camera);
-                        }
-                    }
-                }
-                state
-                    .controller
-                    .process_keyboard(key, event.state == ElementState::Pressed);
-            }
-            }
-            WindowEvent::MouseWheel { delta, .. } => match delta {
-                winit::event::MouseScrollDelta::LineDelta(_, dy) => {
-                    state.controller.process_scroll(*dy )
-                }
-                winit::event::MouseScrollDelta::PixelDelta(p) => {
-                    state.controller.process_scroll(p.y as f32 / 100.)
-                }
-            },
-            WindowEvent::MouseInput { state:button_state, button, .. }=>{
-                match button {
-                    winit::event::MouseButton::Left =>                         state.controller.left_mouse_pressed = *button_state == ElementState::Pressed,
-                    winit::event::MouseButton::Right => state.controller.right_mouse_pressed = *button_state == ElementState::Pressed,
-                    _=>{}
-                }
-            }
-            WindowEvent::RedrawRequested => {
-                if !config.no_vsync{
-                    // make sure the next redraw is called with a small delay
-                    target.set_control_flow(ControlFlow::wait_duration(min_wait));
-                }
-                let now = Instant::now();
-                let dt = now-last;
-                last = now;
-
-                let old_settings = state.splatting_args.clone();
-                state.update(dt);
-
-                let (redraw_ui,shapes) = state.ui();
-
-                let resolution_change = state.splatting_args.resolution != Vector2::new(state.config.width, state.config.height);
-
-                let request_redraw = old_settings != state.splatting_args || resolution_change;
-    
-                if request_redraw || redraw_ui{
-                    state.fps = (1. / dt.as_secs_f32()) * 0.05 + state.fps * 0.95;
-                    match state.render(request_redraw,state.ui_visible.then_some(shapes)) {
-                        Ok(_) => {}
-                        // Reconfigure the surface if lost
-                        Err(wgpu::SurfaceError::Lost) => state.resize(state.window.inner_size(), None),
-                        // The system is out of memory, we should probably quit
-                        Err(wgpu::SurfaceError::OutOfMemory) =>target.exit(),
-                        // All other errors (Outdated, Timeout) should be resolved by the next frame
-                        Err(e) => println!("error: {:?}", e),
-                    }
-                }
-                if config.no_vsync{
-                    state.window.request_redraw();
-                }
-            }
-            _ => {}
-        },
-        Event::DeviceEvent {
-            event: DeviceEvent::MouseMotion{ delta, },
-            .. // We're not using device_id currently
-        } => {
-            state.controller.process_mouse(delta.0 as f32, delta.1 as f32)
-        }
-        _ => {},
-    }).unwrap();
+    event_loop.run_app(&mut app).unwrap();
 }
 
 #[cfg(target_arch = "wasm32")]

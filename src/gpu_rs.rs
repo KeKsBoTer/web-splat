@@ -63,67 +63,75 @@ unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
 impl GPURSSorter {
     // The new call also needs the queue to be able to determine the maximum subgroup size (Does so by running test runs)
     pub async fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+
+        
         let mut cur_sorter: GPURSSorter;
 
-        log::debug!("Searching for the maximum subgroup size (wgpu currently does not allow to query subgroup sizes)");
-        let sizes = vec![1, 8, 16, 32];
-        let mut cur_size = 2;
-        enum State {
-            Init,
-            Increasing,
-            Decreasing,
-        }
         let mut biggest_that_worked = 0;
-        let mut s = State::Init;
-        loop {
-            if cur_size >= sizes.len() {
-                break;
+        if device.limits().min_subgroup_size > 0 && device.limits().min_subgroup_size < 256{
+            biggest_that_worked = device.limits().min_subgroup_size as i32;
+        }else{
+
+            log::debug!("Searching for the maximum subgroup size (wgpu currently does not allow to query subgroup sizes)");
+            let sizes = vec![1, 8, 16, 32];
+            let mut cur_size = 2;
+            enum State {
+                Init,
+                Increasing,
+                Decreasing,
             }
-            log::debug!("Checking sorting with subgroupsize {}", sizes[cur_size]);
-            cur_sorter = Self::new_with_sg_size(device, sizes[cur_size]);
-            let sort_success = cur_sorter.test_sort(device, queue).await;
-            log::debug!("{} worked: {}", sizes[cur_size], sort_success);
-            match s {
-                State::Init => {
-                    if sort_success {
-                        biggest_that_worked = sizes[cur_size];
-                        s = State::Increasing;
-                        cur_size += 1;
-                    } else {
-                        s = State::Decreasing;
-                        cur_size -= 1;
-                    }
+            let mut s = State::Init;
+            loop {
+                if cur_size >= sizes.len() {
+                    break;
                 }
-                State::Increasing => {
-                    if sort_success {
-                        if sizes[cur_size] > biggest_that_worked {
+                log::debug!("Checking sorting with subgroupsize {}", sizes[cur_size]);
+                cur_sorter = Self::new_with_sg_size(device, sizes[cur_size]);
+                let sort_success = cur_sorter.test_sort(device, queue).await;
+                log::debug!("{} worked: {}", sizes[cur_size], sort_success);
+                match s {
+                    State::Init => {
+                        if sort_success {
                             biggest_that_worked = sizes[cur_size];
+                            s = State::Increasing;
+                            cur_size += 1;
+                        } else {
+                            s = State::Decreasing;
+                            cur_size -= 1;
                         }
-                        cur_size += 1;
-                    } else {
-                        break;
                     }
-                }
-                State::Decreasing => {
-                    if sort_success {
-                        if sizes[cur_size] > biggest_that_worked {
-                            biggest_that_worked = sizes[cur_size];
+                    State::Increasing => {
+                        if sort_success {
+                            if sizes[cur_size] > biggest_that_worked {
+                                biggest_that_worked = sizes[cur_size];
+                            }
+                            cur_size += 1;
+                        } else {
+                            break;
                         }
-                        break;
-                    } else {
-                        cur_size -= 1;
+                    }
+                    State::Decreasing => {
+                        if sort_success {
+                            if sizes[cur_size] > biggest_that_worked {
+                                biggest_that_worked = sizes[cur_size];
+                            }
+                            break;
+                        } else {
+                            cur_size -= 1;
+                        }
                     }
                 }
             }
-        }
-        if biggest_that_worked == 0 {
-            panic!(
-                "GPURSSorter::new() No workgroup size that works was found. Unable to use sorter"
-            );
+            if biggest_that_worked == 0 {
+                panic!(
+                    "GPURSSorter::new() No workgroup size that works was found. Unable to use sorter"
+                );
+            }
+
         }
         cur_sorter = Self::new_with_sg_size(device, biggest_that_worked);
         log::info!(
-            "Created a sorter with subgroup size {}\n",
+            "Created a sorter with subgroup size {}",
             cur_sorter.subgroup_size
         );
         return cur_sorter;
@@ -235,6 +243,7 @@ impl GPURSSorter {
             module: &shader,
             entry_point: "zero_histograms",
             compilation_options: Default::default(),
+            cache: None,
         });
         let histogram_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("calculate_histogram"),
@@ -242,6 +251,7 @@ impl GPURSSorter {
             module: &shader,
             entry_point: "calculate_histogram",
             compilation_options: Default::default(),
+            cache: None,
         });
         let prefix_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("prefix_histogram"),
@@ -249,6 +259,7 @@ impl GPURSSorter {
             module: &shader,
             entry_point: "prefix_histogram",
             compilation_options: Default::default(),
+            cache: None,
         });
         let scatter_even_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("scatter_even"),
@@ -256,6 +267,7 @@ impl GPURSSorter {
             module: &shader,
             entry_point: "scatter_even",
             compilation_options: Default::default(),
+            cache: None,
         });
         let scatter_odd_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("scatter_odd"),
@@ -263,6 +275,7 @@ impl GPURSSorter {
             module: &shader,
             entry_point: "scatter_odd",
             compilation_options: Default::default(),
+            cache: None,
         });
 
         return Self {

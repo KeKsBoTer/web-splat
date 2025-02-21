@@ -8,31 +8,33 @@ description = "3D Gaussian Splatting Viewer"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-wgpu = { version = "0.20.1" }
-winit = "0.29.14"
+wgpu = { version = "22.1" }
+winit = "0.30.5"
 cgmath = { version = "0.18.0", features = [
     "bytemuck",
 ], git = 'https://github.com/rustgd/cgmath' }
 env_logger = "0.11"
-clap = { version = "4.5.2", features = ["derive"] }
-bytemuck = { version = "1.14.3", features = ["derive"] }
-anyhow = "1.0.81"
+clap = { version = "4.5", features = ["derive"] }
+bytemuck = { version = "1.14", features = ["derive"] }
+anyhow = "1.0"
 ply-rs = "0.1.3"
 byteorder = "1.5.0"
-serde_json = "1.0.114"
+serde_json = "1.0"
 serde = { version = "1.0.188", features = ["derive"] }
-num-traits = "0.2.18"
-half = { version = "2.4.0", features = ["bytemuck", "num-traits"] }
-log = "0.4.21"
+num-traits = "0.2.19"
+half = { version = "2.4.1", features = ["bytemuck", "num-traits"] }
+log = "0.4.22"
 rayon = "1.9.0"
-image = "0.25.0"
+image = "0.25"
 indicatif = "0.17.8"
+ssh2 = {version="0.9.5",optional = true}
+url = {version="2.5"}
+ehttp = {version="0.5.0",features = ["native-async"],optional = true}
 
-
-egui = "0.28.1"
-egui-wgpu = "0.28.1"
-egui-winit = { version = "0.28.1", features = [], default-features = false }
-egui_plot = "0.28.1"
+egui = {version = "0.29"}
+egui-wgpu = {version = "0.29"}
+egui-winit = { version = "0.29", features = [], default-features = false  }
+egui_plot = {version = "0.29"}
 egui_dnd = "0.9.1"
 
 rand = "0.8.5"
@@ -43,7 +45,7 @@ splines = { version = "4.3.1", features = [
 ], git = "https://github.com/KeKsBoTer/splines" }
 
 [dev-dependencies]
-wasm-bindgen-cli = "0.2.92"
+wasm-bindgen-cli = "0.2.93"
 
 [lib]
 path = "src/lib.rs"
@@ -59,6 +61,8 @@ required-features = ["video"]
 [features]
 npz = ["dep:npyz"]
 video = []
+ssh = ["dep:ssh2"]
+http = ["dep:ehttp"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = { version = "0.3.0", features = ["macro"] }

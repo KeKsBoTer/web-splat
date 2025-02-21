@@ -1,11 +1,10 @@
-use anyhow::Ok;
 use half::f16;
 use ply_rs::ply;
 
 use std::io::{self, BufReader, Read, Seek};
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt};
-use cgmath::{InnerSpace, Point3, Quaternion, Vector3};
+use cgmath::{Array, InnerSpace, Point3, Quaternion, Vector3};
 
 use crate::{
     pointcloud::Gaussian,
@@ -89,6 +88,10 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
 
         let cov = build_cov(rot, scale);
 
+        if !Point3::from(pos).is_finite() {
+            return Err(anyhow::anyhow!("nan value in ply file"));
+        }
+
         return Ok((
             Gaussian {
                 xyz: Point3::from(pos).cast().unwrap(),
@@ -125,7 +128,7 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
             .comments
             .iter()
             .find(|c| c.contains("mip"))
-            .map(|c| c.split('=').last().unwrap().parse::<bool>())
+            .map(|c| c.split('=').last().unwrap().to_lowercase().parse::<bool>())
             .transpose()?)
     }
     fn kernel_size(header: &ply::Header) -> Result<Option<f32>, anyhow::Error> {
@@ -169,16 +172,30 @@ impl<R: io::Read + io::Seek> PointCloudReader for PlyReader<R> {
             ply_rs::ply::Encoding::Ascii => todo!("acsii ply format not supported"),
             ply_rs::ply::Encoding::BinaryBigEndian => {
                 for _ in 0..self.num_points {
-                    let (g, s) = self.read_line::<BigEndian>(self.sh_deg as usize)?;
-                    gaussians.push(g);
-                    sh_coefs.push(s);
+                    match self.read_line::<BigEndian>(self.sh_deg as usize) {
+                        Ok((g, s)) => {
+                            gaussians.push(g);
+                            sh_coefs.push(s);
+                        }
+                        Err(e) => {
+                            log::warn!("error reading line: {}", e);
+                            break;
+                        }
+                    }
                 }
             }
             ply_rs::ply::Encoding::BinaryLittleEndian => {
                 for _ in 0..self.num_points {
-                    let (g, s) = self.read_line::<LittleEndian>(self.sh_deg as usize)?;
-                    gaussians.push(g);
-                    sh_coefs.push(s);
+                    match self.read_line::<LittleEndian>(self.sh_deg as usize) {
+                        Ok((g, s)) => {
+                            gaussians.push(g);
+                            sh_coefs.push(s);
+                        }
+                        Err(e) => {
+                            log::warn!("error reading line: {}", e);
+                            break;
+                        }
+                    }
                 }
             }
         };

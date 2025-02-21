@@ -9,7 +9,6 @@ use std::{
 #[allow(unused_imports)]
 use web_splats::{
     io, GaussianRenderer, PerspectiveCamera, PointCloud, Scene, SceneCamera, SplattingArgs, Split,
-    WGPUContext,
 };
 
 #[derive(Debug, Parser)]
@@ -66,13 +65,14 @@ async fn render_views(
             viewport: resolution,
             gaussian_scaling: 1.,
             max_sh_deg: pc.sh_deg(),
-            show_env_map: false,
             mip_splatting: None,
             kernel_size: None,
             clipping_box: None,
             walltime: Duration::from_secs(100),
             scene_center: None,
             scene_extend: None,
+            background_color: wgpu::Color::BLACK,
+            resolution,
         },
         &mut None,
     );
@@ -114,13 +114,14 @@ async fn render_views(
                     viewport: resolution,
                     gaussian_scaling: 1.,
                     max_sh_deg: pc.sh_deg(),
-                    show_env_map: false,
                     mip_splatting: None,
                     kernel_size: None,
                     clipping_box: None,
                     walltime: Duration::from_secs(100),
                     scene_center: None,
                     scene_extend: None,
+                    background_color: wgpu::Color::BLACK,
+                    resolution,
                 },
                 &mut None,
             );
@@ -156,6 +157,8 @@ async fn render_views(
 #[cfg(not(target_arch = "wasm32"))]
 #[pollster::main]
 async fn main() {
+    use web_splats::new_wgpu_context;
+
     #[cfg(not(target_arch = "wasm32"))]
     env_logger::init();
     let opt = Opt::parse();
@@ -166,9 +169,8 @@ async fn main() {
 
     let scene = Scene::from_json(scene_file).unwrap();
 
-    let wgpu_context = WGPUContext::new_instance().await;
-    let device = &wgpu_context.device;
-    let queue = &wgpu_context.queue;
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+    let (device,queue,_) =new_wgpu_context(&instance, None).await;
 
     println!("reading point cloud file '{}'", opt.input.to_string_lossy());
 
@@ -176,11 +178,11 @@ async fn main() {
     let mut reader = std::io::BufReader::new(file);
 
     let pc_raw = io::GenericGaussianPointCloud::load(&mut reader).unwrap();
-    let pc = PointCloud::new(&device, pc_raw).unwrap();
+    let pc = PointCloud::new(&device, &pc_raw).unwrap();
 
     let mut renderer = GaussianRenderer::new(
-        device,
-        queue,
+        &device,
+        &queue,
         wgpu::TextureFormat::Rgba8Unorm,
         pc.sh_deg(),
         pc.compressed(),
@@ -188,8 +190,8 @@ async fn main() {
     .await;
 
     render_views(
-        device,
-        queue,
+        &device,
+        &queue,
         &mut renderer,
         &pc,
         scene.cameras(Some(Split::Train)),

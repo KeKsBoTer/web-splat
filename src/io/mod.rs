@@ -16,6 +16,8 @@ use self::ply::PlyReader;
 #[cfg(feature = "npz")]
 pub mod npz;
 pub mod ply;
+mod loader;
+pub use loader::read_from_url;
 
 pub trait PointCloudReader {
     fn read(&mut self) -> Result<GenericGaussianPointCloud, anyhow::Error>;
@@ -24,6 +26,7 @@ pub trait PointCloudReader {
     fn file_ending() -> &'static str;
 }
 
+#[derive(Clone)]
 pub struct GenericGaussianPointCloud {
     gaussians: Vec<u8>,
     sh_coefs: Vec<u8>,
@@ -73,7 +76,9 @@ impl GenericGaussianPointCloud {
     ) -> Self {
         let mut bbox: Aabb<f32> = Aabb::zeroed();
         for v in &gaussians {
-            bbox.grow(&v.xyz.map(|x| x.to_f32()));
+            if v.xyz.is_finite() {
+                bbox.grow(&v.xyz.map(|x| x.to_f32()));
+            }
         }
 
         let (center, mut up) = plane_from_points(

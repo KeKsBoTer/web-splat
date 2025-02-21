@@ -9,8 +9,7 @@ use std::{
     time::Duration,
 };
 use web_splats::{
-    io, smoothstep, Animation, GaussianRenderer, PointCloud, Scene, SceneCamera, SplattingArgs,
-    TrackingShot, WGPUContext,
+    io, new_wgpu_context, smoothstep, Animation, GaussianRenderer, PointCloud, Scene, SceneCamera, SplattingArgs, TrackingShot
 };
 
 #[derive(Debug, Parser)]
@@ -122,13 +121,14 @@ async fn render_tracking_shot(
                 viewport: resolution,
                 gaussian_scaling: 1.,
                 max_sh_deg: pc.sh_deg(),
-                show_env_map: false,
                 mip_splatting: None,
                 kernel_size: None,
                 clipping_box: None,
                 walltime: state_time,
                 scene_center: None,
                 scene_extend: None,
+                background_color: wgpu::Color::BLACK,
+                resolution,
             },
             &mut None,
         );
@@ -171,18 +171,16 @@ async fn main() {
     let scene_file = File::open(opt.scene).unwrap();
 
     let scene = Scene::from_json(scene_file).unwrap();
-
-    let wgpu_context = WGPUContext::new_instance().await;
-    let device = &wgpu_context.device;
-    let queue = &wgpu_context.queue;
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+    let (device,queue,_) = new_wgpu_context(&instance, None).await;
 
     println!("reading point cloud file '{}'", opt.input.to_string_lossy());
     let pc_raw = io::GenericGaussianPointCloud::load(&mut ply_file).unwrap();
-    let pc = PointCloud::new(device, pc_raw).unwrap();
+    let pc = PointCloud::new(&device, &pc_raw).unwrap();
 
     let mut renderer = GaussianRenderer::new(
-        device,
-        queue,
+        &device,
+        &queue,
         wgpu::TextureFormat::Rgba32Float,
         pc.sh_deg(),
         pc.compressed(),
@@ -190,8 +188,8 @@ async fn main() {
     .await;
 
     render_tracking_shot(
-        device,
-        queue,
+        &device,
+        &queue,
         &mut renderer,
         pc,
         scene.cameras(None),

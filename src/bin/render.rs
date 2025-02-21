@@ -1,14 +1,15 @@
-use cgmath::Vector2;
+use cgmath::{Vector2, Vector4};
 use clap::Parser;
 use half::f16;
 use image::{ImageBuffer, Rgba};
 use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
+use wgpu::Color;
 #[allow(unused_imports)]
 use std::{fs::File, path::PathBuf, time::Duration};
 #[allow(unused_imports)]
 use web_splats::{
     io::GenericGaussianPointCloud, GaussianRenderer, PerspectiveCamera, PointCloud, Scene,
-    SceneCamera, SplattingArgs, Split, WGPUContext,
+    SceneCamera, SplattingArgs, Split, 
 };
 
 #[derive(Debug, Parser)]
@@ -94,13 +95,15 @@ async fn render_views(
                 viewport: resolution,
                 gaussian_scaling: 1.,
                 max_sh_deg: pc.sh_deg(),
-                show_env_map: false,
                 mip_splatting: None,
                 kernel_size: None,
                 clipping_box: None,
                 walltime: Duration::from_secs(100),
                 scene_center: None,
                 scene_extend: None,
+                background_color: Color::TRANSPARENT,
+                resolution,
+                
             },
             &mut None,
         );
@@ -130,6 +133,8 @@ async fn render_views(
 #[cfg(not(target_arch = "wasm32"))]
 #[pollster::main]
 async fn main() {
+    use web_splats::new_wgpu_context;
+
     #[cfg(not(target_arch = "wasm32"))]
     env_logger::init();
     let opt = Opt::parse();
@@ -142,14 +147,12 @@ async fn main() {
 
     let scene = Scene::from_json(scene_file).unwrap();
 
-    let wgpu_context = WGPUContext::new_instance().await;
-    let device = &wgpu_context.device;
-    let queue = &wgpu_context.queue;
-
+    let instance = wgpu::Instance::new(Default::default());
+    let (device,queue,_) = new_wgpu_context(&instance,None).await;
     println!("reading point cloud file '{}'", opt.input.to_string_lossy());
 
     let pc_raw = GenericGaussianPointCloud::load(ply_file).unwrap();
-    let mut pc = PointCloud::new(&device, pc_raw).unwrap();
+    let mut pc = PointCloud::new(&device, &pc_raw).unwrap();
 
     let render_format = wgpu::TextureFormat::Rgba16Float;
 
@@ -157,8 +160,8 @@ async fn main() {
         GaussianRenderer::new(&device, &queue, render_format, pc.sh_deg(), pc.compressed()).await;
 
     render_views(
-        device,
-        queue,
+        &device,
+        &queue,
         &mut renderer,
         &mut pc,
         scene.cameras(Some(Split::Test)),
@@ -167,8 +170,8 @@ async fn main() {
     )
     .await;
     render_views(
-        device,
-        queue,
+        &device,
+        &queue,
         &mut renderer,
         &mut pc,
         scene.cameras(Some(Split::Train)),

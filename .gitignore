@@ -10,3 +10,7 @@ public/scenes
 videos/
 particle-data-RAW/
 *.exr
+data/
+public*/
+*.mp4
+*.mkv

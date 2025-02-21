@@ -81,7 +81,7 @@ impl Debug for PointCloud {
 impl PointCloud {
     pub fn new(
         device: &wgpu::Device,
-        pc: GenericGaussianPointCloud,
+        pc: &GenericGaussianPointCloud,
     ) -> Result<Self, anyhow::Error> {
         let splat_2d_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("2d gaussians buffer"),
