@@ -692,9 +692,10 @@ impl WebSplat {
                 _ => {}
             },
             WindowEvent::RedrawRequested => {
-                if !self.vsync {
+                if self.vsync {
                     // make sure the next redraw is called with a small delay
                     event_loop.set_control_flow(ControlFlow::wait_duration(self.min_wait));
+                    log::info!("redraw requested, {:?}",self.min_wait);
                 }
                 let now = Instant::now();
                 let dt = now - self.last_draw;
@@ -724,7 +725,7 @@ impl WebSplat {
                         Err(e) => println!("error: {:?}", e),
                     }
                 }
-                if self.vsync {
+                if !self.vsync {
                     self.window.request_redraw();
                 }
             }
@@ -803,6 +804,11 @@ impl ApplicationHandler<()> for Application {
     ) {
         match cause {
             winit::event::StartCause::ResumeTimeReached { .. } => {
+                if let Some(state) = self.web_splat.as_mut() {
+                    state.window.request_redraw();
+                }
+            }
+            winit::event::StartCause::WaitCancelled { .. }=>{
                 if let Some(state) = self.web_splat.as_mut() {
                     state.window.request_redraw();
                 }
