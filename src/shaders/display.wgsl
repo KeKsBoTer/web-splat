@@ -28,6 +28,16 @@ var<uniform> camera: CameraUniforms;
 @group(2) @binding(0)
 var<uniform> render_settings: RenderSettings;
 
+@group(3) @binding(0)
+var colorBuffer: texture_storage_2d<rgba8unorm, read_write>;
+@group(3) @binding(1)
+var gradientBuffer_x: texture_storage_2d<rgba16float, read_write>;
+@group(3) @binding(2)
+var gradientBuffer_y: texture_storage_2d<rgba16float, read_write>;
+@group(3) @binding(3)
+var gradientBuffer_xy: texture_storage_2d<rgba16float, read_write>;
+
+
 
 struct VertexOut {
     @builtin(position) pos: vec4<f32>,
@@ -50,5 +60,17 @@ fn vs_main(
 
 @fragment
 fn fs_main(vertex_in: VertexOut) -> @location(0) vec4<f32> {
-    return textureSample(source_img, texture_sampler, vertex_in.tex_coord);
+    // return textureLoad(colorBuffer, vec2<i32>(i32(vertex_in.pos.x),i32(vertex_in.pos.y)));
+    // return textureSample(source_img, texture_sampler, vertex_in.tex_coord);
+
+    let grad = textureLoad(gradientBuffer_x, vec2<i32>(i32(vertex_in.pos.x),i32(vertex_in.pos.y)));
+    // let color = mix(vec4<f32>(1.0, 0.0, 0.0, 1.0), vec4<f32>(0.0, 0.0, 1.0, 1.0), (grad.r+1.)/2.);
+    var color: vec4<f32>;
+    if grad.r < 0.0 {
+        color = mix(vec4<f32>(0.0, 0.0, 0.0, 1.0), vec4<f32>(1.0, 0.0, 0.0, 1.0), -grad.r*2.);
+    } else {
+        color = mix(vec4<f32>(0.0, 0.0, 0.0, 1.0), vec4<f32>(0.0, 0.0, 1.0, 1.0), grad.r*2.);
+    }
+
+    return color;
 }

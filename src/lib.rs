@@ -1,6 +1,6 @@
 #[cfg(target_arch = "wasm32")]
 use instant::{Duration, Instant};
-use renderer::Display;
+use renderer::{Display, FrameBuffer};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 use std::{
@@ -73,7 +73,9 @@ pub async fn new_wgpu_context(
     let required_features = wgpu::Features::TIMESTAMP_QUERY
         | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
         | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
-        | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+        | wgpu::Features::CLEAR_TEXTURE
+        | wgpu::Features::EXPERIMENTAL_FRAGMENT_SHADER_INTERLOCK;
 
     let adapter_limits = adapter.limits();
 
@@ -97,8 +99,8 @@ pub async fn new_wgpu_context(
                 },
                 label: None,
                 memory_hints: Default::default(),
+                trace: wgpu::Trace::Off,
             },
-            None,
         )
         .await
         .unwrap();
@@ -148,6 +150,8 @@ pub struct WebSplat {
     min_wait: Duration,
 
     vsync: bool,
+
+    frame_buffer: FrameBuffer
 }
 
 impl WebSplat {
@@ -163,7 +167,7 @@ impl WebSplat {
             size = PhysicalSize::new(800, 600);
         }
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
 
         let surface: wgpu::Surface = instance.create_surface(window.clone())?;
         let (device, queue, adapter) = new_wgpu_context(&instance, Some(&surface)).await;
@@ -191,7 +195,7 @@ impl WebSplat {
             format: surface_format,
             width: size.width,
             height: size.height,
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency:1,
             present_mode: if render_config.no_vsync {
                 wgpu::PresentMode::AutoNoVsync
             } else {
@@ -245,6 +249,8 @@ impl WebSplat {
 
         let last_draw = Instant::now();
 
+        let frame_buffer = FrameBuffer::new(&device, size.width, size.height, render_format);
+
         Ok(Self {
             device,
             queue,
@@ -288,6 +294,7 @@ impl WebSplat {
             last_draw,
             min_wait,
             vsync: !render_config.no_vsync,
+            frame_buffer
         })
     }
 
@@ -325,6 +332,7 @@ impl WebSplat {
                 .camera
                 .projection
                 .resize(new_size.width, new_size.height);
+            self.frame_buffer.resize(&self.device, new_size.width, new_size.height);
         }
         if let Some(scale_factor) = scale_factor {
             if scale_factor > 0. {
@@ -423,6 +431,7 @@ impl WebSplat {
                 &self.pc,
                 self.splatting_args,
                 (&mut self.stopwatch).into(),
+                &self.frame_buffer
             );
         }
 
@@ -456,7 +465,7 @@ impl WebSplat {
                 })],
                 ..Default::default()
             });
-            self.renderer.render(&mut render_pass, &self.pc);
+            self.renderer.render(&mut render_pass, &self.pc,&self.frame_buffer);
         }
         if let Some(stopwatch) = &mut self.stopwatch {
             stopwatch.stop(&mut encoder, "rasterization").unwrap();
@@ -468,6 +477,7 @@ impl WebSplat {
             self.splatting_args.background_color,
             self.renderer.camera(),
             &self.renderer.render_settings(),
+            &self.frame_buffer
         );
         self.stopwatch.as_mut().map(|s| s.end(&mut encoder));
 
@@ -692,11 +702,10 @@ impl WebSplat {
                 _ => {}
             },
             WindowEvent::RedrawRequested => {
-                if self.vsync {
-                    // make sure the next redraw is called with a small delay
-                    event_loop.set_control_flow(ControlFlow::wait_duration(self.min_wait));
-                    log::info!("redraw requested, {:?}",self.min_wait);
-                }
+                // if self.vsync {
+                //     // make sure the next redraw is called with a small delay
+                //     event_loop.set_control_flow(ControlFlow::wait_duration(self.min_wait));
+                // }
                 let now = Instant::now();
                 let dt = now - self.last_draw;
                 self.last_draw = now;
@@ -725,9 +734,9 @@ impl WebSplat {
                         Err(e) => println!("error: {:?}", e),
                     }
                 }
-                if !self.vsync {
+                // if !self.vsync {
                     self.window.request_redraw();
-                }
+                // }
             }
             _ => {}
         }

@@ -10,7 +10,8 @@ use crate::{
 use std::num::NonZeroU64;
 use std::time::Duration;
 
-use wgpu::{include_wgsl, Extent3d, MultisampleState};
+use egui::epaint::color;
+use wgpu::{include_wgsl, Device, Extent3d, MultisampleState};
 
 use cgmath::{EuclideanSpace, Matrix4, Point3, SquareMatrix, Vector2, Vector4};
 
@@ -42,6 +43,7 @@ impl GaussianRenderer {
             bind_group_layouts: &[
                 &PointCloud::bind_group_layout_render(device), // Needed for points_2d (on binding 2)
                 &GPURSSorter::bind_group_layout_rendering(device), // Needed for indices   (on binding 4)
+                &FrameBuffer::bind_group_layout(device, color_format), // Needed for color texture (on binding 2)
             ],
             push_constant_ranges: &[],
         });
@@ -53,16 +55,16 @@ impl GaussianRenderer {
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 buffers: &[],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: color_format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    blend: None,// Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
@@ -182,7 +184,7 @@ impl GaussianRenderer {
                     tx.send(num_points).unwrap();
                 },
             );
-            device.poll(wgpu::Maintain::Wait);
+            device.poll(wgpu::PollType::Wait);
             rx.receive().await.unwrap()
         };
         return n;
@@ -196,6 +198,7 @@ impl GaussianRenderer {
         pc: &PointCloud,
         render_settings: SplattingArgs,
         stopwatch: &mut Option<GPUStopwatch>,
+        frame_buffer: &FrameBuffer
     ) {
         if self.sorter_suff.is_none()
             || self
@@ -245,15 +248,19 @@ impl GaussianRenderer {
             std::mem::size_of::<u32>() as u64,
             std::mem::size_of::<u32>() as u64,
         );
+        frame_buffer.clear(encoder);
+        
     }
 
     pub fn render<'rpass>(
         &'rpass self,
         render_pass: &mut wgpu::RenderPass<'rpass>,
         pc: &'rpass PointCloud,
+        frame_buffer: &FrameBuffer,
     ) {
         render_pass.set_bind_group(0, pc.render_bind_group(), &[]);
         render_pass.set_bind_group(1, &self.sorter_suff.as_ref().unwrap().sorter_render_bg, &[]);
+        render_pass.set_bind_group(2, frame_buffer.bind_group(), &[]);
         render_pass.set_pipeline(&self.pipeline);
 
         render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
@@ -369,7 +376,7 @@ impl PreprocessPipeline {
             label: Some("preprocess pipeline"),
             layout: Some(&pipeline_layout),
             module: &shader,
-            entry_point: "preprocess",
+            entry_point: Some("preprocess"),
             compilation_options: Default::default(),
             cache: None,
         });
@@ -406,7 +413,7 @@ impl PreprocessPipeline {
         pass.set_pipeline(&self.0);
         pass.set_bind_group(0, camera.bind_group(), &[]);
         pass.set_bind_group(1, pc.bind_group(), &[]);
-        pass.set_bind_group(2, &sort_bg, &[]);
+        pass.set_bind_group(2, sort_bg, &[]);
         pass.set_bind_group(3, render_settings.bind_group(), &[]);
 
         let wgs_x = (pc.num_points() as f32 / 256.0).ceil() as u32;
@@ -435,6 +442,7 @@ impl Display {
                 &Self::bind_group_layout(device),
                 &UniformBuffer::<CameraUniform>::bind_group_layout(device),
                 &UniformBuffer::<SplattingArgsUniform>::bind_group_layout(device),
+                &FrameBuffer::bind_group_layout(device, source_format)
             ],
             push_constant_ranges: &[],
         });
@@ -444,7 +452,7 @@ impl Display {
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 buffers: &[],
                 compilation_options: Default::default(),
             },
@@ -456,10 +464,10 @@ impl Display {
             multisample: MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: target_format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    blend: None, //Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
@@ -560,6 +568,7 @@ impl Display {
         background_color: wgpu::Color,
         camera: &UniformBuffer<CameraUniform>,
         render_settings: &UniformBuffer<SplattingArgsUniform>,
+        frame_buffer: &FrameBuffer,
     ) {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("render pass"),
@@ -576,6 +585,7 @@ impl Display {
         render_pass.set_bind_group(0, &self.bind_group, &[]);
         render_pass.set_bind_group(1, camera.bind_group(), &[]);
         render_pass.set_bind_group(2, render_settings.bind_group(), &[]);
+        render_pass.set_bind_group(3, frame_buffer.bind_group(), &[]);
         render_pass.set_pipeline(&self.pipeline);
 
         render_pass.draw(0..4, 0..1);
@@ -609,10 +619,10 @@ pub struct SplattingArgsUniform {
     max_sh_deg: u32,
     mip_splatting: u32,
     kernel_size: f32,
-    
+
     walltime: f32,
     scene_extend: f32,
-    _pad: [u32;2],
+    _pad: [u32; 2],
     scene_center: Vector4<f32>,
 }
 
@@ -668,6 +678,167 @@ impl Default for SplattingArgsUniform {
             scene_center: Vector4::new(0., 0., 0., 0.),
             scene_extend: 1.,
             _pad: [0; 2],
+        }
+    }
+}
+
+pub struct FrameBuffer {
+    color_texture: wgpu::Texture,
+    gradient_textures: [wgpu::Texture;3],
+    bind_group: wgpu::BindGroup,
+}
+
+impl FrameBuffer {
+
+    const GRADIENT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+    pub fn new(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        color_format: wgpu::TextureFormat,
+    ) -> Self {
+        let (color_texture, gradient_textures, bind_group) =
+            Self::create_textures(device, width, height, color_format);
+        Self {
+            color_texture,
+            gradient_textures,
+            bind_group,
+        }
+    }
+
+    fn create_textures(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        color_format: wgpu::TextureFormat,
+    ) -> (wgpu::Texture,[wgpu::Texture;3],wgpu::BindGroup) {
+        let color_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("color texture"),
+            size: Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: color_format,
+            usage: wgpu::TextureUsages::STORAGE_BINDING,
+            view_formats: &[color_format],
+        });
+
+        let gradient_textures:[wgpu::Texture;3] = [0,1,2].map(|_|device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("gradient texture"),
+            size: Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: Self::GRADIENT_FORMAT,
+            usage: wgpu::TextureUsages::STORAGE_BINDING,
+            view_formats: &[],
+        }));
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("frame buffer bind group"),
+            layout: &Self::bind_group_layout(device,color_format),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(
+                        &color_texture.create_view(&Default::default()),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(
+                        &gradient_textures[0].create_view(&Default::default()),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(
+                        &gradient_textures[1].create_view(&Default::default()),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(
+                        &gradient_textures[2].create_view(&Default::default()),
+                    ),
+                },
+            ],
+        });
+        return (color_texture, gradient_textures,bind_group);
+    }
+
+    fn bind_group_layout(
+        device: &wgpu::Device,
+        color_format: wgpu::TextureFormat,
+    ) -> wgpu::BindGroupLayout {
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("frame buffer bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::ReadWrite,
+                        format: color_format,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                   },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::ReadWrite,
+                        format: Self::GRADIENT_FORMAT,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                   },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::ReadWrite,
+                        format: Self::GRADIENT_FORMAT,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                   },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::ReadWrite,
+                        format: Self::GRADIENT_FORMAT,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                   },
+                    count: None,
+                },
+            ],
+        })
+    }
+
+    pub fn bind_group(&self) -> &wgpu::BindGroup {
+        &self.bind_group
+    }
+
+    pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        (self.color_texture,self.gradient_textures,self.bind_group) = Self::create_textures(device, width, height, self.color_texture.format());
+    }
+
+    pub fn clear(&self, encoder: &mut wgpu::CommandEncoder) {
+        encoder.clear_texture(&self.color_texture, &wgpu::ImageSubresourceRange::default());
+        for i in self.gradient_textures.iter() {
+            encoder.clear_texture(i, &wgpu::ImageSubresourceRange::default());
         }
     }
 }

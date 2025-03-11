@@ -145,7 +145,7 @@ async fn render_views(
             queue.submit(std::iter::once(encoder.finish()));
         }
     }
-    device.poll(wgpu::MaintainBase::Wait);
+    device.poll(wgpu::PollType::Wait).unwrap();
     let end = Instant::now();
     let duration = end - start;
     println!(
@@ -169,7 +169,7 @@ async fn main() {
 
     let scene = Scene::from_json(scene_file).unwrap();
 
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
     let (device,queue,_) =new_wgpu_context(&instance, None).await;
 
     println!("reading point cloud file '{}'", opt.input.to_string_lossy());

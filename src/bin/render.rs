@@ -258,9 +258,9 @@ async fn download_buffer<'a>(
     let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
     slice.map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
     device.poll(match wait_idx {
-        Some(idx) => wgpu::Maintain::WaitForSubmissionIndex(idx),
-        None => wgpu::Maintain::Wait,
-    });
+        Some(idx) => wgpu::PollType::WaitForSubmissionIndex(idx),
+        None => wgpu::PollType::Wait,
+    }).unwrap();
     rx.receive().await.unwrap().unwrap();
 
     let view = slice.get_mapped_range();
