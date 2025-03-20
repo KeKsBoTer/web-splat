@@ -9,8 +9,10 @@ use crate::{
 
 use std::fmt::Display;
 use std::num::NonZeroU64;
+use std::os::linux::raw;
 use std::time::Duration;
 
+use wgpu::naga::back::pipeline_constants;
 use wgpu::{include_wgsl, Extent3d, MultisampleState};
 
 use cgmath::{EuclideanSpace, Matrix4, Point3, SquareMatrix, Vector2, Vector4};
@@ -37,53 +39,9 @@ impl GaussianRenderer {
         color_format: wgpu::TextureFormat,
         sh_deg: u32,
         compressed: bool,
+        shader_interlock: bool,
     ) -> Self {
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("render pipeline layout"),
-            bind_group_layouts: &[
-                &PointCloud::bind_group_layout_render(device), // Needed for points_2d (on binding 2)
-                &GPURSSorter::bind_group_layout_rendering(device), // Needed for indices   (on binding 4)
-                &FrameBuffer::bind_group_layout(device, color_format), // Needed for color texture (on binding 2)
-                &UniformBuffer::<SplattingArgsUniform>::bind_group_layout(device),
-            ],
-            push_constant_ranges: &[],
-        });
-
-        let shader = device.create_shader_module(wgpu::include_wgsl!("shaders/gaussian.wgsl"));
-
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("render pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: color_format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
+        
 
         let draw_indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("indirect draw buffer"),
@@ -109,6 +67,7 @@ impl GaussianRenderer {
 
         let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
         let preprocess = PreprocessPipeline::new(device, sh_deg, compressed);
+        let pipeline = Self::create_render_pipeline(device, color_format, shader_interlock);
         GaussianRenderer {
             pipeline,
             camera,
@@ -124,6 +83,8 @@ impl GaussianRenderer {
             ),
         }
     }
+
+    
 
     pub(crate) fn camera(&self) -> &UniformBuffer<CameraUniform> {
         &self.camera
@@ -199,7 +160,7 @@ impl GaussianRenderer {
         pc: &PointCloud,
         render_settings: SplattingArgs,
         stopwatch: &mut Option<GPUStopwatch>,
-        frame_buffer: &FrameBuffer
+        frame_buffer: &FrameBuffer,
     ) {
         if self.sorter_suff.is_none()
             || self
@@ -250,7 +211,6 @@ impl GaussianRenderer {
             std::mem::size_of::<u32>() as u64,
         );
         frame_buffer.clear(encoder);
-        
     }
 
     pub fn render<'rpass>(
@@ -295,7 +255,11 @@ impl GaussianRenderer {
         &self.render_settings
     }
 
-    pub async fn sorted_key_value(&self,device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Vec<u32>> {
+    pub async fn sorted_key_value(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Option<Vec<u32>> {
         if self.sorter_suff.is_none() {
             return None;
         }
@@ -304,7 +268,7 @@ impl GaussianRenderer {
         wgpu::util::DownloadBuffer::read_buffer(
             device,
             queue,
-            &self.sorter_suff.as_ref().unwrap().values.slice(0..(2*4)),
+            &self.sorter_suff.as_ref().unwrap().values.slice(0..(2 * 4)),
             move |b: Result<wgpu::util::DownloadBuffer, wgpu::BufferAsyncError>| {
                 let download = b.unwrap();
                 let data = download.as_ref();
@@ -314,6 +278,88 @@ impl GaussianRenderer {
         );
         device.poll(wgpu::PollType::Wait).unwrap();
         Some(rx.receive().await.unwrap())
+    }
+    
+    pub fn recreate_pipeline(&mut self, device: &wgpu::Device, shader_interlock: bool) {
+        self.pipeline = Self::create_render_pipeline(device, self.color_format, shader_interlock);
+    }
+
+    fn create_render_pipeline(
+        device: &wgpu::Device,
+        color_format: wgpu::TextureFormat,
+        shader_interlock: bool,
+    ) -> wgpu::RenderPipeline {
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("render pipeline layout"),
+            bind_group_layouts: &[
+                &PointCloud::bind_group_layout_render(device), // Needed for points_2d (on binding 2)
+                &GPURSSorter::bind_group_layout_rendering(device), // Needed for indices   (on binding 4)
+                &FrameBuffer::bind_group_layout(device, color_format), // Needed for color texture (on binding 2)
+                &UniformBuffer::<SplattingArgsUniform>::bind_group_layout(device),
+            ],
+            push_constant_ranges: &[],
+        });
+        let mut raw_shader = include_str!("shaders/gaussian.wgsl")
+            .to_string();
+        if !shader_interlock{
+            raw_shader = raw_shader.replace("fragmentBarrierBegin();", "")
+            .replace("fragmentBarrierEnd();", "");
+        }
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("shaders/gaussian.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(raw_shader.into()),
+        });
+
+        let under = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        };
+
+        let premultiplied_alpha_blending = wgpu::BlendState {
+            color: under,
+            alpha: under,
+        };
+
+        let compiler_options = wgpu::PipelineCompilationOptions {
+            constants: &[("shader_interlock",(shader_interlock as u32) as f64)],
+            zero_initialize_workgroup_memory: false,
+        };
+
+        
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("render pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: compiler_options.clone()
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(premultiplied_alpha_blending),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: compiler_options
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        })
     }
 }
 
@@ -465,7 +511,7 @@ impl ImageUpscaler {
                 &Self::bind_group_layout(device),
                 &UniformBuffer::<CameraUniform>::bind_group_layout(device),
                 &UniformBuffer::<SplattingArgsUniform>::bind_group_layout(device),
-                &FrameBuffer::bind_group_layout(device, source_format)
+                &FrameBuffer::bind_group_layout(device, source_format),
             ],
             push_constant_ranges: &[],
         });
@@ -490,7 +536,7 @@ impl ImageUpscaler {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: target_format,
-                    blend:  Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
@@ -635,9 +681,9 @@ pub struct SplattingArgs {
 
 impl Default for SplattingArgs {
     fn default() -> Self {
-        Self{
+        Self {
             camera: PerspectiveCamera::default(),
-            viewport: Vector2::new(1,1),
+            viewport: Vector2::new(1, 1),
             gaussian_scaling: 1.0,
             max_sh_deg: 3,
             mip_splatting: None,
@@ -647,13 +693,12 @@ impl Default for SplattingArgs {
             scene_center: None,
             scene_extend: None,
             background_color: wgpu::Color::BLACK,
-            resolution: Vector2::new(1,1),
+            resolution: Vector2::new(1, 1),
             selected_channel: VisChannel::Color,
             upscaling_method: UpscalingMethod::Spline,
         }
     }
 }
-
 
 pub const DEFAULT_KERNEL_SIZE: f32 = 0.3;
 #[repr(C)]
@@ -669,7 +714,7 @@ pub struct SplattingArgsUniform {
 
     walltime: f32,
     scene_extend: f32,
-    selected_channel:VisChannel,
+    selected_channel: VisChannel,
     upscaling_method: UpscalingMethod,
     scene_center: Vector4<f32>,
 }
@@ -683,7 +728,7 @@ pub enum VisChannel {
     GradXY = 3,
 }
 
-impl Display for VisChannel{
+impl Display for VisChannel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Color => write!(f, "Color"),
@@ -733,15 +778,13 @@ impl SplattingArgsUniform {
     }
 }
 
-
 pub struct FrameBuffer {
     color_texture: wgpu::Texture,
-    gradient_textures: [wgpu::Texture;3],
+    gradient_textures: [wgpu::Texture; 3],
     bind_group: wgpu::BindGroup,
 }
 
 impl FrameBuffer {
-
     const GRADIENT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
     pub fn new(
@@ -780,7 +823,7 @@ impl FrameBuffer {
         width: u32,
         height: u32,
         color_format: wgpu::TextureFormat,
-    ) -> (wgpu::Texture,[wgpu::Texture;3],wgpu::BindGroup) {
+    ) -> (wgpu::Texture, [wgpu::Texture; 3], wgpu::BindGroup) {
         let color_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("color texture"),
             size: Extent3d {
@@ -796,24 +839,26 @@ impl FrameBuffer {
             view_formats: &[color_format],
         });
 
-        let gradient_textures:[wgpu::Texture;3] = [0,1,2].map(|_|device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("gradient texture"),
-            size: Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: Self::GRADIENT_FORMAT,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        }));
+        let gradient_textures: [wgpu::Texture; 3] = [0, 1, 2].map(|_| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("gradient texture"),
+                size: Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: Self::GRADIENT_FORMAT,
+                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+        });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("frame buffer bind group"),
-            layout: &Self::bind_group_layout(device,color_format),
+            layout: &Self::bind_group_layout(device, color_format),
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -841,7 +886,7 @@ impl FrameBuffer {
                 },
             ],
         });
-        return (color_texture, gradient_textures,bind_group);
+        return (color_texture, gradient_textures, bind_group);
     }
 
     fn bind_group_layout(
@@ -858,7 +903,7 @@ impl FrameBuffer {
                         access: wgpu::StorageTextureAccess::ReadWrite,
                         format: color_format,
                         view_dimension: wgpu::TextureViewDimension::D2,
-                   },
+                    },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
@@ -868,7 +913,7 @@ impl FrameBuffer {
                         access: wgpu::StorageTextureAccess::ReadWrite,
                         format: Self::GRADIENT_FORMAT,
                         view_dimension: wgpu::TextureViewDimension::D2,
-                   },
+                    },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
@@ -878,7 +923,7 @@ impl FrameBuffer {
                         access: wgpu::StorageTextureAccess::ReadWrite,
                         format: Self::GRADIENT_FORMAT,
                         view_dimension: wgpu::TextureViewDimension::D2,
-                   },
+                    },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
@@ -888,7 +933,7 @@ impl FrameBuffer {
                         access: wgpu::StorageTextureAccess::ReadWrite,
                         format: Self::GRADIENT_FORMAT,
                         view_dimension: wgpu::TextureViewDimension::D2,
-                   },
+                    },
                     count: None,
                 },
             ],
@@ -900,7 +945,8 @@ impl FrameBuffer {
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
-        (self.color_texture,self.gradient_textures,self.bind_group) = Self::create_textures(device, width, height, self.color_texture.format());
+        (self.color_texture, self.gradient_textures, self.bind_group) =
+            Self::create_textures(device, width, height, self.color_texture.format());
     }
 
     pub fn clear(&self, encoder: &mut wgpu::CommandEncoder) {
@@ -909,20 +955,22 @@ impl FrameBuffer {
             encoder.clear_texture(i, &wgpu::ImageSubresourceRange::default());
         }
     }
-    
+
     fn size(&self) -> Vector2<u32> {
-        Vector2::new(self.color_texture.size().width, self.color_texture.size().height)
+        Vector2::new(
+            self.color_texture.size().width,
+            self.color_texture.size().height,
+        )
     }
 }
 
-
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(C)]
-pub enum  UpscalingMethod {
-    Nearest=0,
-    Bilinear=1,
-    Bicubic=2,
-    Spline=3
+pub enum UpscalingMethod {
+    Nearest = 0,
+    Bilinear = 1,
+    Bicubic = 2,
+    Spline = 3,
 }
 
 impl Display for UpscalingMethod {
@@ -936,7 +984,7 @@ impl Display for UpscalingMethod {
     }
 }
 
-impl TryFrom<u32> for UpscalingMethod{
+impl TryFrom<u32> for UpscalingMethod {
     type Error = anyhow::Error;
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
@@ -945,7 +993,10 @@ impl TryFrom<u32> for UpscalingMethod{
             1 => Ok(UpscalingMethod::Bilinear),
             2 => Ok(UpscalingMethod::Bicubic),
             3 => Ok(UpscalingMethod::Spline),
-            _ => Err(anyhow::anyhow!("Invalid value for UpscalingMethod: {}", value))
+            _ => Err(anyhow::anyhow!(
+                "Invalid value for UpscalingMethod: {}",
+                value
+            )),
         }
     }
 }

@@ -209,7 +209,7 @@ impl WebSplat {
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
         let renderer =
-            GaussianRenderer::new(&device, &queue, render_format, pc.sh_deg(), pc.compressed())
+            GaussianRenderer::new(&device, &queue, render_format, pc.sh_deg(), pc.compressed(),false)
                 .await;
 
         let aabb = pc.bbox();
@@ -497,7 +497,7 @@ impl WebSplat {
                     view: self.display.texture(),
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(self.splatting_args.background_color),
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
                 })],

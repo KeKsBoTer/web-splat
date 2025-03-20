@@ -1,3 +1,5 @@
+override shader_interlock = false;
+
 // we cutoff at 1/255 alpha value 
 const CUTOFF:f32 = 2.3539888583335364; // = sqrt(log(255))
 
@@ -147,59 +149,61 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // let alpha_dy = alpha_dx_a;//dpdyFine(alpha_pre);
         // let alpha_dxy = dpdyFine(alpha_dx);
 
-    fragmentBarrierBegin();
+    if shader_interlock{
+        fragmentBarrierBegin();
 
-    let old_color = textureLoad(colorBuffer, vec2<i32>(i32(in.position.x), i32(in.position.y)));
-    let T = (1.-old_color.a);
-    let new_color = old_color.rgb + T * in.color.rgb * alpha;
-    let new_alpha = old_color.a + T * alpha;
+        let old_color = textureLoad(colorBuffer, vec2<i32>(i32(in.position.x), i32(in.position.y)));
+        let T = (1.-old_color.a);
+        let new_color = old_color.rgb + T * in.color.rgb * alpha;
+        let new_alpha = old_color.a + T * alpha;
 
-    if render_settings.upscaling_method == INTERPOLATION_SPLINE{
+        if render_settings.upscaling_method == INTERPOLATION_SPLINE{
 
-        let dg_dx = (- c_a * x - c_b * y);
-        let dg_dy = (- c_b * x - c_c * y);
-        let dg_dxy = -c_b;
+            let dg_dx = (- c_a * x - c_b * y);
+            let dg_dy = (- c_b * x - c_c * y);
+            let dg_dxy = -c_b;
 
-        var alpha_dx = dg_dx * alpha;
-        var alpha_dy = dg_dy * alpha;
-        var alpha_dxy = (dg_dx * dg_dy+ dg_dxy ) * alpha;
+            var alpha_dx = dg_dx * alpha;
+            var alpha_dy = dg_dy * alpha;
+            var alpha_dxy = (dg_dx * dg_dy+ dg_dxy ) * alpha;
 
-        if alpha !=alpha_pre{
-            alpha_dx = 0.;
-            alpha_dy = 0.;
-            alpha_dxy = 0.;
+            if alpha !=alpha_pre{
+                alpha_dx = 0.;
+                alpha_dy = 0.;
+                alpha_dxy = 0.;
+            }
+
+            
+            // if old_color.a > 1.-1./255. {
+            //     // early out...not sure if this is a good idea or really does anything
+            //     discard;
+            // }
+
+            let old_grad_x = textureLoad(gradientBuffer_x, vec2<i32>(i32(in.position.x), i32(in.position.y)));
+            let old_grad_y = textureLoad(gradientBuffer_y, vec2<i32>(i32(in.position.x), i32(in.position.y)));
+            let old_grad_xy = textureLoad(gradientBuffer_xy, vec2<i32>(i32(in.position.x), i32(in.position.y)));
+            
+
+            // gradient in x direction
+            let c_dx  = old_grad_x.rgb  + in.color.rgb * (T*alpha_dx  - old_grad_x.a  * alpha);
+            let c_dy  = old_grad_y.rgb  + in.color.rgb * (T*alpha_dy  - old_grad_y.a  * alpha);
+            let c_dxy = old_grad_xy.rgb + in.color.rgb * (T*alpha_dxy - old_grad_xy.a * alpha - old_grad_y.a * alpha_dx - old_grad_x.a * alpha_dy);
+
+            let a_dx  = old_grad_x.a  * (1.-alpha) + alpha_dx  * T;
+            let a_dy  = old_grad_y.a  * (1.-alpha) + alpha_dy  * T;
+            let a_dxy = old_grad_xy.a * (1.-alpha) + alpha_dxy * T - old_grad_x.a * alpha_dy - old_grad_y.a * alpha_dx;
+
+            let new_grad_x = vec4<f32>(c_dx, a_dx);
+            let new_grad_y = vec4<f32>(c_dy, a_dy);
+            let new_grad_xy = vec4<f32>(c_dxy, a_dxy);
+
+            textureStore(gradientBuffer_x, vec2<i32>(i32(in.position.x), i32(in.position.y)), new_grad_x);
+            textureStore(gradientBuffer_y, vec2<i32>(i32(in.position.x), i32(in.position.y)), new_grad_y);
+            textureStore(gradientBuffer_xy, vec2<i32>(i32(in.position.x), i32(in.position.y)), new_grad_xy);
         }
+        textureStore(colorBuffer, vec2<i32>(i32(in.position.x), i32(in.position.y)), vec4<f32>(new_color, new_alpha));
 
-        
-        // if old_color.a > 1.-1./255. {
-        //     // early out...not sure if this is a good idea or really does anything
-        //     discard;
-        // }
-
-        let old_grad_x = textureLoad(gradientBuffer_x, vec2<i32>(i32(in.position.x), i32(in.position.y)));
-        let old_grad_y = textureLoad(gradientBuffer_y, vec2<i32>(i32(in.position.x), i32(in.position.y)));
-        let old_grad_xy = textureLoad(gradientBuffer_xy, vec2<i32>(i32(in.position.x), i32(in.position.y)));
-        
-
-        // gradient in x direction
-        let c_dx  = old_grad_x.rgb  + in.color.rgb * (T*alpha_dx  - old_grad_x.a  * alpha);
-        let c_dy  = old_grad_y.rgb  + in.color.rgb * (T*alpha_dy  - old_grad_y.a  * alpha);
-        let c_dxy = old_grad_xy.rgb + in.color.rgb * (T*alpha_dxy - old_grad_xy.a * alpha - old_grad_y.a * alpha_dx - old_grad_x.a * alpha_dy);
-
-        let a_dx  = old_grad_x.a  * (1.-alpha) + alpha_dx  * T;
-        let a_dy  = old_grad_y.a  * (1.-alpha) + alpha_dy  * T;
-        let a_dxy = old_grad_xy.a * (1.-alpha) + alpha_dxy * T - old_grad_x.a * alpha_dy - old_grad_y.a * alpha_dx;
-
-        let new_grad_x = vec4<f32>(c_dx, a_dx);
-        let new_grad_y = vec4<f32>(c_dy, a_dy);
-        let new_grad_xy = vec4<f32>(c_dxy, a_dxy);
-
-        textureStore(gradientBuffer_x, vec2<i32>(i32(in.position.x), i32(in.position.y)), new_grad_x);
-        textureStore(gradientBuffer_y, vec2<i32>(i32(in.position.x), i32(in.position.y)), new_grad_y);
-        textureStore(gradientBuffer_xy, vec2<i32>(i32(in.position.x), i32(in.position.y)), new_grad_xy);
+        fragmentBarrierEnd();
     }
-    textureStore(colorBuffer, vec2<i32>(i32(in.position.x), i32(in.position.y)), vec4<f32>(new_color, new_alpha));
-
-    fragmentBarrierEnd();
-    return vec4<f32>(in.color.rgb, alpha);
+    return vec4<f32>(in.color.rgb*alpha, alpha);
 }

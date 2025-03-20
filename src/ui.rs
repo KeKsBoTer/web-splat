@@ -3,11 +3,10 @@ use instant::Duration;
 use std::ops::RangeInclusive;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
-use winit::dpi::PhysicalSize;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::renderer::DEFAULT_KERNEL_SIZE;
-use crate::{Camera, SceneCamera, Split, WebSplat};
+use crate::{ SceneCamera, Split, WebSplat};
 use cgmath::{Euler, Matrix3, Quaternion};
 #[cfg(not(target_arch = "wasm32"))]
 use egui::Vec2b;
@@ -40,6 +39,7 @@ pub(crate) fn ui(state: &mut WebSplat) -> bool {
             .num_visible_points(&state.device, &state.queue),
     );
     let old_upscale_factor = state.upscale_factor;
+    let old_upscaling_method = state.splatting_args.upscaling_method;
     #[cfg(not(target_arch = "wasm32"))]
     egui::Window::new("Render Stats")
         .default_width(200.)
@@ -184,16 +184,14 @@ pub(crate) fn ui(state: &mut WebSplat) -> bool {
                             crate::renderer::UpscalingMethod::Spline,
                             crate::renderer::UpscalingMethod::Spline.to_string(),
                         );
-                        
                     });
                 ui.end_row();
-                
+
                 ui.label("Upscale Factor");
-                ui.add(
-                    egui::Slider::new(&mut state.upscale_factor, 1.0..=8.0)
-                );
+                ui.add(egui::Slider::new(&mut state.upscale_factor, 1.0..=8.0));
                 ui.end_row();
-                if state.splatting_args.upscaling_method == crate::renderer::UpscalingMethod::Spline {
+                if state.splatting_args.upscaling_method == crate::renderer::UpscalingMethod::Spline
+                {
                     ui.label("Channel");
                     egui::ComboBox::new("select_channel", "")
                         .selected_text(state.splatting_args.selected_channel.to_string())
@@ -220,7 +218,7 @@ pub(crate) fn ui(state: &mut WebSplat) -> bool {
                             );
                         });
                     ui.end_row();
-                }else{
+                } else {
                     state.splatting_args.selected_channel = crate::renderer::VisChannel::Color;
                 }
             });
@@ -459,9 +457,21 @@ pub(crate) fn ui(state: &mut WebSplat) -> bool {
     }
 
     if old_upscale_factor != state.upscale_factor {
-        state.resize_framebuffer(state.config.width,state.config.height);
+        state.resize_framebuffer(state.config.width, state.config.height);
+        if state.splatting_args.upscaling_method == crate::renderer::UpscalingMethod::Spline {
+            state.renderer.recreate_pipeline(
+                &state.device,
+                state.upscale_factor > 1. 
+            );
+        }
     }
 
+    if old_upscaling_method != state.splatting_args.upscaling_method  {
+        state.renderer.recreate_pipeline(
+            &state.device,
+            state.splatting_args.upscaling_method == crate::renderer::UpscalingMethod::Spline,
+        );
+    }
     return requested_repaint;
 }
 

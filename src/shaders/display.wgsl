@@ -82,20 +82,20 @@ fn sample_nearest(pos_in:vec2<f32>)->vec4<f32>{
     let tex_size = vec2<f32>(textureDimensions(colorBuffer));
     let pos = pos_in*(tex_size);
     let pixel_pos = vec2<i32>(pos);
-    return textureLoad(colorBuffer, pixel_pos);
+    return textureLoad(source_img, pixel_pos, 0);
 }
 
 fn sample_bilinear(pos_in:vec2<f32>)->vec4<f32>{
-    let tex_size = vec2<f32>(textureDimensions(colorBuffer));
+    let tex_size = vec2<f32>(textureDimensions(source_img));
 
     let pos = pos_in*(tex_size);
     let pixel_pos = vec2<i32>(pos);
     let p_frac = fract(pos);
 
-    let z00 = textureLoad(colorBuffer, pixel_pos);
-    let z10 = textureLoad(colorBuffer, clamp(pixel_pos + vec2<i32>(1, 0), vec2<i32>(0), vec2<i32>(tex_size-1)));
-    let z01 = textureLoad(colorBuffer, clamp(pixel_pos + vec2<i32>(0, 1), vec2<i32>(0), vec2<i32>(tex_size-1)));
-    let z11 = textureLoad(colorBuffer, clamp(pixel_pos + vec2<i32>(1, 1), vec2<i32>(0), vec2<i32>(tex_size-1)));
+    let z00 = textureLoad(source_img, pixel_pos,0);
+    let z10 = textureLoad(source_img, clamp(pixel_pos + vec2<i32>(1, 0), vec2<i32>(0), vec2<i32>(tex_size-1)),0);
+    let z01 = textureLoad(source_img, clamp(pixel_pos + vec2<i32>(0, 1), vec2<i32>(0), vec2<i32>(tex_size-1)),0);
+    let z11 = textureLoad(source_img, clamp(pixel_pos + vec2<i32>(1, 1), vec2<i32>(0), vec2<i32>(tex_size-1)),0);
 
     return mix(
         mix(z00, z10, p_frac.x),
@@ -106,7 +106,7 @@ fn sample_bilinear(pos_in:vec2<f32>)->vec4<f32>{
 
 
 fn sample_bicubic(pos_in:vec2<f32>)->vec4<f32>{
-    let tex_size = vec2<f32>(textureDimensions(colorBuffer));
+    let tex_size = vec2<f32>(textureDimensions(source_img));
 
     let pos = pos_in*(tex_size);
     let pixel_pos = vec2<i32>(pos);
@@ -120,11 +120,11 @@ fn sample_bicubic(pos_in:vec2<f32>)->vec4<f32>{
         for (var j = 0; j < 2; j++) {
             let sample_pos = clamp(pixel_pos + vec2<i32>(i, j), vec2<i32>(0), vec2<i32>(tex_size-1));
 
-            let z_v = textureLoad(colorBuffer, sample_pos);
-            let z_up = textureLoad(colorBuffer, clamp(sample_pos + vec2<i32>(0, 1), vec2<i32>(0), vec2<i32>(tex_size-1)));
-            let z_left = textureLoad(colorBuffer, clamp(sample_pos + vec2<i32>(-1, 0), vec2<i32>(0), vec2<i32>(tex_size-1)));
-            let z_right = textureLoad(colorBuffer, clamp(sample_pos + vec2<i32>(1, 0), vec2<i32>(0), vec2<i32>(tex_size-1)));
-            let z_down = textureLoad(colorBuffer, clamp(sample_pos + vec2<i32>(0, -1), vec2<i32>(0), vec2<i32>(tex_size-1)));
+            let z_v = textureLoad(source_img, sample_pos,0);
+            let z_up = textureLoad(source_img, clamp(sample_pos + vec2<i32>(0, 1), vec2<i32>(0), vec2<i32>(tex_size-1)),0);
+            let z_left = textureLoad(source_img, clamp(sample_pos + vec2<i32>(-1, 0), vec2<i32>(0), vec2<i32>(tex_size-1)),0);
+            let z_right = textureLoad(source_img, clamp(sample_pos + vec2<i32>(1, 0), vec2<i32>(0), vec2<i32>(tex_size-1)),0);
+            let z_down = textureLoad(source_img, clamp(sample_pos + vec2<i32>(0, -1), vec2<i32>(0), vec2<i32>(tex_size-1)),0);
 
             for (var c = 0u; c < 4u; c++) {
                 z[c][i][j] = z_v[c];
@@ -159,7 +159,7 @@ fn sample_spline(pos_in:vec2<f32>)->vec4<f32>{
         for (var j = 0; j < 2; j++) {
             let sample_pos = clamp(pixel_pos + vec2<i32>(i, j), vec2<i32>(0), vec2<i32>(tex_size-1));
 
-            let z_v = textureLoad(colorBuffer, sample_pos);
+            let z_v = textureLoad(source_img, sample_pos,0);
             let dx_v = textureLoad(gradientBuffer_x, sample_pos);
             let dy_v = -textureLoad(gradientBuffer_y, sample_pos);
             let dxy_v = -textureLoad(gradientBuffer_xy, sample_pos);
