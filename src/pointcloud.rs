@@ -4,6 +4,7 @@ use cgmath::{
 };
 use half::f16;
 use num_traits::Float;
+use wgpu::wgc::device::queue;
 use std::fmt::Debug;
 use std::mem;
 use wgpu::util::DeviceExt;
@@ -86,7 +87,7 @@ impl PointCloud {
         let splat_2d_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("2d gaussians buffer"),
             size: (pc.num_points * mem::size_of::<Splat>()) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
@@ -333,11 +334,12 @@ impl PointCloud {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable,Debug)]
 pub struct Splat {
     pub v: Vector4<f16>,
     pub pos: Vector2<f16>,
     pub color: Vector4<f16>,
+    pub cov:Vector4<f16>,
 }
 
 #[repr(C)]

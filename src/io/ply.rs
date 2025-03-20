@@ -89,7 +89,14 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
         let cov = build_cov(rot, scale);
 
         if !Point3::from(pos).is_finite() {
-            return Err(anyhow::anyhow!("nan value in ply file"));
+            return Err(anyhow::anyhow!("nan value in position"));
+        }
+        if !cov.iter().all(|x| x.is_finite()) {
+            return Err(anyhow::anyhow!("nan value in covariance"));
+        }
+
+        if !opacity.is_finite() {
+            return Err(anyhow::anyhow!("nan value in opacity"));
         }
 
         return Ok((
@@ -171,29 +178,27 @@ impl<R: io::Read + io::Seek> PointCloudReader for PlyReader<R> {
         match self.header.encoding {
             ply_rs::ply::Encoding::Ascii => todo!("acsii ply format not supported"),
             ply_rs::ply::Encoding::BinaryBigEndian => {
-                for _ in 0..self.num_points {
+                for line in 0..self.num_points {
                     match self.read_line::<BigEndian>(self.sh_deg as usize) {
                         Ok((g, s)) => {
                             gaussians.push(g);
                             sh_coefs.push(s);
                         }
                         Err(e) => {
-                            log::warn!("error reading line: {}", e);
-                            break;
+                            log::warn!("error reading line {line}: {}", e);
                         }
                     }
                 }
             }
             ply_rs::ply::Encoding::BinaryLittleEndian => {
-                for _ in 0..self.num_points {
+                for line in 0..self.num_points {
                     match self.read_line::<LittleEndian>(self.sh_deg as usize) {
                         Ok((g, s)) => {
                             gaussians.push(g);
                             sh_coefs.push(s);
                         }
                         Err(e) => {
-                            log::warn!("error reading line: {}", e);
-                            break;
+                            log::warn!("error reading line {line}: {}", e);
                         }
                     }
                 }

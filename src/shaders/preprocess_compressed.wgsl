@@ -64,6 +64,8 @@ struct Splat {
     pos: u32,
     // rgba packed as u8
     color_0: u32,color_1: u32,
+    // cov packed as 4xf16
+    cov_1: u32, cov_2: u32
 };
 
 // struct DrawIndirect {
@@ -101,6 +103,7 @@ struct RenderSettings {
     kernel_size: f32,
     walltime: f32,
     scene_extend: f32,
+    selected_channel:u32,
     center: vec3<f32>,
 }
 
@@ -273,22 +276,36 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
 
 
     let kernel_size = render_settings.kernel_size;
-    if bool(render_settings.mip_spatting) {
-        // according to Mip-Splatting by Yu et al. 2023
-        let det_0 = max(1e-6, cov[0][0] * cov[1][1] - cov[0][1] * cov[0][1]);
-        let det_1 = max(1e-6, (cov[0][0] + kernel_size) * (cov[1][1] + kernel_size) - cov[0][1] * cov[0][1]);
-        var coef = sqrt(det_0 / (det_1 + 1e-6) + 1e-6);
-
-        if det_0 <= 1e-6 || det_1 <= 1e-6 {
-            coef = 0.0;
-        }
-        opacity *= coef;
-    }
 
 
     let diagonal1 = cov[0][0] + kernel_size;
     let offDiagonal = cov[0][1];
     let diagonal2 = cov[1][1] + kernel_size;
+
+	let det_cov_plus_h_cov = diagonal1 * diagonal2 - offDiagonal * offDiagonal;
+
+	var h_convolution_scaling = 1.0;
+    if bool(render_settings.mip_spatting) && kernel_size > 0. {
+        // // according to Mip-Splatting by Yu et al. 2023
+        let det_0 = max(1e-6, cov[0][0] * cov[1][1] - cov[0][1] * cov[0][1]);
+        let det_1 = max(1e-6, (cov[0][0] + kernel_size) * (cov[1][1] + kernel_size) - cov[0][1] * cov[0][1]);
+        h_convolution_scaling = sqrt(det_0 / (det_1 + 1e-6) + 1e-6);
+         
+        if det_0 <= 1e-6 || det_1 <= 1e-6 {
+            h_convolution_scaling = 0.0;
+        }
+
+    }
+    opacity *= h_convolution_scaling;
+
+
+	let det = det_cov_plus_h_cov;
+    if abs(det) < 1e-4 {
+        return;
+    }
+	let det_inv = 1.f / det;
+	let conic = vec4<f32>(diagonal2 * det_inv, -offDiagonal * det_inv, diagonal1 * det_inv,0.);
+
 
     let mid = 0.5 * (diagonal1 + diagonal2);
     let radius = length(vec2<f32>((diagonal1 - diagonal2) / 2.0, offDiagonal));
@@ -316,6 +333,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
         pack2x16float(v.xy), pack2x16float(v.zw),
         pack2x16float(v_center.xy),
         pack2x16float(color.rg), pack2x16float(color.ba),
+        pack2x16float(conic.rg), pack2x16float(conic.ba),
     );
     
     // filling the sorting buffers and the indirect sort dispatch buffer
@@ -323,6 +341,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let zfar = -camera.proj[3][2] / (camera.proj[2][2] - (1.));
     // filling the sorting buffers and the indirect sort dispatch buffer
     sort_depths[store_idx] =  0xffffffffu - u32(f32(0xffffffu) - (pos2d.z - znear) / (zfar - znear) * f32(0xffffffu));
+    // sort_depths[store_idx] = bitcast<u32>(pos2d.z / zfar);
     sort_indices[store_idx] = store_idx;
 
     let keys_per_wg = 256u * 15u;         // Caution: if workgroup size (256) or keys per thread (15) changes the dispatch is wrong!!

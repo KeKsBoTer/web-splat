@@ -34,6 +34,8 @@ pub struct GPURSSorter {
 
 pub struct PointCloudSortStuff {
     pub num_points: usize,
+    pub(crate) keys:  wgpu::Buffer,
+    pub(crate) values:  wgpu::Buffer,
     pub(crate) sorter_uni: wgpu::Buffer, // uniform buffer information
     pub(crate) sorter_dis: wgpu::Buffer, // dispatch buffer
     pub(crate) sorter_bg: wgpu::BindGroup, // sorter bind group
@@ -170,6 +172,8 @@ impl GPURSSorter {
             sorter_bg,
             sorter_render_bg,
             sorter_bg_pre,
+            keys: sorter_b_a,
+            values: sorter_p_a,
         }
     }
 
@@ -524,7 +528,7 @@ impl GPURSSorter {
         let payload_size = (keysize * bytes_per_payload_elem).max(1); // make sure that we have at least 1 byte of data;
         let payload_a = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Radix data buffer a"),
-            size: payload_size as u64,
+            size: (count_ru_histo * std::mem::size_of::<f32>()) as u64,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
@@ -532,7 +536,7 @@ impl GPURSSorter {
         });
         let payload_b = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Radix data buffer a"),
-            size: payload_size as u64,
+            size: (count_ru_histo * std::mem::size_of::<f32>()) as u64,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
@@ -893,12 +897,12 @@ fn upload_to_buffer<T: bytemuck::Pod>(
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
     });
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("Copye endoder"),
+        label: Some("Copy endoder"),
     });
     encoder.copy_buffer_to_buffer(&staging_buffer, 0, buffer, 0, staging_buffer.size());
     queue.submit([encoder.finish()]);
 
-    device.poll(wgpu::PollType::Wait);
+    device.poll(wgpu::PollType::Wait).unwrap();
     staging_buffer.destroy();
 }
 

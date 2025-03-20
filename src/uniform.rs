@@ -1,6 +1,6 @@
 use std::{mem, num::NonZeroU64};
 
-use bytemuck::{NoUninit, Pod};
+use bytemuck::{NoUninit, Pod, Zeroable};
 use wgpu::{util::DeviceExt, Device};
 
 #[derive(Debug)]
@@ -17,6 +17,37 @@ where
 {
     pub fn new_default(device: &wgpu::Device, label: Option<&str>) -> Self {
         let data = T::default();
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: label,
+            contents: bytemuck::cast_slice(&[data]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let bg_label = label.map(|l| format!("{l} bind group"));
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: bg_label.as_ref().map(|s| s.as_str()),
+            layout: &Self::bind_group_layout(device),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        Self {
+            buffer,
+            data,
+            label: label.map(|a| a.to_string()),
+            bind_group,
+        }
+    }
+}
+
+
+impl<T> UniformBuffer<T>
+where
+    T: NoUninit + Zeroable + Pod,
+{
+    pub fn new_zeored(device: &wgpu::Device, label: Option<&str>) -> Self {
+        let data = T::zeroed();
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: label,
             contents: bytemuck::cast_slice(&[data]),

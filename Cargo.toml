@@ -85,4 +85,4 @@ strip = "debuginfo"
 
 [patch.crates-io]
 # use custom wgpu implementation with fragment shader interlock
-wgpu = { version = "24.0.0",path="/home/niedermayr/Projects/wgpu/wgpu"}
+wgpu = { version = "24.0.0",path="/home/simon/Projects/wgpu/wgpu"}

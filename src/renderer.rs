@@ -7,11 +7,11 @@ use crate::{
     uniform::UniformBuffer,
 };
 
+use std::fmt::Display;
 use std::num::NonZeroU64;
 use std::time::Duration;
 
-use egui::epaint::color;
-use wgpu::{include_wgsl, Device, Extent3d, MultisampleState};
+use wgpu::{include_wgsl, Extent3d, MultisampleState};
 
 use cgmath::{EuclideanSpace, Matrix4, Point3, SquareMatrix, Vector2, Vector4};
 
@@ -44,6 +44,7 @@ impl GaussianRenderer {
                 &PointCloud::bind_group_layout_render(device), // Needed for points_2d (on binding 2)
                 &GPURSSorter::bind_group_layout_rendering(device), // Needed for indices   (on binding 4)
                 &FrameBuffer::bind_group_layout(device, color_format), // Needed for color texture (on binding 2)
+                &UniformBuffer::<SplattingArgsUniform>::bind_group_layout(device),
             ],
             push_constant_ranges: &[],
         });
@@ -64,7 +65,7 @@ impl GaussianRenderer {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: color_format,
-                    blend: None,// Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
@@ -117,7 +118,7 @@ impl GaussianRenderer {
             color_format,
             sorter,
             sorter_suff: None,
-            render_settings: UniformBuffer::new_default(
+            render_settings: UniformBuffer::new_zeored(
                 device,
                 Some("render settings uniform buffer"),
             ),
@@ -146,7 +147,7 @@ impl GaussianRenderer {
         *settings_uniform = SplattingArgsUniform::from_args_and_pc(render_settings, pc);
         self.render_settings.sync(queue);
 
-        // TODO perform this in vertex buffer after draw call
+        // TODO perform this in vertex shader after draw call
         queue.write_buffer(
             &self.draw_indirect_buffer,
             0,
@@ -184,7 +185,7 @@ impl GaussianRenderer {
                     tx.send(num_points).unwrap();
                 },
             );
-            device.poll(wgpu::PollType::Wait);
+            device.poll(wgpu::PollType::Wait).unwrap();
             rx.receive().await.unwrap()
         };
         return n;
@@ -261,6 +262,7 @@ impl GaussianRenderer {
         render_pass.set_bind_group(0, pc.render_bind_group(), &[]);
         render_pass.set_bind_group(1, &self.sorter_suff.as_ref().unwrap().sorter_render_bg, &[]);
         render_pass.set_bind_group(2, frame_buffer.bind_group(), &[]);
+        render_pass.set_bind_group(3, self.render_settings.bind_group(), &[]);
         render_pass.set_pipeline(&self.pipeline);
 
         render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
@@ -291,6 +293,27 @@ impl GaussianRenderer {
 
     pub(crate) fn render_settings(&self) -> &UniformBuffer<SplattingArgsUniform> {
         &self.render_settings
+    }
+
+    pub async fn sorted_key_value(&self,device: &wgpu::Device, queue: &wgpu::Queue) -> Option<Vec<u32>> {
+        if self.sorter_suff.is_none() {
+            return None;
+        }
+        let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
+
+        wgpu::util::DownloadBuffer::read_buffer(
+            device,
+            queue,
+            &self.sorter_suff.as_ref().unwrap().values.slice(0..(2*4)),
+            move |b: Result<wgpu::util::DownloadBuffer, wgpu::BufferAsyncError>| {
+                let download = b.unwrap();
+                let data = download.as_ref();
+                let splats: Vec<_> = bytemuck::cast_slice(data).to_vec();
+                tx.send(splats).unwrap();
+            },
+        );
+        device.poll(wgpu::PollType::Wait).unwrap();
+        Some(rx.receive().await.unwrap())
     }
 }
 
@@ -421,14 +444,14 @@ impl PreprocessPipeline {
     }
 }
 
-pub struct Display {
+pub struct ImageUpscaler {
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
     format: wgpu::TextureFormat,
     view: wgpu::TextureView,
 }
 
-impl Display {
+impl ImageUpscaler {
     pub fn new(
         device: &wgpu::Device,
         source_format: wgpu::TextureFormat,
@@ -467,7 +490,7 @@ impl Display {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: target_format,
-                    blend: None, //Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    blend:  Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
@@ -516,7 +539,7 @@ impl Display {
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("render target bind group"),
-            layout: &Display::bind_group_layout(device),
+            layout: &ImageUpscaler::bind_group_layout(device),
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -606,7 +629,31 @@ pub struct SplattingArgs {
     pub scene_extend: Option<f32>,
     pub background_color: wgpu::Color,
     pub resolution: Vector2<u32>,
+    pub selected_channel: VisChannel,
+    pub upscaling_method: UpscalingMethod,
 }
+
+impl Default for SplattingArgs {
+    fn default() -> Self {
+        Self{
+            camera: PerspectiveCamera::default(),
+            viewport: Vector2::new(1,1),
+            gaussian_scaling: 1.0,
+            max_sh_deg: 3,
+            mip_splatting: None,
+            kernel_size: None,
+            clipping_box: None,
+            walltime: Duration::default(),
+            scene_center: None,
+            scene_extend: None,
+            background_color: wgpu::Color::BLACK,
+            resolution: Vector2::new(1,1),
+            selected_channel: VisChannel::Color,
+            upscaling_method: UpscalingMethod::Spline,
+        }
+    }
+}
+
 
 pub const DEFAULT_KERNEL_SIZE: f32 = 0.3;
 #[repr(C)]
@@ -622,9 +669,33 @@ pub struct SplattingArgsUniform {
 
     walltime: f32,
     scene_extend: f32,
-    _pad: [u32; 2],
+    selected_channel:VisChannel,
+    upscaling_method: UpscalingMethod,
     scene_center: Vector4<f32>,
 }
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum VisChannel {
+    Color = 0,
+    GradX = 1,
+    GradY = 2,
+    GradXY = 3,
+}
+
+impl Display for VisChannel{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Color => write!(f, "Color"),
+            Self::GradX => write!(f, "∂x"),
+            Self::GradY => write!(f, "∂y"),
+            Self::GradXY => write!(f, "∂x∂y"),
+        }
+    }
+}
+
+unsafe impl bytemuck::Zeroable for VisChannel {}
+unsafe impl bytemuck::Pod for VisChannel {}
 
 impl SplattingArgsUniform {
     /// replaces values with default values for point cloud
@@ -655,32 +726,13 @@ impl SplattingArgsUniform {
                 .scene_extend
                 .unwrap_or(pc.bbox().radius())
                 .max(pc.bbox().radius()),
-            ..Default::default()
+            selected_channel: args.selected_channel,
+            upscaling_method: args.upscaling_method,
+            // ..Default::default()
         }
     }
 }
 
-impl Default for SplattingArgsUniform {
-    fn default() -> Self {
-        Self {
-            gaussian_scaling: 1.0,
-            max_sh_deg: 3,
-            mip_splatting: false as u32,
-            kernel_size: DEFAULT_KERNEL_SIZE,
-            clipping_box_max: Vector4::new(f32::INFINITY, f32::INFINITY, f32::INFINITY, 0.),
-            clipping_box_min: Vector4::new(
-                f32::NEG_INFINITY,
-                f32::NEG_INFINITY,
-                f32::NEG_INFINITY,
-                0.,
-            ),
-            walltime: 0.,
-            scene_center: Vector4::new(0., 0., 0., 0.),
-            scene_extend: 1.,
-            _pad: [0; 2],
-        }
-    }
-}
 
 pub struct FrameBuffer {
     color_texture: wgpu::Texture,
@@ -707,6 +759,22 @@ impl FrameBuffer {
         }
     }
 
+    pub fn color(&self) -> &wgpu::Texture {
+        &self.color_texture
+    }
+
+    pub fn grad_x(&self) -> &wgpu::Texture {
+        &self.gradient_textures[0]
+    }
+
+    pub fn grad_y(&self) -> &wgpu::Texture {
+        &self.gradient_textures[1]
+    }
+
+    pub fn grad_xy(&self) -> &wgpu::Texture {
+        &self.gradient_textures[2]
+    }
+
     fn create_textures(
         device: &wgpu::Device,
         width: u32,
@@ -724,7 +792,7 @@ impl FrameBuffer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: color_format,
-            usage: wgpu::TextureUsages::STORAGE_BINDING,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[color_format],
         });
 
@@ -739,7 +807,7 @@ impl FrameBuffer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: Self::GRADIENT_FORMAT,
-            usage: wgpu::TextureUsages::STORAGE_BINDING,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         }));
 
@@ -841,4 +909,46 @@ impl FrameBuffer {
             encoder.clear_texture(i, &wgpu::ImageSubresourceRange::default());
         }
     }
+    
+    fn size(&self) -> Vector2<u32> {
+        Vector2::new(self.color_texture.size().width, self.color_texture.size().height)
+    }
 }
+
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[repr(C)]
+pub enum  UpscalingMethod {
+    Nearest=0,
+    Bilinear=1,
+    Bicubic=2,
+    Spline=3
+}
+
+impl Display for UpscalingMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UpscalingMethod::Nearest => write!(f, "Nearest"),
+            UpscalingMethod::Bilinear => write!(f, "Bilinear"),
+            UpscalingMethod::Bicubic => write!(f, "Bicubic"),
+            UpscalingMethod::Spline => write!(f, "Spline"),
+        }
+    }
+}
+
+impl TryFrom<u32> for UpscalingMethod{
+    type Error = anyhow::Error;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(UpscalingMethod::Nearest),
+            1 => Ok(UpscalingMethod::Bilinear),
+            2 => Ok(UpscalingMethod::Bicubic),
+            3 => Ok(UpscalingMethod::Spline),
+            _ => Err(anyhow::anyhow!("Invalid value for UpscalingMethod: {}", value))
+        }
+    }
+}
+
+unsafe impl bytemuck::Zeroable for UpscalingMethod {}
+unsafe impl bytemuck::Pod for UpscalingMethod {}

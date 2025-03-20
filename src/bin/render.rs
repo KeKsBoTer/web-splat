@@ -1,9 +1,13 @@
-use cgmath::{Vector2, Vector4};
+use cgmath::Vector2;
 use clap::Parser;
 use half::f16;
 use image::{ImageBuffer, Rgba};
 use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
+use npyz::WriterBuilder;
+use url::Url;
+use web_splats::{Camera, FrameBuffer, VisChannel};
 use wgpu::Color;
+use std::str::FromStr;
 #[allow(unused_imports)]
 use std::{fs::File, path::PathBuf, time::Duration};
 #[allow(unused_imports)]
@@ -17,10 +21,10 @@ use web_splats::{
 #[command(about = "Dataset offline renderer. Renders to PNG files", long_about = None)]
 struct Opt {
     /// input file
-    input: PathBuf,
+    input: Url,
 
     /// scene json file
-    scene: PathBuf,
+    scene: Url,
 
     /// image output directory
     img_out: PathBuf,
@@ -36,10 +40,15 @@ async fn render_views(
     queue: &wgpu::Queue,
     renderer: &mut GaussianRenderer,
     pc: &mut PointCloud,
-    cameras: Vec<SceneCamera>,
+    mut cameras: Vec<SceneCamera>,
     img_out: &PathBuf,
     split: &str,
 ) {
+
+    if cameras.is_empty() {
+        return;
+    }
+
     let img_out = img_out.join(&split);
     println!("saving images to '{}'", img_out.to_string_lossy());
     std::fs::create_dir_all(img_out.clone()).unwrap();
@@ -53,6 +62,11 @@ async fn render_views(
     pb.set_style(pb_style);
     pb.set_message(format!("rendering {split}"));
 
+    println!("cameras: {:?}",cameras);
+    // first render is always wrong...TODO fix this
+    cameras.insert(0,cameras[0].clone() );
+    cameras.insert(0,cameras[0].clone() );
+    cameras.insert(0,cameras[0].clone() );
     for (i, s) in cameras.iter().enumerate().progress_with(pb) {
         let mut resolution: Vector2<u32> = Vector2::new(s.width, s.height);
 
@@ -79,34 +93,42 @@ async fn render_views(
 
         let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
 
+        let frame_buffer = FrameBuffer::new(&device, resolution.x,resolution.y, renderer.color_format());
+
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("render encoder"),
         });
 
         let mut camera: PerspectiveCamera = s.clone().into();
-        camera.fit_near_far(pc.bbox());
+        camera.fit_near_far(&pc.bbox());
+
+        let args = SplattingArgs {
+            camera: camera,
+            viewport: resolution,
+            gaussian_scaling: 1.,
+            max_sh_deg: pc.sh_deg(),
+            mip_splatting: None,
+            kernel_size: None,
+            clipping_box: None,
+            walltime: Duration::from_secs(100000),
+            scene_center: None,
+            scene_extend: Some(0.),
+            background_color: Color::TRANSPARENT,
+            resolution,
+            selected_channel: VisChannel::Color,
+            
+        };
         renderer.prepare(
             &mut encoder,
             device,
             queue,
             &pc,
-            SplattingArgs {
-                camera: camera,
-                viewport: resolution,
-                gaussian_scaling: 1.,
-                max_sh_deg: pc.sh_deg(),
-                mip_splatting: None,
-                kernel_size: None,
-                clipping_box: None,
-                walltime: Duration::from_secs(100),
-                scene_center: None,
-                scene_extend: None,
-                background_color: Color::TRANSPARENT,
-                resolution,
-                
-            },
+            args,
             &mut None,
+            &frame_buffer
         );
+
+
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("render pass"),
@@ -122,37 +144,54 @@ async fn render_views(
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            renderer.render(&mut render_pass, &pc);
+            renderer.render(&mut render_pass, &pc, &frame_buffer);
         }
         queue.submit(std::iter::once(encoder.finish()));
-        let img = download_texture(&target, device, queue).await;
-        img.save(img_out.join(format!("{i:0>5}.png"))).unwrap();
+
+        if i < 3{
+            continue;
+        }
+
+        println!("{:#?}",renderer.sorted_key_value(device, queue).await);
+
+        let id = i - 3;
+        save_texture(frame_buffer.color(), device, queue, &img_out.join(format!("{id:0>5}_color.npy"))).await;
+        save_texture(frame_buffer.grad_x(), device, queue, &img_out.join(format!("{id:0>5}_dx.npy"))).await;
+        save_texture(frame_buffer.grad_y(), device, queue, &img_out.join(format!("{id:0>5}_dy.npy"))).await;
+        save_texture(frame_buffer.grad_xy(), device, queue, &img_out.join(format!("{id:0>5}_dxy.npy"))).await;
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[pollster::main]
 async fn main() {
-    use web_splats::new_wgpu_context;
+    use std::io::Cursor;
+
+    use web_splats::{io, new_wgpu_context};
 
     #[cfg(not(target_arch = "wasm32"))]
     env_logger::init();
     let opt = Opt::parse();
 
-    println!("reading scene file '{}'", opt.scene.to_string_lossy());
+    println!("reading scene file '{}'", opt.scene);
 
     // TODO this is suboptimal as it is never closed
-    let ply_file = File::open(&opt.input).unwrap();
-    let scene_file = File::open(opt.scene).unwrap();
+    let mut ply_file = io::read_from_url(&opt.input).await.unwrap();
+    let scene_file = io::read_from_url(&opt.scene).await.unwrap();
 
     let scene = Scene::from_json(scene_file).unwrap();
 
-    let instance = wgpu::Instance::new(Default::default());
+    let instance = wgpu::Instance::new(&Default::default());
     let (device,queue,_) = new_wgpu_context(&instance,None).await;
-    println!("reading point cloud file '{}'", opt.input.to_string_lossy());
+    println!("reading point cloud file '{}'", opt.input);
 
-    let pc_raw = GenericGaussianPointCloud::load(ply_file).unwrap();
+    let mut data = Vec::new();
+    ply_file.read_to_end(&mut data).unwrap();
+    let pc_raw = io::GenericGaussianPointCloud::load(Cursor::new(data)).unwrap();
+    
+
     let mut pc = PointCloud::new(&device, &pc_raw).unwrap();
+    println!("loaded point cloud with {} points", pc.num_points());
 
     let render_format = wgpu::TextureFormat::Rgba16Float;
 
@@ -191,7 +230,7 @@ pub async fn download_texture(
     texture: &wgpu::Texture,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
+) -> Vec<f16> {
     let texture_format = texture.format();
 
     let texel_size: u32 = texture_format.block_copy_size(None).unwrap();
@@ -216,9 +255,9 @@ pub async fn download_texture(
 
     encoder.copy_texture_to_buffer(
         texture.as_image_copy(),
-        wgpu::ImageCopyBufferBase {
+        wgpu::TexelCopyBufferInfo {
             buffer: &staging_buffer,
-            layout: wgpu::ImageDataLayout {
+            layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(bytes_per_row),
                 rows_per_image: Some(fb_size.height),
@@ -228,24 +267,36 @@ pub async fn download_texture(
     );
     let sub_idx = queue.submit(std::iter::once(encoder.finish()));
 
-    let mut image = {
+    let image = {
         let data: wgpu::BufferView<'_> =
             download_buffer(device, &staging_buffer, Some(sub_idx)).await;
-
-        ImageBuffer::<Rgba<u8>, _>::from_raw(
-            bytes_per_row / texel_size,
-            fb_size.height,
-            data.to_vec()
-                .chunks(2)
-                .map(|c| (f16::from_le_bytes([c[0], c[1]]).to_f32().clamp(0., 1.) * 255.) as u8)
-                .collect::<Vec<u8>>(),
-        )
-        .unwrap()
+        data.to_vec()
+        .chunks(2)
+        .map(|c| f16::from_le_bytes([c[0], c[1]]))
+        .collect::<Vec<f16>>()
     };
 
     staging_buffer.unmap();
 
-    return image::imageops::crop(&mut image, 0, 0, fb_size.width, fb_size.height).to_image();
+    return image;
+}
+
+async fn save_texture(
+    texture: &wgpu::Texture,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    out_file: &PathBuf) {
+
+    let img = download_texture(texture, device, queue).await;
+    let resolution = texture.size();
+    let mut out_file = File::create(out_file).unwrap();
+    let mut writer =npyz::WriteOptions::new()
+            .default_dtype()
+            .shape(&[resolution.height as u64, resolution.width as u64,4 as u64])
+            .writer(&mut out_file)
+            .begin_nd().unwrap();
+    writer.extend(img).unwrap();
+    writer.finish().unwrap();
 }
 
 async fn download_buffer<'a>(

@@ -46,15 +46,16 @@ fn try_find_scene_file(input: &Url, depth: u32) -> Option<Url> {
 #[cfg(not(target_arch = "wasm32"))]
 #[pollster::main]
 async fn main() {
+    use log::logger;
     use web_splats::io;
 
+    env_logger::init();
     let mut opt = Opt::parse();
 
     if opt.scene.is_none() {
         opt.scene = try_find_scene_file(&opt.input,2);
         log::warn!("No scene file specified, using {:?}", opt.scene);
     }
-
     let data_file = io::read_from_url(&opt.input).await.unwrap();
 
     let scene_file = if let Some(a) = opt.scene.as_ref().map(|s| io::read_from_url(s)) {

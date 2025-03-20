@@ -3,19 +3,19 @@ use instant::Duration;
 use std::ops::RangeInclusive;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
+use winit::dpi::PhysicalSize;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::renderer::DEFAULT_KERNEL_SIZE;
-use crate::{SceneCamera, Split, WebSplat};
+use crate::{Camera, SceneCamera, Split, WebSplat};
 use cgmath::{Euler, Matrix3, Quaternion};
 #[cfg(not(target_arch = "wasm32"))]
 use egui::Vec2b;
 
 #[cfg(target_arch = "wasm32")]
-use egui::{Align2,Vec2};
+use egui::{Align2, Vec2};
 
 use egui::{emath::Numeric, Color32, RichText};
-
 
 #[cfg(not(target_arch = "wasm32"))]
 use egui_plot::{Legend, PlotPoints};
@@ -24,9 +24,8 @@ pub(crate) fn ui(state: &mut WebSplat) -> bool {
     let ctx = state.ui_renderer.winit.egui_ctx();
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(stopwatch) = state.stopwatch.as_mut() {
-        let durations = pollster::block_on(
-            stopwatch.take_measurements(&state.device, &state.queue),
-        );
+        let durations =
+            pollster::block_on(stopwatch.take_measurements(&state.device, &state.queue));
         state.history.push((
             *durations.get("preprocess").unwrap_or(&Duration::ZERO),
             *durations.get("sorting").unwrap_or(&Duration::ZERO),
@@ -40,7 +39,7 @@ pub(crate) fn ui(state: &mut WebSplat) -> bool {
             .renderer
             .num_visible_points(&state.device, &state.queue),
     );
-
+    let old_upscale_factor = state.upscale_factor;
     #[cfg(not(target_arch = "wasm32"))]
     egui::Window::new("Render Stats")
         .default_width(200.)
@@ -115,10 +114,10 @@ pub(crate) fn ui(state: &mut WebSplat) -> bool {
                 ui.end_row();
                 ui.label("Background Color");
                 let mut color = egui::Color32::from_rgba_premultiplied(
-                    (state.splatting_args.background_color.r*255.) as u8,
-                    (state.splatting_args.background_color.g*255.) as u8,
-                    (state.splatting_args.background_color.b*255.) as u8,
-                    (state.splatting_args.background_color.a*255.) as u8,
+                    (state.splatting_args.background_color.r * 255.) as u8,
+                    (state.splatting_args.background_color.g * 255.) as u8,
+                    (state.splatting_args.background_color.b * 255.) as u8,
+                    (state.splatting_args.background_color.a * 255.) as u8,
                 );
                 egui::color_picker::color_edit_button_srgba(
                     ui,
@@ -156,6 +155,73 @@ pub(crate) fn ui(state: &mut WebSplat) -> bool {
                         state.pc.mip_splatting().unwrap_or(false),
                     );
                     ui.end_row();
+                }
+                ui.heading("Upscaling");
+                ui.end_row();
+
+                ui.label("Method");
+
+                egui::ComboBox::new("upscaling_method", "")
+                    .selected_text(state.splatting_args.upscaling_method.to_string())
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut state.splatting_args.upscaling_method,
+                            crate::renderer::UpscalingMethod::Nearest,
+                            crate::renderer::UpscalingMethod::Nearest.to_string(),
+                        );
+                        ui.selectable_value(
+                            &mut state.splatting_args.upscaling_method,
+                            crate::renderer::UpscalingMethod::Bilinear,
+                            crate::renderer::UpscalingMethod::Bilinear.to_string(),
+                        );
+                        ui.selectable_value(
+                            &mut state.splatting_args.upscaling_method,
+                            crate::renderer::UpscalingMethod::Bicubic,
+                            crate::renderer::UpscalingMethod::Bicubic.to_string(),
+                        );
+                        ui.selectable_value(
+                            &mut state.splatting_args.upscaling_method,
+                            crate::renderer::UpscalingMethod::Spline,
+                            crate::renderer::UpscalingMethod::Spline.to_string(),
+                        );
+                        
+                    });
+                ui.end_row();
+                
+                ui.label("Upscale Factor");
+                ui.add(
+                    egui::Slider::new(&mut state.upscale_factor, 1.0..=8.0)
+                );
+                ui.end_row();
+                if state.splatting_args.upscaling_method == crate::renderer::UpscalingMethod::Spline {
+                    ui.label("Channel");
+                    egui::ComboBox::new("select_channel", "")
+                        .selected_text(state.splatting_args.selected_channel.to_string())
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut state.splatting_args.selected_channel,
+                                crate::renderer::VisChannel::Color,
+                                crate::renderer::VisChannel::Color.to_string(),
+                            );
+                            ui.selectable_value(
+                                &mut state.splatting_args.selected_channel,
+                                crate::renderer::VisChannel::GradX,
+                                crate::renderer::VisChannel::GradX.to_string(),
+                            );
+                            ui.selectable_value(
+                                &mut state.splatting_args.selected_channel,
+                                crate::renderer::VisChannel::GradY,
+                                crate::renderer::VisChannel::GradY.to_string(),
+                            );
+                            ui.selectable_value(
+                                &mut state.splatting_args.selected_channel,
+                                crate::renderer::VisChannel::GradXY,
+                                crate::renderer::VisChannel::GradXY.to_string(),
+                            );
+                        });
+                    ui.end_row();
+                }else{
+                    state.splatting_args.selected_channel = crate::renderer::VisChannel::Color;
                 }
             });
     });
@@ -391,6 +457,11 @@ pub(crate) fn ui(state: &mut WebSplat) -> bool {
             state.start_tracking_shot();
         }
     }
+
+    if old_upscale_factor != state.upscale_factor {
+        state.resize_framebuffer(state.config.width,state.config.height);
+    }
+
     return requested_repaint;
 }
 

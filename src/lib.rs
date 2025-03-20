@@ -1,6 +1,6 @@
 #[cfg(target_arch = "wasm32")]
 use instant::{Duration, Instant};
-use renderer::{Display, FrameBuffer};
+use renderer::{ImageUpscaler, UpscalingMethod};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 use std::{
@@ -41,7 +41,7 @@ pub use pointcloud::PointCloud;
 pub mod io;
 
 mod renderer;
-pub use renderer::{GaussianRenderer, SplattingArgs};
+pub use renderer::{FrameBuffer, GaussianRenderer, SplattingArgs, VisChannel};
 
 mod scene;
 use crate::utils::GPUStopwatch;
@@ -79,29 +79,26 @@ pub async fn new_wgpu_context(
 
     let adapter_limits = adapter.limits();
 
-
     let (device, queue) = adapter
-        .request_device(
-            &wgpu::DeviceDescriptor {
-                required_features,
-                #[cfg(not(target_arch = "wasm32"))]
-                required_limits: wgpu::Limits {
-                    max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
-                    max_storage_buffers_per_shader_stage: 12,
-                    max_compute_workgroup_storage_size: 1 << 15,
-                    ..adapter_limits
-                },
-
-                #[cfg(target_arch = "wasm32")]
-                required_limits: wgpu::Limits {
-                    max_compute_workgroup_storage_size: 1 << 15,
-                    ..adapter_limits
-                },
-                label: None,
-                memory_hints: Default::default(),
-                trace: wgpu::Trace::Off,
+        .request_device(&wgpu::DeviceDescriptor {
+            required_features,
+            #[cfg(not(target_arch = "wasm32"))]
+            required_limits: wgpu::Limits {
+                max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
+                max_storage_buffers_per_shader_stage: 12,
+                max_compute_workgroup_storage_size: 1 << 15,
+                ..adapter_limits
             },
-        )
+
+            #[cfg(target_arch = "wasm32")]
+            required_limits: wgpu::Limits {
+                max_compute_workgroup_storage_size: 1 << 15,
+                ..adapter_limits
+            },
+            label: None,
+            memory_hints: Default::default(),
+            trace: wgpu::Trace::Off,
+        })
         .await
         .unwrap();
 
@@ -123,7 +120,7 @@ pub struct WebSplat {
     window: Arc<Window>,
     scale_factor: f32,
 
-    pc: PointCloud,
+    pub(crate) pc: PointCloud,
     pointcloud_file_path: Option<PathBuf>,
     renderer: GaussianRenderer,
     animation: Option<(Animation<PerspectiveCamera>, bool)>,
@@ -137,7 +134,7 @@ pub struct WebSplat {
 
     #[cfg(not(target_arch = "wasm32"))]
     history: RingBuffer<(Duration, Duration, Duration)>,
-    display: Display,
+    display: ImageUpscaler,
 
     splatting_args: SplattingArgs,
 
@@ -151,7 +148,9 @@ pub struct WebSplat {
 
     vsync: bool,
 
-    frame_buffer: FrameBuffer
+    frame_buffer: FrameBuffer,
+    upscale_factor: f32,
+    last_splatting_args: Option<renderer::SplattingArgs>,
 }
 
 impl WebSplat {
@@ -195,7 +194,7 @@ impl WebSplat {
             format: surface_format,
             width: size.width,
             height: size.height,
-            desired_maximum_frame_latency:1,
+            desired_maximum_frame_latency: 1,
             present_mode: if render_config.no_vsync {
                 wgpu::PresentMode::AutoNoVsync
             } else {
@@ -215,6 +214,17 @@ impl WebSplat {
 
         let aabb = pc.bbox();
         let aspect = size.width as f32 / size.height as f32;
+        // let view_camera = PerspectiveCamera::new(
+        //     aabb.center() - Vector3::new(1., 1., 1.) * aabb.radius() * 0.5,
+        //     Quaternion::one(),
+        //     PerspectiveProjection::new(
+        //         Vector2::new(size.width, size.height),
+        //         Vector2::new(Deg(45.), Deg(45. / aspect)),
+        //         0.01,
+        //         1000.,
+        //     ),
+        // );
+
         let view_camera = PerspectiveCamera::new(
             aabb.center() - Vector3::new(1., 1., 1.) * aabb.radius() * 0.5,
             Quaternion::one(),
@@ -225,13 +235,15 @@ impl WebSplat {
                 1000.,
             ),
         );
+        log::debug!("aabb {:?}", aabb);
+        log::debug!("view camera: {:?}", view_camera);
 
         let mut controller = CameraController::new(0.1, 0.05);
         controller.center = pc.center();
         // controller.up = pc.up;
         let ui_renderer = ui_renderer::EguiWGPU::new(&device, surface_format, &window);
 
-        let display = Display::new(
+        let display = ImageUpscaler::new(
             &device,
             render_format,
             surface_format.remove_srgb_suffix(),
@@ -249,7 +261,13 @@ impl WebSplat {
 
         let last_draw = Instant::now();
 
-        let frame_buffer = FrameBuffer::new(&device, size.width, size.height, render_format);
+        let upscale_factor = 1.;
+        let frame_buffer = FrameBuffer::new(
+            &device,
+            (size.width as f32 * upscale_factor) as u32,
+            (size.height as f32 * upscale_factor) as u32,
+            render_format,
+        );
 
         Ok(Self {
             device,
@@ -272,6 +290,8 @@ impl WebSplat {
                 scene_extend: None,
                 background_color: wgpu::Color::BLACK,
                 resolution: Vector2::new(size.width, size.height),
+                selected_channel: renderer::VisChannel::Color,
+                ..Default::default()
             },
             pc,
             // camera: view_camera,
@@ -294,7 +314,9 @@ impl WebSplat {
             last_draw,
             min_wait,
             vsync: !render_config.no_vsync,
-            frame_buffer
+            frame_buffer,
+            upscale_factor,
+            last_splatting_args: None,
         })
     }
 
@@ -316,23 +338,39 @@ impl WebSplat {
         Ok(())
     }
 
+    fn resize_framebuffer(&mut self, width: u32, height: u32) {
+        self.frame_buffer.resize(
+            &self.device,
+            (width as f32 / self.upscale_factor) as u32,
+            (height as f32 / self.upscale_factor) as u32,
+        );
+        self.display.resize(
+            &self.device,
+            (width as f32 / self.upscale_factor) as u32,
+            (height as f32 / self.upscale_factor) as u32,
+        );
+
+        self.splatting_args.viewport = Vector2::new(
+            (width as f32 / self.upscale_factor) as u32,
+            (height as f32 / self.upscale_factor) as u32,
+        );
+        self.splatting_args.camera.projection.resize(
+            (width as f32 / self.upscale_factor) as u32,
+            (height as f32 / self.upscale_factor) as u32,
+        );
+    }
+
     fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>, scale_factor: Option<f32>) {
         if new_size.width > 0 && new_size.height > 0 {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
-            self.display
-                .resize(&self.device, new_size.width, new_size.height);
+
             self.splatting_args
                 .camera
                 .projection
                 .resize(new_size.width, new_size.height);
-            self.splatting_args.viewport = Vector2::new(new_size.width, new_size.height);
-            self.splatting_args
-                .camera
-                .projection
-                .resize(new_size.width, new_size.height);
-            self.frame_buffer.resize(&self.device, new_size.width, new_size.height);
+            self.resize_framebuffer(new_size.width, new_size.height);
         }
         if let Some(scale_factor) = scale_factor {
             if scale_factor > 0. {
@@ -431,7 +469,7 @@ impl WebSplat {
                 &self.pc,
                 self.splatting_args,
                 (&mut self.stopwatch).into(),
-                &self.frame_buffer
+                &self.frame_buffer,
             );
         }
 
@@ -465,7 +503,8 @@ impl WebSplat {
                 })],
                 ..Default::default()
             });
-            self.renderer.render(&mut render_pass, &self.pc,&self.frame_buffer);
+            self.renderer
+                .render(&mut render_pass, &self.pc, &self.frame_buffer);
         }
         if let Some(stopwatch) = &mut self.stopwatch {
             stopwatch.stop(&mut encoder, "rasterization").unwrap();
@@ -477,7 +516,7 @@ impl WebSplat {
             self.splatting_args.background_color,
             self.renderer.camera(),
             &self.renderer.render_settings(),
-            &self.frame_buffer
+            &self.frame_buffer,
         );
         self.stopwatch.as_mut().map(|s| s.end(&mut encoder));
 
@@ -505,6 +544,7 @@ impl WebSplat {
         self.queue.submit([encoder.finish()]);
 
         output.present();
+        self.last_splatting_args = Some(self.splatting_args.clone());
         self.splatting_args.resolution = Vector2::new(self.config.width, self.config.height);
         Ok(())
     }
@@ -534,7 +574,7 @@ impl WebSplat {
         if self.saved_cameras.len() > 1 {
             let shot = TrackingShot::from_cameras(self.saved_cameras.clone());
             let a = Animation::new(
-                Duration::from_secs_f32(self.saved_cameras.len() as f32 * 2.),
+                Duration::from_secs_f32(self.saved_cameras.len() as f32 * 5.),
                 true,
                 Box::new(shot),
             );
@@ -653,10 +693,12 @@ impl WebSplat {
                             if let Err(err) = self.reload() {
                                 log::error!("failed to reload volume: {:?}", err);
                             }
+                        } else if let Some(num) = key_to_num(key) {
+                            if let Ok(method) = UpscalingMethod::try_from(num) {
+                                self.splatting_args.upscaling_method = method;
+                            }
                         } else if let Some(scene) = &self.scene {
-                            let new_camera = if let Some(num) = key_to_num(key) {
-                                Some(num as usize)
-                            } else if key == KeyCode::KeyR {
+                            let new_camera = if key == KeyCode::KeyR {
                                 Some(rand::random::<usize>() % scene.num_cameras())
                             } else if key == KeyCode::KeyN {
                                 scene.nearest_camera(self.splatting_args.camera.position, None)
@@ -674,6 +716,7 @@ impl WebSplat {
                                 self.set_scene_camera(new_camera);
                             }
                         }
+                        self.window.request_redraw();   
                     }
                     self.controller
                         .process_keyboard(key, event.state == ElementState::Pressed);
@@ -710,15 +753,16 @@ impl WebSplat {
                 let dt = now - self.last_draw;
                 self.last_draw = now;
 
-                let old_settings = self.splatting_args.clone();
                 self.update(dt);
 
+                let old_upscale = self.upscale_factor;
                 let (redraw_ui, shapes) = self.ui();
 
                 let resolution_change = self.splatting_args.resolution
-                    != Vector2::new(self.config.width, self.config.height);
+                    != Vector2::new(self.config.width, self.config.height)
+                    || old_upscale != self.upscale_factor;
 
-                let request_redraw = old_settings != self.splatting_args || resolution_change;
+                let request_redraw = self.last_splatting_args != Some(self.splatting_args) || resolution_change;
 
                 if request_redraw || redraw_ui {
                     self.fps = (1. / dt.as_secs_f32()) * 0.05 + self.fps * 0.95;
@@ -735,7 +779,7 @@ impl WebSplat {
                     }
                 }
                 // if !self.vsync {
-                    self.window.request_redraw();
+                self.window.request_redraw();
                 // }
             }
             _ => {}
@@ -745,11 +789,25 @@ impl WebSplat {
 
 impl ApplicationHandler<()> for Application {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        let window_attributes = Window::default_attributes().with_inner_size(LogicalSize::new(800, 600)).with_title(format!(
-            "{} ({})",
-            env!("CARGO_PKG_NAME"),
-            env!("CARGO_PKG_VERSION")
-        ));
+        let (width, height) = match &self.scene {
+            Some(scene) => {
+                let mut width = 0;
+                let mut height = 0;
+                for c in scene.cameras(None) {
+                    width = width.max(c.width * 2);
+                    height = height.max(c.height * 2);
+                }
+                (width, height)
+            }
+            None => (800, 600),
+        };
+        let window_attributes = Window::default_attributes()
+            .with_inner_size(LogicalSize::new(width, height))
+            .with_title(format!(
+                "{} ({})",
+                env!("CARGO_PKG_NAME"),
+                env!("CARGO_PKG_VERSION")
+            ));
         let window = event_loop.create_window(window_attributes).unwrap();
 
         let mut state = pollster::block_on(WebSplat::new(
@@ -817,7 +875,7 @@ impl ApplicationHandler<()> for Application {
                     state.window.request_redraw();
                 }
             }
-            winit::event::StartCause::WaitCancelled { .. }=>{
+            winit::event::StartCause::WaitCancelled { .. } => {
                 if let Some(state) = self.web_splat.as_mut() {
                     state.window.request_redraw();
                 }
@@ -838,8 +896,8 @@ pub async fn open_window(
     pointcloud_file_path: Option<PathBuf>,
     scene_file_path: Option<PathBuf>,
 ) {
-    #[cfg(not(target_arch = "wasm32"))]
-    env_logger::init();
+    // #[cfg(not(target_arch = "wasm32"))]
+    // env_logger::init();
     let event_loop = EventLoop::new().unwrap();
 
     let scene = scene_file.and_then(|f| match Scene::from_json(f) {

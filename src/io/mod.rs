@@ -92,6 +92,9 @@ impl GenericGaussianPointCloud {
         if bbox.radius() < 10. {
             up = None;
         }
+        if bbox.radius() == 0. {
+            bbox = Aabb::unit();
+        }
         Self {
             gaussians: bytemuck::cast_slice(&gaussians).to_vec(),
             sh_coefs: bytemuck::cast_slice(&sh_coefs).to_vec(),
