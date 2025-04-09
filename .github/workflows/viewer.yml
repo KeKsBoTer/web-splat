@@ -38,7 +38,7 @@ jobs:
           target: wasm32-unknown-unknown
       - name: Build
         run: |
-          cargo install -f wasm-bindgen-cli --version 0.2.92
+          cargo install -f wasm-bindgen-cli --version 0.2.100
           bash build_wasm.sh
       - name: Download scenes
         uses: robinraju/release-downloader@v1.8
