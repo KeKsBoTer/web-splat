@@ -15,8 +15,8 @@ impl EguiWGPU {
     ) -> Self {
         let ctx = Default::default();
         Self {
-            winit: egui_winit::State::new(ctx, ViewportId::ROOT, window, None, None),
-            renderer: egui_wgpu::Renderer::new(device, output_format, None, 1),
+            winit: egui_winit::State::new(ctx, ViewportId::ROOT, window, None, None,None),
+            renderer: egui_wgpu::Renderer::new(device, output_format, None, 1,false),
         }
     }
 
@@ -37,12 +37,12 @@ impl EguiWGPU {
 
     pub fn begin_frame(&mut self, window: &winit::window::Window) {
         let raw_input = self.winit.take_egui_input(window);
-        self.winit.egui_ctx().begin_frame(raw_input);
+        self.winit.egui_ctx().begin_pass(raw_input);
     }
 
     /// Returns `needs_repaint` and shapes to draw.
     pub fn end_frame(&mut self, window: &winit::window::Window) -> FullOutput {
-        let output = self.winit.egui_ctx().end_frame();
+        let output = self.winit.egui_ctx().end_pass();
         self.winit
             .handle_platform_output(window, output.platform_output.clone());
         output
@@ -82,10 +82,10 @@ impl EguiWGPU {
         }
     }
 
-    pub fn render<'pass>(
-        &'pass mut self,
-        render_pass: &mut wgpu::RenderPass<'pass>,
-        state: &'pass UIRenderState,
+    pub fn render(
+        &mut self,
+        render_pass: &mut wgpu::RenderPass<'static>,
+        state: & UIRenderState,
     ) {
         self.renderer
             .render(render_pass, &state.clipped_meshes, &state.screen_descriptor);

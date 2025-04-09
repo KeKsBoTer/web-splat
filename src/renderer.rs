@@ -53,13 +53,13 @@ impl GaussianRenderer {
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 buffers: &[],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: color_format,
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
@@ -79,6 +79,7 @@ impl GaussianRenderer {
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
+            cache: None,
         });
 
         let draw_indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -368,8 +369,9 @@ impl PreprocessPipeline {
             label: Some("preprocess pipeline"),
             layout: Some(&pipeline_layout),
             module: &shader,
-            entry_point: "preprocess",
+            entry_point: Some("preprocess"),
             compilation_options: Default::default(),
+            cache: None,
         });
         Self(pipeline)
     }
@@ -404,7 +406,7 @@ impl PreprocessPipeline {
         pass.set_pipeline(&self.0);
         pass.set_bind_group(0, camera.bind_group(), &[]);
         pass.set_bind_group(1, pc.bind_group(), &[]);
-        pass.set_bind_group(2, &sort_bg, &[]);
+        pass.set_bind_group(2, sort_bg, &[]);
         pass.set_bind_group(3, render_settings.bind_group(), &[]);
 
         let wgs_x = (pc.num_points() as f32 / 256.0).ceil() as u32;
@@ -445,7 +447,7 @@ impl Display {
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 buffers: &[],
                 compilation_options: Default::default(),
             },
@@ -457,7 +459,7 @@ impl Display {
             multisample: MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: target_format,
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
@@ -466,6 +468,7 @@ impl Display {
                 compilation_options: Default::default(),
             }),
             multiview: None,
+            cache: None,
         });
         let env_bg = Self::create_env_map_bg(device, None);
         let (view, bind_group) = Self::create_render_target(device, source_format, width, height);

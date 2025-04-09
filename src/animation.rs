@@ -1,5 +1,5 @@
 #[cfg(target_arch = "wasm32")]
-use instant::Duration;
+use web_time::Duration;
 use splines::{Interpolate, Key};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;

@@ -1,4 +1,4 @@
-export RUSTFLAGS=--cfg=web_sys_unstable_apis 
+export RUSTFLAGS='--cfg getrandom_backend="wasm_js"'
 cargo build \
     --no-default-features \
     --target wasm32-unknown-unknown \

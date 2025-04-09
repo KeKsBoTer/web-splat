@@ -1,6 +1,6 @@
 use cgmath::*;
 #[cfg(target_arch = "wasm32")]
-use instant::Duration;
+use web_time::Duration;
 use num_traits::Float;
 use std::f32::consts::PI;
 #[cfg(not(target_arch = "wasm32"))]

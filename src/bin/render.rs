@@ -101,6 +101,8 @@ async fn render_views(
                 walltime: Duration::from_secs(100),
                 scene_center: None,
                 scene_extend: None,
+                background_color: wgpu::Color::TRANSPARENT,
+                resolution,
             },
             &mut None,
         );
@@ -213,9 +215,9 @@ pub async fn download_texture(
 
     encoder.copy_texture_to_buffer(
         texture.as_image_copy(),
-        wgpu::ImageCopyBufferBase {
+        wgpu::TexelCopyBufferInfoBase{
             buffer: &staging_buffer,
-            layout: wgpu::ImageDataLayout {
+            layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(bytes_per_row),
                 rows_per_image: Some(fb_size.height),

@@ -1,5 +1,5 @@
 #[cfg(target_arch = "wasm32")]
-use instant::Duration;
+use web_time::Duration;
 use std::ops::RangeInclusive;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
@@ -81,12 +81,12 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
                 )
                 .show(ui, |ui| {
                     let line =
-                        egui_plot::Line::new(PlotPoints::from_ys_f32(&pre)).name("preprocess");
+                        egui_plot::Line::new("preprocess",PlotPoints::from_ys_f32(&pre));
                     ui.line(line);
-                    let line = egui_plot::Line::new(PlotPoints::from_ys_f32(&sort)).name("sorting");
+                    let line = egui_plot::Line::new("sorting",PlotPoints::from_ys_f32(&sort));
                     ui.line(line);
                     let line =
-                        egui_plot::Line::new(PlotPoints::from_ys_f32(&rast)).name("rasterize");
+                        egui_plot::Line::new("rasterize",PlotPoints::from_ys_f32(&rast));
                     ui.line(line);
                 });
         });
@@ -100,7 +100,7 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
                 ui.add(
                     egui::DragValue::new(&mut state.splatting_args.gaussian_scaling)
                         .range((1e-4)..=1.)
-                        .clamp_to_range(true)
+                        .clamp_existing_to_range(true)
                         .speed(1e-2),
                 );
                 ui.end_row();
@@ -234,7 +234,7 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
                                     let drag = ui.add(
                                         egui::DragValue::new(c)
                                             .range(0..=(scene.num_cameras().saturating_sub(1)))
-                                            .clamp_to_range(true),
+                                            .clamp_existing_to_range(true),
                                     );
                                     if drag.changed() {
                                         new_camera = Some(SetCamera::ID(*c));
@@ -440,7 +440,7 @@ fn optional_drag<T: Numeric>(
         })
     };
     if let Some(range) = range {
-        drag = drag.range(range).clamp_to_range(true);
+        drag = drag.range(range).clamp_existing_to_range(true);
     }
     if let Some(speed) = speed {
         drag = drag.speed(speed);

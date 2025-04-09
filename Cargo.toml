@@ -8,37 +8,37 @@ description = "3D Gaussian Splatting Viewer"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-wgpu = { version = "0.20.1" }
-winit = "0.29.14"
+wgpu = { version = "24.0.3" }
+winit = "0.30.9"
 cgmath = { version = "0.18.0", features = [
     "bytemuck",
 ], git = 'https://github.com/rustgd/cgmath' }
 env_logger = "0.11"
-clap = { version = "4.5.2", features = ["derive"] }
+clap = { version = "4.5.35", features = ["derive"] }
 bytemuck = { version = "1.14.3", features = ["derive"] }
-anyhow = "1.0.81"
+anyhow = "1.0.97"
 ply-rs = "0.1.3"
 byteorder = "1.5.0"
-serde_json = "1.0.114"
+serde_json = "1.0.140"
 serde = { version = "1.0.188", features = ["derive"] }
-num-traits = "0.2.18"
-half = { version = "2.4.0", features = ["bytemuck", "num-traits"] }
-log = "0.4.21"
+num-traits = "0.2.19"
+half = { version = "2.6.0", features = ["bytemuck", "num-traits"] }
+log = "0.4.27"
 rayon = "1.9.0"
-image = "0.25.0"
-indicatif = "0.17.8"
+image = "0.25.6"
+indicatif = "0.17.11"
 
 
-egui = "0.28.1"
-egui-wgpu = "0.28.1"
-egui-winit = { version = "0.28.1", features = [], default-features = false }
-egui_plot = "0.28.1"
-egui_dnd = "0.9.1"
+egui = "0.31.1"
+egui-wgpu = "0.31.1"
+egui-winit = { version = "0.31.1", features = [], default-features = false }
+egui_plot = "0.32.1"
+egui_dnd = "0.12.0"
 
-rand = "0.8.5"
+rand = "0.9"
 npyz = { version = "0.8.3", features = ["npz", "half"], optional = true }
 futures-intrusive = "0.5.0"
-splines = { version = "4.3.1", features = [
+splines = { features = [
     "cgmath",
 ], git = "https://github.com/KeKsBoTer/splines" }
 
@@ -61,17 +61,17 @@ npz = ["dep:npyz"]
 video = []
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-pollster = { version = "0.3.0", features = ["macro"] }
+pollster = { version = "0.4.0", features = ["macro"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 
-getrandom = { version = "0.2", features = ["js"] }
+getrandom = { version = "0.3.2", features = ["wasm_js"] }
 wasm-bindgen = "0.2.92"
 console_error_panic_hook = "0.1.7"
 wasm-bindgen-futures = "0.4.42"
 console_log = "1"
 log = "0.4"
-instant = { version = "0.1.12", features = ["wasm-bindgen"] }
+web-time = "1.1.0"
 web-sys = { version = "0.3.69" }
 
 [profile.web-release]

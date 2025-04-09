@@ -6,7 +6,7 @@ use std::{
 
 use image::Pixel;
 #[cfg(target_arch = "wasm32")]
-use instant::{Duration, Instant};
+use web_time::{Duration, Instant};
 use renderer::Display;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
@@ -23,11 +23,11 @@ use utils::RingBuffer;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::wasm_bindgen;
 use winit::{
-    dpi::PhysicalSize,
+    dpi::{LogicalSize, PhysicalSize},
     event::{DeviceEvent, ElementState, Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
-    window::{Window, WindowBuilder},
+    window::Window,
 };
 
 mod animation;
@@ -69,7 +69,7 @@ pub struct WGPUContext {
 
 impl WGPUContext {
     pub async fn new_instance() -> Self {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: Backends::PRIMARY,
             ..Default::default()
         });
@@ -112,6 +112,7 @@ impl WGPUContext {
                         ..adapter_limits
                     },
                     label: None,
+                    memory_hints: wgpu::MemoryHints::Performance
                 },
                 None,
             )
@@ -171,7 +172,7 @@ impl WindowContext {
 
         let window = Arc::new(window);
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
 
         let surface: wgpu::Surface = instance.create_surface(window.clone())?;
 
@@ -481,20 +482,23 @@ impl WindowContext {
         self.stopwatch.as_mut().map(|s| s.end(&mut encoder));
 
         if let Some(state) = &ui_state {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("render pass ui"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view_srgb,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
+            let mut render_pass = encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("render pass ui"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view_srgb,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                })
+                .forget_lifetime();
             self.ui_renderer.render(&mut render_pass, state);
         }
+
 
         if let Some(ui_state) = ui_state {
             self.ui_renderer.cleanup(ui_state)
@@ -671,22 +675,27 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
         }
     });
 
-    let window_size = if let Some(scene) = &scene {
-        let camera = scene.camera(0).unwrap();
-        let factor = 1200. / camera.width as f32;
-        PhysicalSize::new(
-            (camera.width as f32 * factor) as u32,
-            (camera.height as f32 * factor) as u32,
-        )
-    } else {
-        PhysicalSize::new(800, 600)
-    };
-
-    let window = WindowBuilder::new()
-        .with_title("web-splats")
-        .with_inner_size(window_size)
-        .build(&event_loop)
-        .unwrap();
+    // let window_size = if let Some(scene) = &scene {
+    //     let camera = scene.camera(0).unwrap();
+    //     let factor = 1200. / camera.width as f32;
+    //     LogicalSize::new(
+    //         (camera.width as f32 * factor) as u32,
+    //         (camera.height as f32 * factor) as u32,
+    //     )
+    // } else {
+    //     LogicalSize::new(800, 600)
+    // };
+    let window_size = LogicalSize::new(800, 600);
+    let window_attributes = Window::default_attributes()
+        .with_inner_size( window_size)
+        .with_title(format!(
+            "{} ({})",
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION")
+        ));
+        
+    #[allow(deprecated)]
+    let window = event_loop.create_window(window_attributes).unwrap();
 
     #[cfg(target_arch = "wasm32")]
     {
@@ -750,6 +759,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
 
     let mut last = Instant::now();
 
+    #[allow(deprecated)]
     event_loop.run(move |event,target| 
         
         match event {
@@ -802,7 +812,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
                             Some(num as usize)
                         }
                         else if key == KeyCode::KeyR{
-                            Some(rand::random::<usize>()%scene.num_cameras())
+                            Some((rand::random::<u32>() as usize)%scene.num_cameras())
                         }else if key == KeyCode::KeyN{
                             scene.nearest_camera(state.splatting_args.camera.position,None)
                         }else if key == KeyCode::PageUp{
