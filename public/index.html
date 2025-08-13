@@ -159,15 +159,11 @@
         let pc_file = params.get("file");
 
 
-        function wihtProgress(response) {
+        function withProgress(response) {
             if (!response.ok) {
                 throw new Error("Cannot download file", { cause: response });
             }
-            const contentEncoding = response.headers.get('content-encoding');
-            const contentLength = response.headers.get(contentEncoding ? 'x-file-size' : 'content-length');
-            if (contentLength === null) {
-                throw Error('Response size header unavailable');
-            }
+            const contentLength = response.headers.get('content-length') || 0;
             const total = parseInt(contentLength, 10);
             let loaded = 0;
             return new Response(
@@ -201,7 +197,7 @@
         } else {
             try {
                 document.getElementById("spinner").style.display = "flex";
-                let pc_promise = fetch(pc_file).then(wihtProgress).then(response => response.arrayBuffer()).then(data => new Uint8Array(data));
+                let pc_promise = fetch(pc_file).then(withProgress).then(response => response.arrayBuffer()).then(data => new Uint8Array(data));
                 var scene_promise = Promise.resolve(null);
                 if (scene_file) {
                     scene_promise = fetch(scene_file, {
@@ -213,7 +209,7 @@
 
                 let [pc_data, scene_data] = await Promise.all([pc_promise, scene_promise]);
                 await init_promise;
-                run_wasm(pc_data, scene_data,pc_file,scene_file);
+                run_wasm(pc_data, scene_data, pc_file, scene_file);
             } catch (e) {
                 document.getElementById("spinner").style.display = "none";
                 let errorPane = document.getElementById("loading-error");

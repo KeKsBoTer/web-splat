@@ -112,9 +112,9 @@ impl WGPUContext {
                         ..adapter_limits
                     },
                     label: None,
-                    memory_hints: wgpu::MemoryHints::Performance
+                    memory_hints: wgpu::MemoryHints::Performance,
+                    trace: wgpu::Trace::Off,
                 },
-                None,
             )
             .await
             .unwrap();

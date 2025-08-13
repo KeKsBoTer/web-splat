@@ -235,7 +235,7 @@ impl GPURSSorter {
             module: &shader,
             entry_point: Some("zero_histograms"),
             compilation_options: Default::default(),
-            cache:None,
+            cache: None,
         });
         let histogram_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("calculate_histogram"),
@@ -243,7 +243,7 @@ impl GPURSSorter {
             module: &shader,
             entry_point: Some("calculate_histogram"),
             compilation_options: Default::default(),
-            cache:None,
+            cache: None,
         });
         let prefix_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("prefix_histogram"),
@@ -251,7 +251,7 @@ impl GPURSSorter {
             module: &shader,
             entry_point: Some("prefix_histogram"),
             compilation_options: Default::default(),
-            cache:None,
+            cache: None,
         });
         let scatter_even_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("scatter_even"),
@@ -259,7 +259,7 @@ impl GPURSSorter {
             module: &shader,
             entry_point: Some("scatter_even"),
             compilation_options: Default::default(),
-            cache:None,
+            cache: None,
         });
         let scatter_odd_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("scatter_odd"),
@@ -267,7 +267,7 @@ impl GPURSSorter {
             module: &shader,
             entry_point: Some("scatter_odd"),
             compilation_options: Default::default(),
-            cache:None,
+            cache: None,
         });
 
         return Self {
@@ -308,7 +308,9 @@ impl GPURSSorter {
         });
         self.record_sort(&bind_group, n, &mut encoder);
         let idx = queue.submit([encoder.finish()]);
-        device.poll(wgpu::Maintain::WaitForSubmissionIndex(idx));
+        device
+            .poll(wgpu::PollType::WaitForSubmissionIndex(idx))
+            .unwrap();
 
         let sorted = download_buffer::<f32>(&keyval_a, device, queue).await;
         for i in 0..n {
@@ -890,7 +892,7 @@ fn upload_to_buffer<T: bytemuck::Pod>(
     encoder.copy_buffer_to_buffer(&staging_buffer, 0, buffer, 0, staging_buffer.size());
     queue.submit([encoder.finish()]);
 
-    device.poll(wgpu::Maintain::Wait);
+    let _ = device.poll(wgpu::PollType::Wait).unwrap();
     staging_buffer.destroy();
 }
 
@@ -916,7 +918,7 @@ async fn download_buffer<T: Clone>(
     let buffer_slice = download_buffer.slice(..);
     let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
     buffer_slice.map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
-    device.poll(wgpu::Maintain::Wait);
+    device.poll(wgpu::PollType::Wait).unwrap();
     rx.receive().await.unwrap().unwrap();
     let data = buffer_slice.get_mapped_range();
     let r;
