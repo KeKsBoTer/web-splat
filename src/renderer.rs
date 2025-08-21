@@ -182,7 +182,7 @@ impl GaussianRenderer {
                     tx.send(num_points).unwrap();
                 },
             );
-            device.poll(wgpu::Maintain::Wait);
+            device.poll(wgpu::MaintainBase::Wait).unwrap();
             rx.receive().await.unwrap()
         };
         return n;

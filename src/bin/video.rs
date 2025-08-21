@@ -286,7 +286,7 @@ async fn download_buffer<T: Clone>(
     let buffer_slice = download_buffer.slice(..);
     let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
     buffer_slice.map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
-    device.poll(wgpu::Maintain::Wait);
+    device.poll(wgpu::MaintainBase::Wait).unwrap();
     rx.receive().await.unwrap().unwrap();
     let data = buffer_slice.get_mapped_range();
     let r;

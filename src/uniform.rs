@@ -85,7 +85,8 @@ where
             label: Some("uniform bind group layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::all(),
+                // do not change to wgpu::ShaderStages::all(), this gives an error in chrome 
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
                 ty: Self::binding_type(),
                 count: None,
             }],
