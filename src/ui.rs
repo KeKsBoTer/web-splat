@@ -334,14 +334,16 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
                 .num_columns(2)
                 .striped(true)
                 .show(ui, |ui| {
-                    ui.strong("Camera");
+                    ui.strong("Camera Controls");
                     ui.end_row();
+                    
+                    // Desktop controls
                     ui.label("Rotate Camera");
-                    ui.label("Left click + drag");
+                    ui.label("Left click + drag / Touch + drag");
                     ui.end_row();
 
                     ui.label("Move Target/Center");
-                    ui.label("Right click + drag");
+                    ui.label("Right click + drag / Two finger drag");
                     ui.end_row();
 
                     ui.label("Tilt Camera");
@@ -349,14 +351,31 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
                     ui.end_row();
 
                     ui.label("Zoom");
-                    ui.label("Mouse wheel");
+                    ui.label("Mouse wheel / Pinch gesture");
                     ui.end_row();
 
+                    ui.separator();
+                    ui.end_row();
+                    
+                    ui.strong("Mobile Touch Controls");
+                    ui.end_row();
+                    ui.label("Rotate");
+                    ui.label("Single finger drag");
+                    ui.end_row();
+                    ui.label("Pan/Move");
+                    ui.label("Two finger drag");
+                    ui.end_row();
+                    ui.label("Zoom");
+                    ui.label("Pinch to zoom");
+                    ui.end_row();
+                    
+                    ui.separator();
+                    ui.end_row();
+
+                    ui.strong("Scene Navigation");
+                    ui.end_row();
                     ui.label("Toggle UI");
                     ui.label("U");
-                    ui.end_row();
-
-                    ui.strong("Scene Views");
                     ui.end_row();
                     ui.label("Views 0-9");
                     ui.label("0-9");
