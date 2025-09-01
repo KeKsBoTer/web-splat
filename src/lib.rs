@@ -24,7 +24,7 @@ use utils::RingBuffer;
 use wasm_bindgen::prelude::wasm_bindgen;
 use winit::{
     dpi::{LogicalSize, PhysicalSize},
-    event::{DeviceEvent, ElementState, Event, WindowEvent},
+    event::{DeviceEvent, ElementState, Event, WindowEvent, TouchPhase as WinitTouchPhase},
     event_loop::{ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
     window::Window,
@@ -848,6 +848,22 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
                     winit::event::MouseButton::Right => state.controller.right_mouse_pressed = *button_state == ElementState::Pressed,
                     _=>{}
                 }
+            }
+            WindowEvent::Touch(touch) => {
+                let touch_phase = match touch.phase {
+                    WinitTouchPhase::Started => controller::TouchPhase::Started,
+                    WinitTouchPhase::Moved => controller::TouchPhase::Moved,
+                    WinitTouchPhase::Ended => controller::TouchPhase::Ended,
+                    WinitTouchPhase::Cancelled => controller::TouchPhase::Cancelled,
+                };
+                
+                let controller_touch = controller::Touch {
+                    id: touch.id,
+                    position: (touch.location.x as f32, touch.location.y as f32),
+                    phase: touch_phase,
+                };
+                
+                state.controller.process_touch(controller_touch);
             }
             WindowEvent::RedrawRequested => {
                 if !config.no_vsync{

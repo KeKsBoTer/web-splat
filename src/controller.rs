@@ -1,14 +1,48 @@
 use cgmath::*;
-#[cfg(target_arch = "wasm32")]
-use web_time::Duration;
 use num_traits::Float;
 use std::f32::consts::PI;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
+#[cfg(target_arch = "wasm32")]
+use web_time::Duration;
 
 use winit::keyboard::KeyCode;
 
 use crate::camera::PerspectiveCamera;
+
+#[derive(Debug, Clone)]
+pub struct TouchState {
+    pub touches: Vec<Touch>,
+    pub last_touch_count: usize,
+    pub last_pinch_distance: Option<f32>,
+    pub last_touch_center: Option<(f32, f32)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Touch {
+    pub id: u64,
+    pub position: (f32, f32),
+    pub phase: TouchPhase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TouchPhase {
+    Started,
+    Moved,
+    Ended,
+    Cancelled,
+}
+
+impl TouchState {
+    pub fn new() -> Self {
+        Self {
+            touches: Vec::new(),
+            last_touch_count: 0,
+            last_pinch_distance: None,
+            last_touch_center: None,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct CameraController {
@@ -25,6 +59,9 @@ pub struct CameraController {
     pub right_mouse_pressed: bool,
     pub alt_pressed: bool,
     pub user_inptut: bool,
+
+    // Touch support
+    pub touch_state: TouchState,
 }
 
 impl CameraController {
@@ -42,6 +79,7 @@ impl CameraController {
             right_mouse_pressed: false,
             alt_pressed: false,
             user_inptut: false,
+            touch_state: TouchState::new(),
         }
     }
 
@@ -102,6 +140,98 @@ impl CameraController {
     pub fn process_scroll(&mut self, dy: f32) {
         self.scroll += -dy;
         self.user_inptut = true;
+    }
+
+    pub fn process_touch(&mut self, touch: Touch) {
+        // Update touch state
+        match touch.phase {
+            TouchPhase::Started => {
+                self.touch_state.touches.push(touch);
+            }
+            TouchPhase::Moved => {
+                if let Some(existing_touch) = self
+                    .touch_state
+                    .touches
+                    .iter_mut()
+                    .find(|t| t.id == touch.id)
+                {
+                    existing_touch.position = touch.position;
+                }
+            }
+            TouchPhase::Ended | TouchPhase::Cancelled => {
+                self.touch_state.touches.retain(|t| t.id != touch.id);
+            }
+        }
+
+        self.handle_touch_gestures();
+        self.user_inptut = true;
+    }
+
+    fn handle_touch_gestures(&mut self) {
+        let touch_count = self.touch_state.touches.len();
+
+        match touch_count {
+            1 => {
+                // Single touch - camera rotation
+                let touch = &self.touch_state.touches[0];
+                if let Some(last_center) = self.touch_state.last_touch_center {
+                    let dx = touch.position.0 - last_center.0;
+                    let dy = touch.position.1 - last_center.1;
+
+                    // Scale the touch movement similar to mouse movement but with better mobile sensitivity
+                    self.rotation.x += dx * 0.3; // Reduced sensitivity for more precise control
+                    self.rotation.y += dy * 0.3;
+                }
+                self.touch_state.last_touch_center = Some(touch.position);
+            }
+            2 => {
+                // Two touches - pinch to zoom and pan
+                let touch1 = &self.touch_state.touches[0];
+                let touch2 = &self.touch_state.touches[1];
+
+                let center_x = (touch1.position.0 + touch2.position.0) / 2.0;
+                let center_y = (touch1.position.1 + touch2.position.1) / 2.0;
+                let current_center = (center_x, center_y);
+
+                // Calculate distance for pinch gesture
+                let dx = touch2.position.0 - touch1.position.0;
+                let dy = touch2.position.1 - touch1.position.1;
+                let current_distance = (dx * dx + dy * dy).sqrt();
+
+                if let Some(last_distance) = self.touch_state.last_pinch_distance {
+                    // Pinch to zoom with improved sensitivity
+                    let distance_change = current_distance - last_distance;
+                    let zoom_factor = distance_change * 0.005; // Adjusted for better mobile zoom control
+                    self.scroll += zoom_factor;
+                }
+
+                if let Some(last_center) = self.touch_state.last_touch_center {
+                    // Pan with two fingers - improved sensitivity for mobile
+                    let center_dx = current_center.0 - last_center.0;
+                    let center_dy = current_center.1 - last_center.1;
+
+                    self.shift.y += -center_dx * 0.3; // Reduced sensitivity for more precise panning
+                    self.shift.x += center_dy * 0.3;
+                }
+
+                self.touch_state.last_pinch_distance = Some(current_distance);
+                self.touch_state.last_touch_center = Some(current_center);
+            }
+            _ => {
+                // No touches or more than 2 touches - reset state
+                self.touch_state.last_pinch_distance = None;
+                self.touch_state.last_touch_center = None;
+            }
+        }
+
+        self.touch_state.last_touch_count = touch_count;
+    }
+
+    pub fn clear_touch_state(&mut self) {
+        self.touch_state.touches.clear();
+        self.touch_state.last_touch_count = 0;
+        self.touch_state.last_pinch_distance = None;
+        self.touch_state.last_touch_center = None;
     }
 
     /// moves the controller center to the closest point on a line defined by the camera position and rotation
