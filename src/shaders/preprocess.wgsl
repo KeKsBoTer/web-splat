@@ -34,7 +34,8 @@ struct CameraUniforms {
 };
 
 struct Gaussian {
-    pos_opacity: array<u32,2>,
+    x:f32,y:f32,z:f32,
+    opacity: u32,
     cov: array<u32,3>
 }
 
@@ -170,10 +171,9 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let focal = camera.focal;
     let viewport = camera.viewport;
     let vertex = gaussians[idx];
-    let a = unpack2x16float(vertex.pos_opacity[0]);
-    let b = unpack2x16float(vertex.pos_opacity[1]);
-    let xyz = vec3<f32>(a.x, a.y, b.x);
-    var opacity = b.y;
+    let a = unpack2x16float(vertex.opacity);
+    let xyz = vec3<f32>(vertex.x, vertex.y, vertex.z);
+    var opacity = a.x;
 
     if any(xyz < render_settings.clipping_box_min.xyz) || any(xyz > render_settings.clipping_box_max.xyz) {
         return;

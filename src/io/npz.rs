@@ -93,7 +93,7 @@ impl<'a, R: Read + Seek> PointCloudReader for NpzReader<'a, R> {
             scaling_factor = Some(try_get_npz_array(&mut self.npz_file, "scaling_factor")?);
         }
 
-        let xyz: Vec<Point3<f16>> = try_get_npz_array::<f16>(&mut self.npz_file, "xyz")?
+        let xyz: Vec<Point3<f32>> = try_get_npz_array::<f16>(&mut self.npz_file, "xyz")?
             .as_slice()
             .chunks_exact(3)
             .map(|c: &[f16]| Point3::new(c[0], c[1], c[2]).cast().unwrap())

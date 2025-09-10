@@ -90,11 +90,11 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
         let cov = build_cov(rot, scale);
 
         return Ok((
-            Gaussian {
-                xyz: Point3::from(pos).cast().unwrap(),
-                opacity: f16::from_f32(opacity),
-                cov: cov.map(|x| f16::from_f32(x)),
-            },
+            Gaussian::new(
+                Point3::from(pos).cast().unwrap(),
+                f16::from_f32(opacity),
+                cov.map(|x| f16::from_f32(x)),
+            ),
             sh.map(|x| x.map(|y| f16::from_f32(y))),
         ));
     }

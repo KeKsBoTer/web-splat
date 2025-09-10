@@ -46,9 +46,9 @@ struct QuantizationUniforms {
 
 struct GaussianSplat {
     // 2x f16 xy
-    pos_xy: u32,
-    // 1x f16 z, int8 opacity, int8 scale_factor, 
-    pos_zw: u32,
+    x: f32,y:f32,z:f32,
+    // int8 opacity, int8 scale_factor, 
+    opacity_scale: u32,
     geometry_idx: u32,
     sh_idx: u32,
 };
@@ -215,7 +215,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let viewport = camera.viewport;
     let vertex = vertices[idx];
     let geometric_info = geometries[vertex.geometry_idx];
-    let xyz = vec3<f32>(unpack2x16float(vertex.pos_xy), unpack2x16float(vertex.pos_zw).x);
+    let xyz = vec3<f32>(vertex.x,vertex.y,vertex.z);
 
     if any(xyz < render_settings.clipping_box_min.xyz) || any(xyz > render_settings.clipping_box_max.xyz) {
         return;
@@ -234,8 +234,8 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     }
 
     // let opacity = unpack2x16float(vertex.pos_zw).y;
-    var opacity = dequantize(extractBits(i32(vertex.pos_zw), 2u * 8u, 8u), quantization.opacity);
-    let scaling_factor = exp(dequantize(extractBits(i32(vertex.pos_zw), 3u * 8u, 8u), quantization.scaling_factor));
+    var opacity = dequantize(extractBits(i32(vertex.opacity_scale), 0u * 8u, 8u), quantization.opacity);
+    let scaling_factor = exp(dequantize(extractBits(i32(vertex.opacity_scale), 1u * 8u, 8u), quantization.scaling_factor));
 
     let s2 = scaling_factor * scaling_factor;
     let cov1: vec2<f32> = unpack2x16float(geometric_info.cov[0]) * s2;

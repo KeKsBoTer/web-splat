@@ -12,14 +12,16 @@ use crate::io::GenericGaussianPointCloud;
 use crate::uniform::UniformBuffer;
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Clone, Copy)]
 pub struct GaussianCompressed {
-    pub xyz: Point3<f16>,
+    pub xyz: Point3<f32>,
     pub opacity: i8,
     pub scale_factor: i8,
     pub geometry_idx: u32,
     pub sh_idx: u32,
 }
+unsafe impl bytemuck::Zeroable for GaussianCompressed{}
+unsafe impl bytemuck::Pod for GaussianCompressed{}
 
 impl Default for GaussianCompressed {
     fn default() -> Self {
@@ -34,11 +36,26 @@ impl Default for Gaussian {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Clone, Copy)]
 pub struct Gaussian {
-    pub xyz: Point3<f16>,
+    pub xyz: Point3<f32>,
     pub opacity: f16,
+    _pad:f16,
     pub cov: [f16; 6],
+}
+
+unsafe impl bytemuck::Zeroable for Gaussian{}
+unsafe impl bytemuck::Pod for Gaussian{}
+
+impl Gaussian{
+    pub fn new(xyz:Point3<f32>,opacity:f16,cov:[f16;6])->Self{
+        Self{
+            xyz:xyz,
+            opacity:opacity,
+            cov:cov,
+            _pad:f16::ZERO,
+        }
+    }
 }
 
 #[repr(C)]
