@@ -1,16 +1,15 @@
 use std::{
     io::{Read, Seek},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
 };
 
-use image::Pixel;
 #[cfg(target_arch = "wasm32")]
 use web_time::{Duration, Instant};
 use renderer::Display;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
-use wgpu::{util::DeviceExt, Backends, Extent3d};
+use wgpu::Backends;
 
 use cgmath::{Deg, EuclideanSpace, Point3, Quaternion, UlpsEq, Vector2, Vector3};
 use egui::FullOutput;
@@ -57,7 +56,6 @@ mod utils;
 
 pub struct RenderConfig {
     pub no_vsync: bool,
-    pub skybox: Option<PathBuf>,
     pub hdr: bool,
 }
 
@@ -178,8 +176,6 @@ impl WindowContext {
 
         let wgpu_context = WGPUContext::new(&instance, Some(&surface)).await;
 
-        log::info!("device: {:?}", wgpu_context.adapter.get_info().name);
-
         let device = &wgpu_context.device;
         let queue = &wgpu_context.queue;
 
@@ -267,7 +263,6 @@ impl WindowContext {
                 viewport: Vector2::new(size.width, size.height),
                 gaussian_scaling: 1.,
                 max_sh_deg: pc.sh_deg(),
-                show_env_map: false,
                 mip_splatting: None,
                 kernel_size: None,
                 clipping_box: None,
@@ -275,7 +270,6 @@ impl WindowContext {
                 scene_center: None,
                 scene_extend: None,
                 background_color: wgpu::Color::BLACK,
-                resolution: Vector2::new(size.width, size.height),
             },
             pc,
             // camera: view_camera,
@@ -506,7 +500,7 @@ impl WindowContext {
         self.wgpu_context.queue.submit([encoder.finish()]);
 
         output.present();
-        self.splatting_args.resolution = Vector2::new(self.config.width, self.config.height);
+        self.splatting_args.viewport = Vector2::new(self.config.width, self.config.height);
         Ok(())
     }
 
@@ -529,42 +523,6 @@ impl WindowContext {
                 .cameras(Some(Split::Test))
                 .clone();
         }
-    }
-
-    fn set_env_map<P: AsRef<Path>>(&mut self, path: P) -> anyhow::Result<()> {
-        let env_map_exr = image::open(path)?;
-        let env_map_data: Vec<[f32; 4]> = env_map_exr
-            .as_rgb32f()
-            .ok_or(anyhow::anyhow!("env map must be rgb"))?
-            .pixels()
-            .map(|p| p.to_rgba().0)
-            .collect();
-
-        let env_texture = self.wgpu_context.device.create_texture_with_data(
-            &self.wgpu_context.queue,
-            &wgpu::TextureDescriptor {
-                label: Some("env map texture"),
-                size: Extent3d {
-                    width: env_map_exr.width(),
-                    height: env_map_exr.height(),
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba32Float,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            },
-            wgpu::util::TextureDataOrder::LayerMajor,
-            bytemuck::cast_slice(&env_map_data.as_slice()),
-        );
-        self.display.set_env_map(
-            &self.wgpu_context.device,
-            Some(&env_texture.create_view(&Default::default())),
-        );
-        self.splatting_args.show_env_map = true;
-        Ok(())
     }
 
     fn start_tracking_shot(&mut self) {
@@ -740,12 +698,6 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
         state.scene_file_path = scene_file_path;
     }
 
-    if let Some(skybox) = &config.skybox {
-        if let Err(e) = state.set_env_map(skybox.as_path()) {
-            log::error!("failed do set skybox: {e}");
-        }
-    }
-
     #[cfg(target_arch = "wasm32")]
     web_sys::window()
         .and_then(|win| win.document())
@@ -879,7 +831,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
 
                 let (redraw_ui,shapes) = state.ui();
 
-                let resolution_change = state.splatting_args.resolution != Vector2::new(state.config.width, state.config.height);
+                let resolution_change = state.splatting_args.viewport != Vector2::new(state.config.width, state.config.height);
 
                 let request_redraw = old_settings != state.splatting_args || resolution_change;
     
@@ -931,7 +883,6 @@ pub async fn run_wasm(
         scene_reader,
         RenderConfig {
             no_vsync: false,
-            skybox: None,
             hdr: false,
         },
         pc_file.and_then(|s| PathBuf::from_str(s.as_str()).ok()),

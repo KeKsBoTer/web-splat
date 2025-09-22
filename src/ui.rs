@@ -113,21 +113,18 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
                 state.splatting_args.max_sh_deg = if dir_color { state.pc.sh_deg() } else { 0 };
 
                 ui.end_row();
-                let enable_bg = !state.splatting_args.show_env_map && !state.display.has_env_map();
-                ui.add_enabled(enable_bg, egui::Label::new("Background Color"));
+                ui.add(egui::Label::new("Background Color"));
                 let mut color = egui::Color32::from_rgba_premultiplied(
                     (state.splatting_args.background_color.r*255.) as u8,
                     (state.splatting_args.background_color.g*255.) as u8,
                     (state.splatting_args.background_color.b*255.) as u8,
                     (state.splatting_args.background_color.a*255.) as u8,
                 );
-                ui.add_enabled_ui(enable_bg, |ui| {
-                    egui::color_picker::color_edit_button_srgba(
-                        ui,
-                        &mut color,
-                        egui::color_picker::Alpha::BlendOrAdditive,
-                    )
-                });
+                egui::color_picker::color_edit_button_srgba(
+                    ui,
+                    &mut color,
+                    egui::color_picker::Alpha::BlendOrAdditive,
+                );
 
                 let color32 = color.to_normalized_gamma_f32();
                 state.splatting_args.background_color.r = color32[0] as f64;

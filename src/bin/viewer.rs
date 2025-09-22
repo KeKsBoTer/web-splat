@@ -19,10 +19,6 @@ struct Opt {
     /// Support HDR rendering
     #[arg(long, default_value_t = false)]
     hdr: bool,
-
-    /// Sky box image
-    #[arg(long)]
-    skybox: Option<PathBuf>,
 }
 
 /// check if there is a scene file in the same directory or parent directory as the input file
@@ -63,7 +59,6 @@ async fn main() {
         scene_file,
         RenderConfig {
             no_vsync: opt.no_vsync,
-            skybox: opt.skybox,
             hdr: opt.hdr,
         },
         Some(opt.input),

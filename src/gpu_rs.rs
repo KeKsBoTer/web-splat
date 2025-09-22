@@ -63,70 +63,79 @@ unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
 impl GPURSSorter {
     // The new call also needs the queue to be able to determine the maximum subgroup size (Does so by running test runs)
     pub async fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
-        let mut cur_sorter: GPURSSorter;
+        let sg_size = device.limits().min_subgroup_size;
+        if sg_size == 0 || sg_size > 512 {
+            let mut cur_sorter: GPURSSorter;
 
-        log::debug!("Searching for the maximum subgroup size (wgpu currently does not allow to query subgroup sizes)");
-        let sizes = vec![1, 8, 16, 32];
-        let mut cur_size = 2;
-        enum State {
-            Init,
-            Increasing,
-            Decreasing,
-        }
-        let mut biggest_that_worked = 0;
-        let mut s = State::Init;
-        loop {
-            if cur_size >= sizes.len() {
-                break;
+            log::debug!("Searching for the maximum subgroup size (wgpu currently does not allow to query subgroup sizes)");
+            let sizes = vec![1, 8, 16, 32];
+            let mut cur_size = 2;
+            enum State {
+                Init,
+                Increasing,
+                Decreasing,
             }
-            log::debug!("Checking sorting with subgroupsize {}", sizes[cur_size]);
-            cur_sorter = Self::new_with_sg_size(device, sizes[cur_size]);
-            let sort_success = cur_sorter.test_sort(device, queue).await;
-            log::debug!("{} worked: {}", sizes[cur_size], sort_success);
-            match s {
-                State::Init => {
-                    if sort_success {
-                        biggest_that_worked = sizes[cur_size];
-                        s = State::Increasing;
-                        cur_size += 1;
-                    } else {
-                        s = State::Decreasing;
-                        cur_size -= 1;
-                    }
+            let mut biggest_that_worked = 0;
+            let mut s = State::Init;
+            loop {
+                if cur_size >= sizes.len() {
+                    break;
                 }
-                State::Increasing => {
-                    if sort_success {
-                        if sizes[cur_size] > biggest_that_worked {
+                log::debug!("Checking sorting with subgroupsize {}", sizes[cur_size]);
+                cur_sorter = Self::new_with_sg_size(device, sizes[cur_size]);
+                let sort_success = cur_sorter.test_sort(device, queue).await;
+                log::debug!("{} worked: {}", sizes[cur_size], sort_success);
+                match s {
+                    State::Init => {
+                        if sort_success {
                             biggest_that_worked = sizes[cur_size];
+                            s = State::Increasing;
+                            cur_size += 1;
+                        } else {
+                            s = State::Decreasing;
+                            cur_size -= 1;
                         }
-                        cur_size += 1;
-                    } else {
-                        break;
                     }
-                }
-                State::Decreasing => {
-                    if sort_success {
-                        if sizes[cur_size] > biggest_that_worked {
-                            biggest_that_worked = sizes[cur_size];
+                    State::Increasing => {
+                        if sort_success {
+                            if sizes[cur_size] > biggest_that_worked {
+                                biggest_that_worked = sizes[cur_size];
+                            }
+                            cur_size += 1;
+                        } else {
+                            break;
                         }
-                        break;
-                    } else {
-                        cur_size -= 1;
+                    }
+                    State::Decreasing => {
+                        if sort_success {
+                            if sizes[cur_size] > biggest_that_worked {
+                                biggest_that_worked = sizes[cur_size];
+                            }
+                            break;
+                        } else {
+                            cur_size -= 1;
+                        }
                     }
                 }
             }
-        }
-        if biggest_that_worked == 0 {
-            panic!(
+            if biggest_that_worked == 0 {
+                panic!(
                 "GPURSSorter::new() No workgroup size that works was found. Unable to use sorter"
             );
+            }
+            cur_sorter = Self::new_with_sg_size(device, biggest_that_worked as u32);
+            log::info!(
+                "Created a sorter with subgroup size {}\n",
+                cur_sorter.subgroup_size
+            );
+            return cur_sorter;
+        } else {
+            log::info!(
+                "Created a sorter with subgroup size {}\n",
+                sg_size
+            );
+            return Self::new_with_sg_size(device, sg_size);
         }
-        cur_sorter = Self::new_with_sg_size(device, biggest_that_worked);
-        log::info!(
-            "Created a sorter with subgroup size {}\n",
-            cur_sorter.subgroup_size
-        );
-        return cur_sorter;
     }
 
     pub fn create_sort_stuff(
@@ -165,7 +174,7 @@ impl GPURSSorter {
         }
     }
 
-    fn new_with_sg_size(device: &wgpu::Device, sg_size: i32) -> Self {
+    fn new_with_sg_size(device: &wgpu::Device, sg_size: u32) -> Self {
         // special variables for scatter shade
         let histogram_sg_size: usize = sg_size as usize;
         let rs_sweep_0_size: usize = RS_RADIX_SIZE / histogram_sg_size;

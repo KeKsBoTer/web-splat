@@ -79,7 +79,6 @@ struct RenderSettings {
     clipping_box_max: vec4<f32>,
     gaussian_scaling: f32,
     max_sh_deg: u32,
-    show_env_map: u32,
     mip_spatting: u32,
     kernel_size: f32,
     walltime: f32,
