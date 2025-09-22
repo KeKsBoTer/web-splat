@@ -419,8 +419,6 @@ pub struct Display {
     bind_group: wgpu::BindGroup,
     format: wgpu::TextureFormat,
     view: wgpu::TextureView,
-    env_bg: wgpu::BindGroup,
-    has_env_map: bool,
 }
 
 impl Display {
@@ -435,7 +433,6 @@ impl Display {
             label: Some("display pipeline layout"),
             bind_group_layouts: &[
                 &Self::bind_group_layout(device),
-                &Self::env_map_bind_group_layout(device),
                 &UniformBuffer::<CameraUniform>::bind_group_layout(device),
                 &UniformBuffer::<SplattingArgsUniform>::bind_group_layout(device),
             ],
@@ -470,96 +467,17 @@ impl Display {
             multiview: None,
             cache: None,
         });
-        let env_bg = Self::create_env_map_bg(device, None);
         let (view, bind_group) = Self::create_render_target(device, source_format, width, height);
         Self {
             pipeline,
             view,
             format: source_format,
             bind_group,
-            env_bg,
-            has_env_map: false,
         }
     }
 
     pub fn texture(&self) -> &wgpu::TextureView {
         &self.view
-    }
-
-    fn env_map_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("env map bind group layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        })
-    }
-
-    fn create_env_map_bg(
-        device: &wgpu::Device,
-        env_texture: Option<&wgpu::TextureView>,
-    ) -> wgpu::BindGroup {
-        let env_map_placeholder = device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some("placeholder"),
-                size: Extent3d {
-                    width: 1,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba16Float,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            })
-            .create_view(&Default::default());
-        let env_texture_view = env_texture.unwrap_or(&env_map_placeholder);
-        let env_map_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("env map sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        return device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("env map bind group"),
-            layout: &Self::env_map_bind_group_layout(device),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(env_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&env_map_sampler),
-                },
-            ],
-        });
-    }
-
-    pub fn set_env_map(&mut self, device: &wgpu::Device, env_texture: Option<&wgpu::TextureView>) {
-        self.env_bg = Self::create_env_map_bg(device, env_texture);
-        self.has_env_map = env_texture.is_some();
-    }
-
-    pub fn has_env_map(&self) -> bool {
-        self.has_env_map
     }
 
     fn create_render_target(
@@ -656,9 +574,8 @@ impl Display {
             ..Default::default()
         });
         render_pass.set_bind_group(0, &self.bind_group, &[]);
-        render_pass.set_bind_group(1, &self.env_bg, &[]);
-        render_pass.set_bind_group(2, camera.bind_group(), &[]);
-        render_pass.set_bind_group(3, render_settings.bind_group(), &[]);
+        render_pass.set_bind_group(1, camera.bind_group(), &[]);
+        render_pass.set_bind_group(2, render_settings.bind_group(), &[]);
         render_pass.set_pipeline(&self.pipeline);
 
         render_pass.draw(0..4, 0..1);
@@ -672,7 +589,6 @@ pub struct SplattingArgs {
     pub viewport: Vector2<u32>,
     pub gaussian_scaling: f32,
     pub max_sh_deg: u32,
-    pub show_env_map: bool,
     pub mip_splatting: Option<bool>,
     pub kernel_size: Option<f32>,
     pub clipping_box: Option<Aabb<f32>>,
@@ -680,7 +596,6 @@ pub struct SplattingArgs {
     pub scene_center: Option<Point3<f32>>,
     pub scene_extend: Option<f32>,
     pub background_color: wgpu::Color,
-    pub resolution: Vector2<u32>,
 }
 
 pub const DEFAULT_KERNEL_SIZE: f32 = 0.3;
@@ -689,15 +604,15 @@ pub const DEFAULT_KERNEL_SIZE: f32 = 0.3;
 pub struct SplattingArgsUniform {
     clipping_box_min: Vector4<f32>,
     clipping_box_max: Vector4<f32>,
+
     gaussian_scaling: f32,
     max_sh_deg: u32,
-    show_env_map: u32,
     mip_splatting: u32,
-
     kernel_size: f32,
+
     walltime: f32,
     scene_extend: f32,
-    _pad: u32,
+    _pad: [u32;2],
 
     scene_center: Vector4<f32>,
 }
@@ -708,7 +623,6 @@ impl SplattingArgsUniform {
         Self {
             gaussian_scaling: args.gaussian_scaling,
             max_sh_deg: args.max_sh_deg,
-            show_env_map: args.show_env_map as u32,
             mip_splatting: args
                 .mip_splatting
                 .map(|v| v as u32)
@@ -742,7 +656,6 @@ impl Default for SplattingArgsUniform {
         Self {
             gaussian_scaling: 1.0,
             max_sh_deg: 3,
-            show_env_map: true as u32,
             mip_splatting: false as u32,
             kernel_size: DEFAULT_KERNEL_SIZE,
             clipping_box_max: Vector4::new(f32::INFINITY, f32::INFINITY, f32::INFINITY, 0.),
@@ -755,7 +668,7 @@ impl Default for SplattingArgsUniform {
             walltime: 0.,
             scene_center: Vector4::new(0., 0., 0., 0.),
             scene_extend: 1.,
-            _pad: 0,
+            _pad: [0; 2],
         }
     }
 }

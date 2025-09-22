@@ -94,7 +94,6 @@ async fn render_views(
                 viewport: resolution,
                 gaussian_scaling: 1.,
                 max_sh_deg: pc.sh_deg(),
-                show_env_map: false,
                 mip_splatting: None,
                 kernel_size: None,
                 clipping_box: None,
@@ -102,7 +101,6 @@ async fn render_views(
                 scene_center: None,
                 scene_extend: None,
                 background_color: wgpu::Color::TRANSPARENT,
-                resolution,
             },
             &mut None,
         );
