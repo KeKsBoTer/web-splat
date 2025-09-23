@@ -16,8 +16,8 @@ struct VertexInput {
 struct Splat {
      // 4x f16 packed as u32
     v_0: u32, v_1: u32,
-    // 2x f16 packed as u32
-    pos: u32,
+    // 4x f16 packed as u32
+    pos_xy:u32,pos_d:u32,
     // rgba packed as f16
     color_0: u32,color_1: u32,
 };
@@ -40,7 +40,8 @@ fn vs_main(
     let v1 = unpack2x16float(vertex.v_0);
     let v2 = unpack2x16float(vertex.v_1);
 
-    let v_center = unpack2x16float(vertex.pos);
+    let v_center = unpack2x16float(vertex.pos_xy);
+    let depth = unpack2x16float(vertex.pos_d).x;
 
     // splat rectangle with left lower corner at (-1,-1)
     // and upper right corner at (1,1)
@@ -50,7 +51,7 @@ fn vs_main(
     let position = vec2<f32>(x, y) * CUTOFF;
 
     let offset = 2. * mat2x2<f32>(v1, v2) * position;
-    out.position = vec4<f32>(v_center + offset, 0., 1.);
+    out.position = vec4<f32>((v_center + offset), depth, 1.);
     out.screen_pos = position;
     out.color = vec4<f32>(unpack2x16float(vertex.color_0), unpack2x16float(vertex.color_1));
     return out;
@@ -58,7 +59,7 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let a = dot(in.screen_pos, in.screen_pos);
+    let a = dot(in.screen_pos.xy, in.screen_pos.xy);
     if a > 2. * CUTOFF {
         discard;
     }

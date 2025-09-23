@@ -52,8 +52,12 @@ pub struct CameraController {
     shift: Vector2<f32>,
     rotation: Vector3<f32>,
     scroll: f32,
+    // speed when using the mouse to control the camera
     pub speed: f32,
+    // mouse sensitivity
     pub sensitivity: f32,
+    // speed for controlling the camera with the keyboard
+    pub move_speed: f32,
 
     pub left_mouse_pressed: bool,
     pub right_mouse_pressed: bool,
@@ -65,7 +69,7 @@ pub struct CameraController {
 }
 
 impl CameraController {
-    pub fn new(speed: f32, sensitivity: f32) -> Self {
+    pub fn new(speed: f32, sensitivity: f32, move_speed: f32) -> Self {
         Self {
             center: Point3::origin(),
             amount: Vector3::zero(),
@@ -75,6 +79,7 @@ impl CameraController {
             scroll: 0.0,
             speed,
             sensitivity,
+            move_speed,
             left_mouse_pressed: false,
             right_mouse_pressed: false,
             alt_pressed: false,
@@ -87,19 +92,19 @@ impl CameraController {
         let amount = if pressed { 1.0 } else { 0.0 };
         let processed = match key {
             KeyCode::KeyW | KeyCode::ArrowUp => {
-                self.amount.z += amount;
+                self.amount.z = amount;
                 true
             }
             KeyCode::KeyS | KeyCode::ArrowDown => {
-                self.amount.z += -amount;
+                self.amount.z = -amount;
                 true
             }
             KeyCode::KeyA | KeyCode::ArrowLeft => {
-                self.amount.x += -amount;
+                self.amount.x = -amount;
                 true
             }
             KeyCode::KeyD | KeyCode::ArrowRight => {
-                self.amount.x += amount;
+                self.amount.x = amount;
                 true
             }
             KeyCode::KeyQ => {
@@ -111,11 +116,11 @@ impl CameraController {
                 true
             }
             KeyCode::Space => {
-                self.amount.y += amount;
+                self.amount.y = amount;
                 true
             }
             KeyCode::ShiftLeft => {
-                self.amount.y += -amount;
+                self.amount.y = -amount;
                 true
             }
             _ => false,
@@ -252,6 +257,7 @@ impl CameraController {
 
     pub fn update_camera(&mut self, camera: &mut PerspectiveCamera, dt: Duration) {
         let dt: f32 = dt.as_secs_f32();
+
         let mut dir = camera.position - self.center;
         let distance = dir.magnitude();
 
@@ -262,6 +268,17 @@ impl CameraController {
         let x_axis = view_t.x;
         let y_axis = self.up.unwrap_or(view_t.y);
         let z_axis = view_t.z;
+
+        let move_x = self.amount.x * x_axis * dt * self.move_speed;
+        let move_y = self.amount.y * y_axis * dt * self.move_speed;
+        let move_z = self.amount.z * z_axis * dt * self.move_speed;
+
+        camera.position += move_x;
+        camera.position -= move_y;
+        camera.position += move_z;
+        self.center += move_x;
+        self.center -= move_y;
+        self.center += move_z;
 
         let offset =
             (self.shift.y * x_axis - self.shift.x * y_axis) * dt * self.speed * 0.1 * distance;
@@ -311,6 +328,11 @@ impl CameraController {
             self.scroll = 0.;
         }
         self.user_inptut = false;
+    }
+
+    pub(crate) fn reset_up(&mut self, camera: &PerspectiveCamera) {
+        let view_t: Matrix3<f32> = camera.rotation.invert().into();
+        self.up = Some(view_t.y);
     }
 }
 

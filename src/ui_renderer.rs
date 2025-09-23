@@ -15,8 +15,8 @@ impl EguiWGPU {
     ) -> Self {
         let ctx = Default::default();
         Self {
-            winit: egui_winit::State::new(ctx, ViewportId::ROOT, window, None, None,None),
-            renderer: egui_wgpu::Renderer::new(device, output_format, None, 1,false),
+            winit: egui_winit::State::new(ctx, ViewportId::ROOT, window, None, None, None),
+            renderer: egui_wgpu::Renderer::new(device, output_format, None, 1, false),
         }
     }
 
@@ -82,11 +82,7 @@ impl EguiWGPU {
         }
     }
 
-    pub fn render(
-        &mut self,
-        render_pass: &mut wgpu::RenderPass<'static>,
-        state: & UIRenderState,
-    ) {
+    pub fn render(&mut self, render_pass: &mut wgpu::RenderPass<'static>, state: &UIRenderState) {
         self.renderer
             .render(render_pass, &state.clipped_meshes, &state.screen_descriptor);
     }

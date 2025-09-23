@@ -86,7 +86,7 @@ impl PointCloud {
         let splat_2d_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("2d gaussians buffer"),
             size: (pc.num_points * mem::size_of::<Splat>()) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
@@ -337,6 +337,8 @@ impl PointCloud {
 pub struct Splat {
     pub v: Vector4<f16>,
     pub pos: Vector2<f16>,
+    pub depth: f16,
+    _pad:f16,
     pub color: Vector4<f16>,
 }
 

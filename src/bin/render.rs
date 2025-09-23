@@ -215,7 +215,7 @@ pub async fn download_texture(
 
     encoder.copy_texture_to_buffer(
         texture.as_image_copy(),
-        wgpu::TexelCopyBufferInfoBase{
+        wgpu::TexelCopyBufferInfoBase {
             buffer: &staging_buffer,
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
@@ -256,10 +256,12 @@ async fn download_buffer<'a>(
 
     let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
     slice.map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
-    device.poll(match wait_idx {
-        Some(idx) => wgpu::MaintainBase::WaitForSubmissionIndex(idx),
-        None => wgpu::MaintainBase::Wait,
-    }).unwrap();
+    device
+        .poll(match wait_idx {
+            Some(idx) => wgpu::MaintainBase::WaitForSubmissionIndex(idx),
+            None => wgpu::MaintainBase::Wait,
+        })
+        .unwrap();
     rx.receive().await.unwrap().unwrap();
 
     let view = slice.get_mapped_range();

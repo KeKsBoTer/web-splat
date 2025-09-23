@@ -137,7 +137,7 @@ impl PerspectiveProjection {
     pub fn resize(&mut self, width: u32, height: u32) {
         let ratio = width as f32 / height as f32;
         if width > height {
-            self.fovy = self.fovx / ratio * self.fov2view_ratio;
+            self.fovy = self.fovx / ratio; // * self.fov2view_ratio;
         } else {
             self.fovx = self.fovy * ratio * self.fov2view_ratio;
         }

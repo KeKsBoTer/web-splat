@@ -65,7 +65,9 @@ impl GPURSSorter {
     pub async fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
         let mut cur_sorter: GPURSSorter;
 
-        log::debug!("Searching for the maximum subgroup size (wgpu currently does not allow to query subgroup sizes)");
+        log::debug!(
+            "Searching for the maximum subgroup size (wgpu currently does not allow to query subgroup sizes)"
+        );
         let sizes = vec![1, 8, 16, 32];
         let mut cur_size = 2;
         enum State {

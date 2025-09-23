@@ -119,8 +119,8 @@ impl GPUStopwatch {
                 let data_raw: &[u8] = &download;
                 let timestamps: &[u64] = bytemuck::cast_slice(data_raw);
                 for (label, index) in labels {
-                    let diff_ticks =
-                        timestamps[(index * 2 + 1) as usize] - timestamps[(index * 2) as usize];
+                    let diff_ticks = timestamps[(index * 2 + 1) as usize]
+                        .saturating_sub(timestamps[(index * 2) as usize]);
                     let diff_time = Duration::from_nanos((diff_ticks as f32 * period) as u64);
                     durations.insert(label, diff_time);
                 }

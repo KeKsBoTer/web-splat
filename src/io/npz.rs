@@ -6,10 +6,10 @@ use half::f16;
 use image::EncodableLayout;
 use npyz::npz::{self, NpzArchive};
 
-#[cfg(target_arch = "wasm32")]
-use web_time::Instant;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 use crate::{
     pointcloud::{Covariance3D, GaussianCompressed, GaussianQuantization, Quantization},

@@ -22,6 +22,11 @@ struct RenderSettings {
 var source_img : texture_2d<f32>;
 @group(0) @binding(1)
 var texture_sampler: sampler;
+@group(0) @binding(2)
+var depth_img : texture_2d<f32>;
+@group(0) @binding(3)
+var depth_sampler: sampler;
+
 @group(1) @binding(0)
 var env_map : texture_2d<f32>;
 @group(1) @binding(1)
@@ -60,12 +65,14 @@ fn sample_env_map(dir: vec3<f32>) -> vec4<f32> {
 @fragment
 fn fs_main(vertex_in: VertexOut) -> @location(0) vec4<f32> {
     let color = textureSample(source_img, texture_sampler, vertex_in.tex_coord);
+    let depth = textureSample(depth_img, depth_sampler, vertex_in.tex_coord).r;
     if render_settings.show_env_map == 1u {
         let local_pos = camera.proj_inv * vec4<f32>((vertex_in.tex_coord.xy * 2. - (1.)), 1., 1.);
         let dir = camera.view_inv * vec4<f32>(local_pos.xyz, 0.);
         let env_color = sample_env_map(normalize(dir.xyz));
         return vec4<f32>(env_color.rgb * (1. - color.a) + color.rgb, 1.);
     } else {
-        return color;
+        // return color;
+        return vec4<f32>(depth,depth,depth,1.);
     }
 }

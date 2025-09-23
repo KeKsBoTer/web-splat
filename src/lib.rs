@@ -4,15 +4,21 @@ use std::{
     sync::Arc,
 };
 
-use image::Pixel;
-#[cfg(target_arch = "wasm32")]
-use web_time::{Duration, Instant};
+use half::f16;
+use image::{EncodableLayout, Pixel};
 use renderer::Display;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
-use wgpu::{util::DeviceExt, Backends, Extent3d};
+#[cfg(target_arch = "wasm32")]
+use web_time::{Duration, Instant};
+use wgpu::{
+    util::{DeviceExt, DownloadBuffer},
+    Backends, Extent3d,
+};
 
-use cgmath::{Deg, EuclideanSpace, Point3, Quaternion, UlpsEq, Vector2, Vector3};
+use cgmath::{
+    Deg, EuclideanSpace, MetricSpace, Point2, Point3, Quaternion, UlpsEq, Vector2, Vector3,
+};
 use egui::FullOutput;
 use num_traits::One;
 
@@ -24,7 +30,7 @@ use utils::RingBuffer;
 use wasm_bindgen::prelude::wasm_bindgen;
 use winit::{
     dpi::{LogicalSize, PhysicalSize},
-    event::{DeviceEvent, ElementState, Event, WindowEvent, TouchPhase as WinitTouchPhase},
+    event::{DeviceEvent, ElementState, Event, TouchPhase as WinitTouchPhase, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
     window::Window,
@@ -94,28 +100,25 @@ impl WGPUContext {
         let adapter_limits = adapter.limits();
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    required_features,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    required_limits: wgpu::Limits {
-                        max_storage_buffer_binding_size: adapter_limits
-                            .max_storage_buffer_binding_size,
-                        max_storage_buffers_per_shader_stage: 12,
-                        max_compute_workgroup_storage_size: 1 << 15,
-                        ..adapter_limits
-                    },
-
-                    #[cfg(target_arch = "wasm32")]
-                    required_limits: wgpu::Limits {
-                        max_compute_workgroup_storage_size: 1 << 15,
-                        ..adapter_limits
-                    },
-                    label: None,
-                    memory_hints: wgpu::MemoryHints::Performance,
-                    trace: wgpu::Trace::Off,
+            .request_device(&wgpu::DeviceDescriptor {
+                required_features,
+                #[cfg(not(target_arch = "wasm32"))]
+                required_limits: wgpu::Limits {
+                    max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
+                    max_storage_buffers_per_shader_stage: 12,
+                    max_compute_workgroup_storage_size: 1 << 15,
+                    ..adapter_limits
                 },
-            )
+
+                #[cfg(target_arch = "wasm32")]
+                required_limits: wgpu::Limits {
+                    max_compute_workgroup_storage_size: 1 << 15,
+                    ..adapter_limits
+                },
+                label: None,
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
+            })
             .await
             .unwrap();
 
@@ -156,6 +159,7 @@ pub struct WindowContext {
     #[cfg(feature = "video")]
     cameras_save_path: String,
     stopwatch: Option<GPUStopwatch>,
+    mouse_pos: Point2<f32>,
 }
 
 impl WindowContext {
@@ -230,13 +234,13 @@ impl WindowContext {
             Quaternion::one(),
             PerspectiveProjection::new(
                 Vector2::new(size.width, size.height),
-                Vector2::new(Deg(45.), Deg(45. / aspect)),
+                Vector2::new(Deg(45. * aspect), Deg(45.)),
                 0.01,
                 1000.,
             ),
         );
 
-        let mut controller = CameraController::new(0.1, 0.05);
+        let mut controller = CameraController::new(0.1, 0.05, aabb.radius() * 0.1);
         controller.center = pc.center();
         // controller.up = pc.up;
         let ui_renderer = ui_renderer::EguiWGPU::new(device, surface_format, &window);
@@ -294,7 +298,7 @@ impl WindowContext {
             current_view: None,
             pointcloud_file_path: None,
             scene_file_path: None,
-
+            mouse_pos: Point2::origin(),
             stopwatch,
         })
     }
@@ -315,6 +319,15 @@ impl WindowContext {
             self.set_scene(Scene::from_json(file)?);
         }
         Ok(())
+    }
+
+    fn reset_camera(&mut self) {
+        let aabb = self.pc.bbox();
+        self.splatting_args.camera.position =
+            aabb.center() - Vector3::new(1., 1., 1.) * aabb.radius() * 0.5;
+        self.splatting_args.camera.rotation = Quaternion::one();
+        self.controller.center = self.pc.center();
+        self.controller.up = None;
     }
 
     fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>, scale_factor: Option<f32>) {
@@ -353,7 +366,7 @@ impl WindowContext {
     }
 
     /// returns whether the sceen changed and we need a redraw
-    fn update(&mut self, dt: Duration)  {
+    fn update(&mut self, dt: Duration) {
         // ema fps update
 
         if self.splatting_args.walltime < Duration::from_secs(5) {
@@ -464,6 +477,14 @@ impl WindowContext {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: self.display.depth_texture_view(),
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 ..Default::default()
             });
             self.renderer.render(&mut render_pass, &self.pc);
@@ -498,7 +519,6 @@ impl WindowContext {
                 .forget_lifetime();
             self.ui_renderer.render(&mut render_pass, state);
         }
-
 
         if let Some(ui_state) = ui_state {
             self.ui_renderer.cleanup(ui_state)
@@ -687,13 +707,13 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
     // };
     let window_size = LogicalSize::new(800, 600);
     let window_attributes = Window::default_attributes()
-        .with_inner_size( window_size)
+        .with_inner_size(window_size)
         .with_title(format!(
             "{} ({})",
             env!("CARGO_PKG_NAME"),
             env!("CARGO_PKG_VERSION")
         ));
-        
+
     #[allow(deprecated)]
     let window = event_loop.create_window(window_attributes).unwrap();
 
@@ -760,8 +780,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
     let mut last = Instant::now();
 
     #[allow(deprecated)]
-    event_loop.run(move |event,target| 
-        
+    event_loop.run(move |event,target|
         match event {
             Event::NewEvents(e) =>  match e{
                 winit::event::StartCause::ResumeTimeReached { .. }=>{
@@ -776,6 +795,9 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
             WindowEvent::Resized(physical_size) => {
                 state.resize(*physical_size, None);
             }
+            WindowEvent::CursorMoved { device_id, position } =>{
+                state.mouse_pos = Point2::new(position.x as f32,position.y as f32);
+            }
             WindowEvent::ScaleFactorChanged {
                 scale_factor,
                 ..
@@ -788,51 +810,49 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(key) = event.physical_key{
-                if event.state == ElementState::Released{
+                    if event.state == ElementState::Released{
 
-                    if key == KeyCode::KeyT{
-                        if state.animation.is_none(){
-                            state.start_tracking_shot();
-                        }else{
-                            state.stop_animation()
-                        }
-                    }else if key == KeyCode::KeyU{
-                        state.ui_visible = !state.ui_visible;
-                        
-                    }else if key == KeyCode::KeyC{
-                        state.save_view();
-                    } else  if key == KeyCode::KeyR && state.controller.alt_pressed{
-                        if let Err(err) = state.reload(){
-                            log::error!("failed to reload volume: {:?}", err);
-                        }   
-                    }else if let Some(scene) = &state.scene{
+                        if key == KeyCode::KeyT{
+                            if state.animation.is_none(){
+                                state.start_tracking_shot();
+                            }else{
+                                state.stop_animation()
+                            }
+                        }else if key == KeyCode::KeyU{
+                            state.ui_visible = !state.ui_visible;
+                        }else if key == KeyCode::KeyC{
+                            state.save_view();
+                        } else  if key == KeyCode::KeyR && state.controller.alt_pressed{
+                            if let Err(err) = state.reload(){
+                                log::error!("failed to reload volume: {:?}", err);
+                            }
+                        }else if let Some(scene) = &state.scene{
 
-                        let new_camera = 
-                        if let Some(num) = key_to_num(key){
-                            Some(num as usize)
-                        }
-                        else if key == KeyCode::KeyR{
-                            Some((rand::random::<u32>() as usize)%scene.num_cameras())
-                        }else if key == KeyCode::KeyN{
-                            scene.nearest_camera(state.splatting_args.camera.position,None)
-                        }else if key == KeyCode::PageUp{
-                            Some(state.current_view.map_or(0, |v|v+1) % scene.num_cameras())
-                        }else if key == KeyCode::KeyT{
-                            Some(state.current_view.map_or(0, |v|v+1) % scene.num_cameras())
-                        }
-                        else if key == KeyCode::PageDown{
-                            Some(state.current_view.map_or(0, |v|v-1) % scene.num_cameras())
-                        }else{None};
+                            let new_camera = if let Some(num) = key_to_num(key){
+                                Some(num as usize)
+                            }
+                            else if key == KeyCode::KeyR{
+                                Some((rand::random::<u32>() as usize)%scene.num_cameras())
+                            }else if key == KeyCode::KeyN{
+                                scene.nearest_camera(state.splatting_args.camera.position,None)
+                            }else if key == KeyCode::PageUp{
+                                Some(state.current_view.map_or(0, |v|v+1) % scene.num_cameras())
+                            }else if key == KeyCode::KeyT{
+                                Some(state.current_view.map_or(0, |v|v+1) % scene.num_cameras())
+                            }
+                            else if key == KeyCode::PageDown{
+                                Some(state.current_view.map_or(0, |v|v-1) % scene.num_cameras())
+                            }else{None};
 
-                        if let Some(new_camera) = new_camera{
-                            state.set_scene_camera(new_camera);
+                            if let Some(new_camera) = new_camera{
+                                state.set_scene_camera(new_camera);
+                            }
                         }
                     }
+                    state
+                        .controller
+                        .process_keyboard(key, event.state == ElementState::Pressed);
                 }
-                state
-                    .controller
-                    .process_keyboard(key, event.state == ElementState::Pressed);
-            }
             }
             WindowEvent::MouseWheel { delta, .. } => match delta {
                 winit::event::MouseScrollDelta::LineDelta(_, dy) => {
@@ -844,7 +864,13 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
             },
             WindowEvent::MouseInput { state:button_state, button, .. }=>{
                 match button {
-                    winit::event::MouseButton::Left =>                         state.controller.left_mouse_pressed = *button_state == ElementState::Pressed,
+                    winit::event::MouseButton::Left => {
+                        state.controller.left_mouse_pressed = *button_state == ElementState::Pressed;
+                        if *button_state == ElementState::Released{
+                           let value = pollster::block_on(download_texture_and_sample(&state.display.depth_texture(), &state.wgpu_context.device, &state.wgpu_context.queue, Point2::new(state.mouse_pos.x/state.display.depth_texture().width() as f32,state.mouse_pos.y/state.display.depth_texture().height() as f32)));
+                            println!("depth value: {value}")
+                        }
+                    },
                     winit::event::MouseButton::Right => state.controller.right_mouse_pressed = *button_state == ElementState::Pressed,
                     _=>{}
                 }
@@ -856,13 +882,12 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
                     WinitTouchPhase::Ended => controller::TouchPhase::Ended,
                     WinitTouchPhase::Cancelled => controller::TouchPhase::Cancelled,
                 };
-                
                 let controller_touch = controller::Touch {
                     id: touch.id,
                     position: (touch.location.x as f32, touch.location.y as f32),
                     phase: touch_phase,
                 };
-                
+                println!("touch");
                 state.controller.process_touch(controller_touch);
             }
             WindowEvent::RedrawRequested => {
@@ -882,7 +907,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
                 let resolution_change = state.splatting_args.resolution != Vector2::new(state.config.width, state.config.height);
 
                 let request_redraw = old_settings != state.splatting_args || resolution_change;
-    
+
                 if request_redraw || redraw_ui{
                     state.fps = (1. / dt.as_secs_f32()) * 0.05 + state.fps * 0.95;
                     match state.render(request_redraw,state.ui_visible.then_some(shapes)) {
@@ -937,4 +962,79 @@ pub async fn run_wasm(
         pc_file.and_then(|s| PathBuf::from_str(s.as_str()).ok()),
         scene_file.and_then(|s| PathBuf::from_str(s.as_str()).ok()),
     ));
+}
+
+pub async fn download_texture_and_sample(
+    texture: &wgpu::Texture,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    sample_loc: Point2<f32>,
+) -> f32 {
+    let texture_format = texture.format();
+
+    let texel_size: u32 = 2;
+    let fb_size = texture.size();
+    let align: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT - 1;
+    println!("align: {align}");
+    let bytes_per_row = (texel_size * fb_size.width) + align & !align;
+
+    let output_buffer_size = (bytes_per_row * fb_size.height) as wgpu::BufferAddress;
+
+    let output_buffer_desc = wgpu::BufferDescriptor {
+        size: output_buffer_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        label: Some("texture download buffer"),
+        mapped_at_creation: false,
+    };
+    let staging_buffer = device.create_buffer(&output_buffer_desc);
+
+    let mut encoder: wgpu::CommandEncoder =
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("download frame buffer encoder"),
+        });
+
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfoBase {
+            buffer: &staging_buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(fb_size.height),
+            },
+        },
+        fb_size,
+    );
+    let sub_idx = queue.submit(std::iter::once(encoder.finish()));
+
+    let data: wgpu::BufferView<'_> = download_buffer(device, &staging_buffer, Some(sub_idx)).await;
+
+    let loc_u = (fb_size.width as f32 * sample_loc.x) as usize;
+    let loc_v = (fb_size.height as f32 * sample_loc.y) as usize;
+    let ppos = (loc_v * fb_size.width as usize + loc_u) * texel_size as usize;
+    let texture_value = u16::from_le_bytes([data[ppos], data[ppos + 1]]);
+    // staging_buffer.unmap();
+
+    return texture_value as f32;
+}
+
+async fn download_buffer<'a>(
+    device: &wgpu::Device,
+    buffer: &'a wgpu::Buffer,
+    wait_idx: Option<wgpu::SubmissionIndex>,
+) -> wgpu::BufferView<'a> {
+    let slice = buffer.slice(..);
+
+    let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
+    device
+        .poll(match wait_idx {
+            Some(idx) => wgpu::MaintainBase::WaitForSubmissionIndex(idx),
+            None => wgpu::MaintainBase::Wait,
+        })
+        .unwrap();
+    rx.receive().await.unwrap().unwrap();
+
+    let view = slice.get_mapped_range();
+    return view;
 }

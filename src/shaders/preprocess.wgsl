@@ -41,8 +41,8 @@ struct Gaussian {
 struct Splat {
      // 4x f16 packed as u32
     v_0: u32, v_1: u32,
-    // 2x f16 packed as u32
-    pos: u32,
+    // 4x f16 packed as u32
+    pos_xy:u32,pos_d:u32,
     // rgba packed as f16
     color_0: u32,color_1: u32
 };
@@ -264,7 +264,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     let v = vec4<f32>(v1 / viewport, v2 / viewport);
     points_2d[store_idx] = Splat(
         pack2x16float(v.xy), pack2x16float(v.zw),
-        pack2x16float(v_center.xy),
+        pack2x16float(v_center.xy),pack2x16float(vec2<f32>(z,1.)),
         pack2x16float(color.rg), pack2x16float(color.ba),
     );
     // filling the sorting buffers and the indirect sort dispatch buffer

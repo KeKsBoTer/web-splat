@@ -1,8 +1,9 @@
-#[cfg(target_arch = "wasm32")]
-use web_time::Duration;
+use core::f32;
 use std::ops::RangeInclusive;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
+#[cfg(target_arch = "wasm32")]
+use web_time::Duration;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::renderer::DEFAULT_KERNEL_SIZE;
@@ -12,10 +13,9 @@ use cgmath::{Euler, Matrix3, Quaternion};
 use egui::Vec2b;
 
 #[cfg(target_arch = "wasm32")]
-use egui::{Align2,Vec2};
+use egui::{Align2, Vec2};
 
 use egui::{emath::Numeric, Color32, RichText};
-
 
 #[cfg(not(target_arch = "wasm32"))]
 use egui_plot::{Legend, PlotPoints};
@@ -40,6 +40,7 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
             .renderer
             .num_visible_points(&state.wgpu_context.device, &state.wgpu_context.queue),
     );
+    let mut reset_camera = false;
 
     #[cfg(not(target_arch = "wasm32"))]
     egui::Window::new("Render Stats")
@@ -80,13 +81,11 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
                         .position(egui_plot::Corner::LeftBottom),
                 )
                 .show(ui, |ui| {
-                    let line =
-                        egui_plot::Line::new("preprocess",PlotPoints::from_ys_f32(&pre));
+                    let line = egui_plot::Line::new("preprocess", PlotPoints::from_ys_f32(&pre));
                     ui.line(line);
-                    let line = egui_plot::Line::new("sorting",PlotPoints::from_ys_f32(&sort));
+                    let line = egui_plot::Line::new("sorting", PlotPoints::from_ys_f32(&sort));
                     ui.line(line);
-                    let line =
-                        egui_plot::Line::new("rasterize",PlotPoints::from_ys_f32(&rast));
+                    let line = egui_plot::Line::new("rasterize", PlotPoints::from_ys_f32(&rast));
                     ui.line(line);
                 });
         });
@@ -116,10 +115,10 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
                 let enable_bg = !state.splatting_args.show_env_map && !state.display.has_env_map();
                 ui.add_enabled(enable_bg, egui::Label::new("Background Color"));
                 let mut color = egui::Color32::from_rgba_premultiplied(
-                    (state.splatting_args.background_color.r*255.) as u8,
-                    (state.splatting_args.background_color.g*255.) as u8,
-                    (state.splatting_args.background_color.b*255.) as u8,
-                    (state.splatting_args.background_color.a*255.) as u8,
+                    (state.splatting_args.background_color.r * 255.) as u8,
+                    (state.splatting_args.background_color.g * 255.) as u8,
+                    (state.splatting_args.background_color.b * 255.) as u8,
+                    (state.splatting_args.background_color.a * 255.) as u8,
                 );
                 ui.add_enabled_ui(enable_bg, |ui| {
                     egui::color_picker::color_edit_button_srgba(
@@ -158,8 +157,54 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
                         &mut state.splatting_args.mip_splatting,
                         state.pc.mip_splatting().unwrap_or(false),
                     );
-                    ui.end_row();
                 }
+                ui.end_row();
+                ui.collapsing("Camera", |ui| {
+                    egui::Grid::new("camera_controls")
+                        .num_columns(2)
+                        .striped(true)
+                        .show(ui, |ui| {
+                            ui.label("Mouse Senstivity");
+                            ui.add(
+                                egui::DragValue::new(&mut state.controller.sensitivity)
+                                    .max_decimals(3)
+                                    .range((0.)..=(100.)),
+                            );
+                            ui.end_row();
+                            ui.label("Mouse Drag Speed");
+                            ui.add(
+                                egui::DragValue::new(&mut state.controller.speed)
+                                    .max_decimals(3)
+                                    .range((0.)..=(100.)),
+                            );
+                            ui.end_row();
+                            ui.label("Fly Speed");
+                            ui.add(
+                                egui::DragValue::new(&mut state.controller.move_speed)
+                                    .max_decimals(3)
+                                    .range((0.)..=(100.)),
+                            );
+                            ui.end_row();
+                            if ui.button("Reset Up Direction").clicked() {
+                                state.controller.reset_up(&state.splatting_args.camera)
+                            }
+                            if ui.button("Reset Camera").clicked() {
+                                reset_camera = true;
+                            }
+
+                            ui.end_row();
+                            ui.strong("Camera FOV");
+                            let ratio = state.splatting_args.camera.projection.fovx
+                                / state.splatting_args.camera.projection.fovy;
+                            drag_angle_range(
+                                ui,
+                                &mut state.splatting_args.camera.projection.fovy.0,
+                                (1.)..=(135.),
+                            );
+                            state.splatting_args.camera.projection.fovx =
+                                state.splatting_args.camera.projection.fovy * ratio
+                        });
+                });
             });
     });
 
@@ -336,7 +381,7 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
                 .show(ui, |ui| {
                     ui.strong("Camera Controls");
                     ui.end_row();
-                    
+
                     // Desktop controls
                     ui.label("Rotate Camera");
                     ui.label("Left click + drag / Touch + drag");
@@ -356,7 +401,7 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
 
                     ui.separator();
                     ui.end_row();
-                    
+
                     ui.strong("Mobile Touch Controls");
                     ui.end_row();
                     ui.label("Rotate");
@@ -368,7 +413,7 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
                     ui.label("Zoom");
                     ui.label("Pinch to zoom");
                     ui.end_row();
-                    
+
                     ui.separator();
                     ui.end_row();
 
@@ -413,6 +458,11 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
             state.start_tracking_shot();
         }
     }
+
+    if reset_camera {
+        state.reset_camera();
+    }
+
     return requested_repaint;
 }
 
@@ -496,4 +546,27 @@ fn optional_checkbox(ui: &mut egui::Ui, opt: &mut Option<bool>, default: bool) {
     if changed && opt.is_none() {
         *opt = Some(val);
     }
+}
+
+fn drag_angle_range(
+    ui: &mut egui::Ui,
+    radians: &mut f32,
+    range: RangeInclusive<f32>,
+) -> egui::Response {
+    let mut degrees = radians.to_degrees() * 2.;
+    let mut response = ui.add(
+        egui::DragValue::new(&mut degrees)
+            .speed(1.0)
+            .suffix("°")
+            .range(range)
+            .clamp_existing_to_range(true),
+    );
+
+    // only touch `*radians` if we actually changed the degree value
+    if degrees != radians.to_degrees() {
+        *radians = degrees.to_radians() / 2.;
+        response.mark_changed();
+    }
+
+    response
 }

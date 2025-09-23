@@ -10,6 +10,7 @@ use crate::{
 use std::num::NonZeroU64;
 use std::time::Duration;
 
+use serde::de;
 use wgpu::{include_wgsl, Extent3d, MultisampleState};
 
 use cgmath::{EuclideanSpace, Matrix4, Point3, SquareMatrix, Vector2, Vector4};
@@ -60,11 +61,13 @@ impl GaussianRenderer {
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: color_format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: color_format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                ],
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState {
@@ -76,7 +79,13 @@ impl GaussianRenderer {
                 unclipped_depth: false,
                 conservative: false,
             },
-            depth_stencil: None,
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth16Unorm,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
             cache: None,
@@ -419,6 +428,8 @@ pub struct Display {
     bind_group: wgpu::BindGroup,
     format: wgpu::TextureFormat,
     view: wgpu::TextureView,
+    depth:wgpu::Texture,
+    depth_view: wgpu::TextureView,
     env_bg: wgpu::BindGroup,
     has_env_map: bool,
 }
@@ -471,19 +482,28 @@ impl Display {
             cache: None,
         });
         let env_bg = Self::create_env_map_bg(device, None);
-        let (view, bind_group) = Self::create_render_target(device, source_format, width, height);
+        let (view, depth_view,depth, bind_group) =
+            Self::create_render_target(device, source_format, width, height);
         Self {
             pipeline,
             view,
+            depth_view,
             format: source_format,
             bind_group,
             env_bg,
+            depth,
             has_env_map: false,
         }
     }
 
     pub fn texture(&self) -> &wgpu::TextureView {
         &self.view
+    }
+    pub fn depth_texture_view(&self) -> &wgpu::TextureView {
+        &self.depth_view
+    }
+    pub fn depth_texture(&self) -> &wgpu::Texture {
+        &self.depth
     }
 
     fn env_map_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -567,7 +587,7 @@ impl Display {
         format: wgpu::TextureFormat,
         width: u32,
         height: u32,
-    ) -> (wgpu::TextureView, wgpu::BindGroup) {
+    ) -> (wgpu::TextureView, wgpu::TextureView,wgpu::Texture, wgpu::BindGroup) {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("display render image"),
             size: Extent3d {
@@ -583,9 +603,29 @@ impl Display {
             view_formats: &[],
         });
         let texture_view = texture.create_view(&Default::default());
+        let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("display render depth texture"),
+            size: Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth16Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let depth_texture_view = depth_texture.create_view(&Default::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+         let depth_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -600,9 +640,17 @@ impl Display {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&depth_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&depth_sampler),
+                },
             ],
         });
-        return (texture_view, bind_group);
+        return (texture_view, depth_texture_view,depth_texture, bind_group);
     }
 
     pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -625,14 +673,33 @@ impl Display {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                    count: None,
+                },
             ],
         })
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
-        let (view, bind_group) = Self::create_render_target(device, self.format, width, height);
+        let (view, view_depth,depth, bind_group) =
+            Self::create_render_target(device, self.format, width, height);
         self.bind_group = bind_group;
         self.view = view;
+        self.depth_view = view_depth;
+        self.depth = depth;
     }
 
     pub fn render(
@@ -666,7 +733,7 @@ impl Display {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug,PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct SplattingArgs {
     pub camera: PerspectiveCamera,
     pub viewport: Vector2<u32>,
