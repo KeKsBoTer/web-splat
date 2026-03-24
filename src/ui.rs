@@ -11,10 +11,7 @@ use cgmath::{Euler, Matrix3, Quaternion};
 #[cfg(not(target_arch = "wasm32"))]
 use egui::Vec2b;
 
-#[cfg(target_arch = "wasm32")]
-use egui::{Align2, Vec2};
-
-use egui::{Color32, RichText, emath::Numeric};
+use egui::{Align2, Color32, RichText, Vec2, emath::Numeric};
 
 #[cfg(not(target_arch = "wasm32"))]
 use egui_plot::{Legend, PlotPoints};
@@ -391,6 +388,21 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
                     ui.end_row();
                 });
         });
+
+    let num_loaded = state.pc.valid_num_points();
+    let total_points = state.pc.total_num_points();
+    if num_loaded < total_points {
+        egui::Area::new("loading_progress".into())
+            .anchor(Align2::CENTER_BOTTOM, Vec2::new(0., -10.))
+            .default_width(200.)
+            .default_height(50.)
+            .show(ctx, |ui| {
+                let bar = egui::ProgressBar::new(num_loaded as f32 / total_points as f32)
+                    .show_percentage()
+                    .animate(false).text("Loading...");
+                ui.add(bar);
+            });
+    }
 
     let requested_repaint = ctx.has_requested_repaint();
 

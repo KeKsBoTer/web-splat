@@ -311,6 +311,7 @@ impl CameraController {
             self.scroll = 0.;
         }
         self.user_inptut = false;
+
     }
 }
 

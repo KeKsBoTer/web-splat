@@ -1,7 +1,7 @@
 use std::{
     io::{Read, Seek},
     path::PathBuf,
-    sync::Arc, //thread,
+    sync::Arc, thread,
 };
 
 use renderer::Display;
@@ -21,6 +21,10 @@ use utils::key_to_num;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::wasm_bindgen;
+
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::spawn_local;
+
 use winit::{
     dpi::{LogicalSize, PhysicalSize},
     event::{DeviceEvent, ElementState, Event, TouchPhase as WinitTouchPhase, WindowEvent},
@@ -45,7 +49,7 @@ mod renderer;
 pub use renderer::{GaussianRenderer, SplattingArgs};
 
 mod scene;
-use crate::{io::ply::PlyReader, utils::GPUStopwatch};
+use crate::{io::ply::PlyReader, pointcloud::Aabb, utils::GPUStopwatch};
 
 pub use self::scene::{Scene, SceneCamera, Split};
 
@@ -63,6 +67,28 @@ pub struct WGPUContext {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub adapter: wgpu::Adapter,
+}
+
+#[cfg(target_arch = "wasm32")]
+// A minimal yield using only web-sys and wasm-bindgen-futures
+async fn yield_now() {
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen_futures::spawn_local;
+    let (tx, rx) = futures_channel::oneshot::channel();
+    let window = web_sys::window().expect("no global window object found");
+    
+    let closure = Closure::once_into_js(move || {
+        let _ = tx.send(());
+    });
+
+    window
+        .set_timeout_with_callback_and_timeout_and_arguments_0(
+            closure.as_ref().unchecked_ref(),
+            0, // 0ms delay - just push to the end of the event queue
+        )
+        .expect("should register setTimeout");
+
+    let _ = rx.await;
 }
 
 impl WGPUContext {
@@ -158,7 +184,7 @@ impl WindowContext {
     // Creating some of the wgpu types requires async code
     async fn new<R: Read + Seek+ Send+ 'static>(
         window: Window,
-        pc_file: R,
+        mut pc_file: R,
         render_config: &RenderConfig,
     ) -> anyhow::Result<Self> {
         let mut size = window.inner_size();
@@ -211,34 +237,88 @@ impl WindowContext {
         };
         surface.configure(&device, &config);
 
-        // let metadata = io::GenericGaussianPointCloud::metadata(pc_file)?;
-        let mut ply_reader = PlyReader::new(pc_file)?;
-        let metadata = ply_reader.metadata();
+        let mut ply_reader = PlyReader::new();
+        let chunk_size = 1024*1024; // 1 MB
+        let mut buffer = vec![0; chunk_size];
+        let metadata = loop {
+            let read_bytes = pc_file.read(&mut buffer).unwrap();
+            if let Some(metadata) = ply_reader.read_metadata(&buffer[..read_bytes]) {
+                break metadata;
+            }
+        };
         let pc = Arc::new(PointCloud::new(&device, metadata)?);
-
        
         let load_queue = queue.clone();
         let load_pc = pc.clone();
-        // thread::spawn(move ||{
-        //     loop{
-        //         let chunk_size = 4096;
-        //         let (gaussians,sh_coefs,bbox) =  ply_reader.load_chunk(chunk_size).unwrap();
-        //         if gaussians.is_empty(){
-        //             break;
-        //         }
-        //         load_pc.upload_chunk(&gaussians,&sh_coefs, &load_queue,&bbox);
-        //     }
-        //     log::info!("finished loading point cloud");
-        // });
+        
+        #[cfg(not(target_arch = "wasm32"))]
+        thread::spawn(move ||{
+            let start = Instant::now();
+            let chunk_size = 1024*1024; // 1 MB
+            let mut buffer = vec![0; chunk_size];
+            loop{
+                let read_bytes = pc_file.read(&mut buffer).unwrap();
+                let (gaussians,sh_coefs,bbox) =  ply_reader.load_next_chunk(&buffer[..read_bytes]).unwrap();
+                if gaussians.is_empty(){
+                    break;
+                }
+                load_pc.upload_chunk(&gaussians,&sh_coefs, &load_queue,&bbox);
+            }
+            log::info!("finished loading point cloud in {} seconds", start.elapsed().as_secs_f32());
+        });
+
+        
+
+        #[cfg(target_arch = "wasm32")]
+        let performance = web_sys::window()
+            .and_then(|w| w.performance())
+            .expect("Performance API not available");
+
+        #[cfg(target_arch = "wasm32")]
+        spawn_local(async move {
+            let mut last_yield_time = performance.now();
+            let frame_budget_ms = 8.0;
+            let chunk_size = 1024*256; // 1 MB
+            let mut buffer = vec![0; chunk_size];
+
+            log::info!("Starting time-sliced load...");
+
+            loop {
+                let read_bytes = pc_file.read(&mut buffer).unwrap();
+                let (gaussians, sh_coefs, bbox) = match ply_reader.load_next_chunk(&buffer[..read_bytes]) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        log::error!("PLY Load Error: {:?}", e);
+                        break;
+                    }
+                };
+
+                if gaussians.is_empty() {
+                    break;
+                }
+
+                load_pc.upload_chunk(&gaussians, &sh_coefs, &load_queue, &bbox);
+                // 3. Check the "Time Budget"
+                let current_time = performance.now();
+                if (current_time - last_yield_time) > frame_budget_ms {
+                    // We exceeded our 8ms budget! Give the thread back to the browser.
+                    yield_now().await;
+                    
+                    // Reset the timer for the next slice of work
+                    last_yield_time = performance.now();
+                }
+            }
+
+            log::info!("Time-sliced point cloud loading finished!");
+        });
 
         let renderer =
             GaussianRenderer::new(&device, &queue, render_format, pc.sh_deg(), pc.compressed())
                 .await;
 
-        let aabb = pc.bbox();
         let aspect = size.width as f32 / size.height as f32;
         let view_camera = PerspectiveCamera::new(
-            aabb.center() - Vector3::new(1., 1., 1.) * aabb.radius() * 0.5,
+            Point3::new(0., 0., -1.),
             Quaternion::one(),
             PerspectiveProjection::new(
                 Vector2::new(size.width, size.height),
@@ -249,7 +329,7 @@ impl WindowContext {
         );
 
         let mut controller = CameraController::new(0.1, 0.05);
-        controller.center = pc.center();
+        // controller.center = pc.center();
         let ui_renderer = ui_renderer::EguiWGPU::new(device, surface_format, &window);
 
         let display = Display::new(
@@ -290,7 +370,6 @@ impl WindowContext {
                 background_color: wgpu::Color::BLACK,
             },
             pc,
-            // camera: view_camera,
             controller,
             ui_renderer,
             fps: 0.,

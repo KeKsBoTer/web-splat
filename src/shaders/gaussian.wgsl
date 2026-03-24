@@ -1,5 +1,5 @@
 // we cutoff at 1/255 alpha value 
-const CUTOFF:f32 = 2.3539888583335364; // = sqrt(log(255))
+const CUTOFF:f32 = sqrt(log(255.0));
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -49,7 +49,7 @@ fn vs_main(
 
     let position = vec2<f32>(x, y) * CUTOFF;
 
-    let offset = 2. * mat2x2<f32>(v1, v2) * position;
+    let offset = 2.0*mat2x2<f32>(v1, v2)* position;
     out.position = vec4<f32>(v_center + offset, 0., 1.);
     out.screen_pos = position;
     out.color = vec4<f32>(unpack2x16float(vertex.color_0), unpack2x16float(vertex.color_1));
@@ -59,9 +59,9 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let a = dot(in.screen_pos, in.screen_pos);
-    if a > 2. * CUTOFF {
+    if a > CUTOFF*2.0 {
         discard;
     }
-    let b = min(0.99, exp(-a) * in.color.a);
+    let b = min(0.99, exp(-a) * in.color.a); // match 3DGS implementation
     return vec4<f32>(in.color.rgb, 1.) * b;
 }

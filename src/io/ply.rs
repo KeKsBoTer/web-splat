@@ -1,124 +1,52 @@
-use anyhow::Ok;
 use half::f16;
-use ply_rs::ply;
 
-use std::io::{self, BufReader, Read, Seek};
-
-use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt};
 use cgmath::{EuclideanSpace, InnerSpace, Point3, Quaternion, Vector3};
 
 use crate::{
     pointcloud::{Aabb, Gaussian, PointCloudMetadata},
     utils::{build_cov, sh_deg_from_num_coefs, sigmoid},
 };
+use serde::de::DeserializeSeed;
+use serde::{Deserialize, Serialize};
+use serde_ply::RowVisitor;
 
-pub struct PlyReader<R: Read + Seek> {
-    header: ply_rs::ply::Header,
-    reader: BufReader<R>,
-    sh_deg: u32,
-    num_points: usize,
-    mip_splatting: Option<bool>,
-    kernel_size: Option<f32>,
-    background_color: Option<[f32; 3]>,
+pub struct PlyReader{
     read_points: usize,
+    parser: serde_ply::PlyChunkedReader,
 }
 
-impl<R: io::Read + io::Seek> PlyReader<R> {
-    pub fn new(reader: R) -> Result<Self, anyhow::Error> {
-        let mut reader = BufReader::new(reader);
-        let parser = ply_rs::parser::Parser::<ply_rs::ply::DefaultElement>::new();
-        let header = parser.read_header(&mut reader).unwrap();
-        let sh_deg = Self::file_sh_deg(&header)?;
-        let num_points = Self::num_points(&header)?;
-        let mip_splatting = Self::mip_splatting(&header)?;
-        let kernel_size = Self::kernel_size(&header)?;
-        let background_color = Self::background_color(&header)
-            .map_err(|e| log::warn!("could not parse background_color: {}", e))
-            .unwrap_or_default();
-        Ok(Self {
-            header,
-            reader,
-            sh_deg,
-            num_points,
-            mip_splatting,
-            kernel_size,
-            background_color,
+
+impl PlyReader {
+
+
+    pub fn new() -> Self {
+        let parser = serde_ply::PlyChunkedReader::new();
+        Self {
+            parser,
             read_points: 0,
-        })
+        }
     }
 
-    pub fn metadata(&self) -> PointCloudMetadata {
+    fn metadata(header: &serde_ply::PlyHeader) -> PointCloudMetadata {
         PointCloudMetadata {
-            num_points: self.num_points,
-            sh_deg: self.sh_deg,
+            num_points: Self::num_points(header).unwrap_or(0),
+            sh_deg: Self::file_sh_deg(header).unwrap_or(0),
             center: Point3::origin(),
             up: None,
-            mip_splatting: self.mip_splatting,
-            kernel_size: self.kernel_size,
-            background_color: self.background_color,
+            mip_splatting: Self::mip_splatting(header).unwrap_or(None),
+            kernel_size: Self::kernel_size(header).unwrap_or(None),
+            background_color: Self::background_color(header).unwrap_or(None),
             compressed: false,
         }
     }
 
-    fn read_line<B: ByteOrder>(
-        &mut self,
-        sh_deg: usize,
-    ) -> anyhow::Result<(Gaussian, [[f16; 3]; 16])> {
-        let mut pos = [0.; 3];
-        self.reader.read_f32_into::<B>(&mut pos)?;
-
-        // skip normals
-        // for what ever reason it is faster to call read than seek ...
-        // so we just read them and never use them again
-        let mut _normals = [0.; 3];
-        self.reader.read_f32_into::<B>(&mut _normals)?;
-
-        let mut sh: [[f32; 3]; 16] = [[0.; 3]; 16];
-        self.reader.read_f32_into::<B>(&mut sh[0])?;
-        let mut sh_rest = [0.; 15 * 3];
-        let num_coefs = (sh_deg + 1) * (sh_deg + 1);
-        self.reader
-            .read_f32_into::<B>(&mut sh_rest[..(num_coefs - 1) * 3])?;
-
-        // higher order coefficients are stored with channel first (shape:[N,3,C])
-        for i in 0..(num_coefs - 1) {
-            for j in 0..3 {
-                sh[i + 1][j] = sh_rest[j * (num_coefs - 1) + i];
-            }
-        }
-
-        let opacity = sigmoid(self.reader.read_f32::<B>()?);
-
-        let scale_1 = self.reader.read_f32::<B>()?.exp();
-        let scale_2 = self.reader.read_f32::<B>()?.exp();
-        let scale_3 = self.reader.read_f32::<B>()?.exp();
-        let scale = Vector3::new(scale_1, scale_2, scale_3);
-
-        let rot_0 = self.reader.read_f32::<B>()?;
-        let rot_1 = self.reader.read_f32::<B>()?;
-        let rot_2 = self.reader.read_f32::<B>()?;
-        let rot_3 = self.reader.read_f32::<B>()?;
-        let rot = Quaternion::new(rot_0, rot_1, rot_2, rot_3).normalize();
-
-        let cov = build_cov(rot, scale);
-
-        self.read_points += 1;
-
-        return Ok((
-            Gaussian::new(
-                Point3::from(pos).cast().unwrap(),
-                f16::from_f32(opacity),
-                cov.map(|x| f16::from_f32(x)),
-            ),
-            sh.map(|x| x.map(|y| f16::from_f32(y))),
-        ));
-    }
-
-    fn file_sh_deg(header: &ply::Header) -> Result<u32, anyhow::Error> {
-        let num_sh_coefs = header.elements["vertex"]
+    fn file_sh_deg(header: &serde_ply::PlyHeader) -> Result<u32, anyhow::Error> {
+        let num_sh_coefs = header
+            .get_element("vertex")
+            .unwrap()
             .properties
-            .keys()
-            .filter(|k| k.starts_with("f_"))
+            .iter()
+            .filter(|k| k.name.starts_with("f_"))
             .count();
 
         let file_sh_deg = sh_deg_from_num_coefs(num_sh_coefs as u32 / 3).ok_or(anyhow::anyhow!(
@@ -127,15 +55,14 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
         Ok(file_sh_deg)
     }
 
-    fn num_points(header: &ply::Header) -> Result<usize, anyhow::Error> {
+    fn num_points(header: &serde_ply::PlyHeader) -> Result<usize, anyhow::Error> {
         Ok(header
-            .elements
-            .get("vertex")
+            .get_element("vertex")
             .ok_or(anyhow::anyhow!("missing element vertex"))?
             .count as usize)
     }
 
-    fn mip_splatting(header: &ply::Header) -> Result<Option<bool>, anyhow::Error> {
+    fn mip_splatting(header: &serde_ply::PlyHeader) -> Result<Option<bool>, anyhow::Error> {
         Ok(header
             .comments
             .iter()
@@ -143,7 +70,7 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
             .map(|c| c.split('=').last().unwrap().to_lowercase().parse::<bool>())
             .transpose()?)
     }
-    fn kernel_size(header: &ply::Header) -> Result<Option<f32>, anyhow::Error> {
+    fn kernel_size(header: &serde_ply::PlyHeader) -> Result<Option<f32>, anyhow::Error> {
         Ok(header
             .comments
             .iter()
@@ -152,7 +79,7 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
             .transpose()?)
     }
 
-    fn background_color(header: &ply::Header) -> anyhow::Result<Option<[f32; 3]>> {
+    fn background_color(header: &serde_ply::PlyHeader) -> anyhow::Result<Option<[f32; 3]>> {
         header
             .comments
             .iter()
@@ -175,33 +102,42 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
             .transpose()
     }
 
-    pub fn load_chunk(&mut self,size: usize) -> Result<(
-        Vec<Gaussian>,Vec<[[f16;3];16]>,Aabb<f32>
-    ), anyhow::Error>{
-        let remaining_points =( self.num_points - self.read_points).min(size);
-        let mut gaussians = Vec::with_capacity(remaining_points);
-        let mut sh_coefs = Vec::with_capacity(remaining_points);
-        let mut bbox = Aabb::new(Point3::new(f32::MAX, f32::MAX, f32::MAX), Point3::new(f32::MIN, f32::MIN, f32::MIN));
-        match self.header.encoding {
-            ply_rs::ply::Encoding::Ascii => todo!("acsii ply format not supported"),
-            ply_rs::ply::Encoding::BinaryBigEndian => {
-                for _ in 0..remaining_points {
-                    let (g, s) = self.read_line::<BigEndian>(self.sh_deg as usize)?;
-                    gaussians.push(g);
-                    sh_coefs.push(s);
-                    bbox.grow(&g.xyz);
-                }
+    pub fn read_metadata(&mut self,data: &[u8]) -> Option<PointCloudMetadata> {
+        self.parser.buffer_mut().extend_from_slice(data);
+        let header = self.parser.header();
+        return header.map(|h| Self::metadata(h));
+    }
+
+    pub fn load_next_chunk(
+        &mut self,
+        data: &[u8]
+    ) -> Result<(Vec<Gaussian>, Vec<[[f16; 3]; 16]>, Aabb<f32>), anyhow::Error> {
+        let mut gaussians = Vec::new();
+        let mut sh_coefs = Vec::new();
+        let mut bbox = Aabb::new(
+            Point3::new(f32::MAX, f32::MAX, f32::MAX),
+            Point3::new(f32::MIN, f32::MIN, f32::MIN),
+        );
+
+        self.parser.buffer_mut().extend_from_slice(data);
+
+
+        if let Some(current_element) = self.parser.current_element() {
+            if current_element.name == "vertex" {
+                RowVisitor::new(|g: GaussianPly| {
+                    let gaussian = g.gaussian();
+                    bbox.grow(&gaussian.xyz);
+                    gaussians.push(gaussian);
+                    sh_coefs.push(g.sh_coefs());
+                })
+                .deserialize(&mut self.parser)?;
+            } else {
             }
-            ply_rs::ply::Encoding::BinaryLittleEndian => {
-                for _ in 0..remaining_points {
-                    let (g, s) = self.read_line::<LittleEndian>(self.sh_deg as usize)?;
-                    gaussians.push(g);
-                    sh_coefs.push(s);
-                    bbox.grow(&g.xyz);
-                }
-            }
-        };
-        return Ok((gaussians,sh_coefs,bbox));
+        } else {
+
+        }
+        self.read_points += gaussians.len();
+        return Ok((gaussians, sh_coefs, bbox));
     }
 
     fn magic_bytes() -> &'static [u8] {
@@ -210,5 +146,149 @@ impl<R: io::Read + io::Seek> PlyReader<R> {
 
     fn file_ending() -> &'static str {
         "ply"
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+struct GaussianPly {
+    x: f32,
+    y: f32,
+    z: f32,
+    nx: f32,
+    ny: f32,
+    nz: f32,
+    f_dc_0: f32,
+    f_dc_1: f32,
+    f_dc_2: f32,
+    f_rest_0: f32,
+    f_rest_1: f32,
+    f_rest_2: f32,
+    f_rest_3: f32,
+    f_rest_4: f32,
+    f_rest_5: f32,
+    f_rest_6: f32,
+    f_rest_7: f32,
+    f_rest_8: f32,
+    f_rest_9: f32,
+    f_rest_10: f32,
+    f_rest_11: f32,
+    f_rest_12: f32,
+    f_rest_13: f32,
+    f_rest_14: f32,
+    f_rest_15: f32,
+    f_rest_16: f32,
+    f_rest_17: f32,
+    f_rest_18: f32,
+    f_rest_19: f32,
+    f_rest_20: f32,
+    f_rest_21: f32,
+    f_rest_22: f32,
+    f_rest_23: f32,
+    f_rest_24: f32,
+    f_rest_25: f32,
+    f_rest_26: f32,
+    f_rest_27: f32,
+    f_rest_28: f32,
+    f_rest_29: f32,
+    f_rest_30: f32,
+    f_rest_31: f32,
+    f_rest_32: f32,
+    f_rest_33: f32,
+    f_rest_34: f32,
+    f_rest_35: f32,
+    f_rest_36: f32,
+    f_rest_37: f32,
+    f_rest_38: f32,
+    f_rest_39: f32,
+    f_rest_40: f32,
+    f_rest_41: f32,
+    f_rest_42: f32,
+    f_rest_43: f32,
+    f_rest_44: f32,
+    opacity: f32,
+    scale_0: f32,
+    scale_1: f32,
+    scale_2: f32,
+    rot_0: f32,
+    rot_1: f32,
+    rot_2: f32,
+    rot_3: f32,
+}
+
+impl GaussianPly {
+    fn gaussian(&self) -> Gaussian {
+        let rot = Quaternion::new(self.rot_0, self.rot_1, self.rot_2, self.rot_3).normalize();
+        let scale = Vector3::new(self.scale_0, self.scale_1, self.scale_2).map(|v| v.exp());
+        let cov = build_cov(rot, scale);
+        let opacity = sigmoid(self.opacity);
+        Gaussian::new(
+            Point3::new(self.x, self.y, self.z),
+            f16::from_f32(opacity),
+            cov.map(|f| f16::from_f32(f)),
+        )
+    }
+
+    fn sh_coefs(&self) -> [[f16; 3]; 16] {
+        let mut sh_coefs = [[f16::from_f32(0.0); 3]; 16];
+        for i in 0..16 {
+            sh_coefs[i][0] = f16::from_f32(*self.get_sh_coef(i, 0));
+            sh_coefs[i][1] = f16::from_f32(*self.get_sh_coef(i, 1));
+            sh_coefs[i][2] = f16::from_f32(*self.get_sh_coef(i, 2));
+        }
+        sh_coefs
+    }
+
+    fn get_sh_coef(&self, i: usize, c: usize) -> &f32 {
+        match (i, c) {
+            (0, 0) => &self.f_dc_0,
+            (0, 1) => &self.f_dc_1,
+            (0, 2) => &self.f_dc_2,
+            (1, 0) => &self.f_rest_0,
+            (2, 0) => &self.f_rest_1,
+            (3, 0) => &self.f_rest_2,
+            (4, 0) => &self.f_rest_3,
+            (5, 0) => &self.f_rest_4,
+            (6, 0) => &self.f_rest_5,
+            (7, 0) => &self.f_rest_6,
+            (8, 0) => &self.f_rest_7,
+            (9, 0) => &self.f_rest_8,
+            (10, 0) => &self.f_rest_9,
+            (11, 0) => &self.f_rest_10,
+            (12, 0) => &self.f_rest_11,
+            (13, 0) => &self.f_rest_12,
+            (14, 0) => &self.f_rest_13,
+            (15, 0) => &self.f_rest_14,
+            (1, 1) => &self.f_rest_15,
+            (2, 1) => &self.f_rest_16,
+            (3, 1) => &self.f_rest_17,
+            (4, 1) => &self.f_rest_18,
+            (5, 1) => &self.f_rest_19,
+            (6, 1) => &self.f_rest_20,
+            (7, 1) => &self.f_rest_21,
+            (8, 1) => &self.f_rest_22,
+            (9, 1) => &self.f_rest_23,
+            (10, 1) => &self.f_rest_24,
+            (11, 1) => &self.f_rest_25,
+            (12, 1) => &self.f_rest_26,
+            (13, 1) => &self.f_rest_27,
+            (14, 1) => &self.f_rest_28,
+            (15, 1) => &self.f_rest_29,
+            (1, 2) => &self.f_rest_30,
+            (2, 2) => &self.f_rest_31,
+            (3, 2) => &self.f_rest_32,
+            (4, 2) => &self.f_rest_33,
+            (5, 2) => &self.f_rest_34,
+            (6, 2) => &self.f_rest_35,
+            (7, 2) => &self.f_rest_36,
+            (8, 2) => &self.f_rest_37,
+            (9, 2) => &self.f_rest_38,
+            (10, 2) => &self.f_rest_39,
+            (11, 2) => &self.f_rest_40,
+            (12, 2) => &self.f_rest_41,
+            (13, 2) => &self.f_rest_42,
+            (14, 2) => &self.f_rest_43,
+            (15, 2) => &self.f_rest_44,
+            _ => panic!("invalid sh coef index"),
+        }
     }
 }
