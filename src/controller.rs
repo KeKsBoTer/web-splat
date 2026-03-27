@@ -260,7 +260,7 @@ impl CameraController {
         let view_t: Matrix3<f32> = camera.rotation.invert().into();
 
         let x_axis = view_t.x;
-        let y_axis = self.up.unwrap_or(view_t.y);
+        let y_axis = self.up.unwrap_or(Vector3::unit_y());
         let z_axis = view_t.z;
 
         let offset =
