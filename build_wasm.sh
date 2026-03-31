@@ -3,7 +3,6 @@ cargo build \
     --no-default-features \
     --target wasm32-unknown-unknown \
     --lib \
-    --features npz \
     --profile web-release \
 && wasm-bindgen \
     --out-dir public \

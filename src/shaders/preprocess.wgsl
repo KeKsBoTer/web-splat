@@ -270,11 +270,10 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
         pack2x16float(v_center.xy),
         pack2x16float(color.rg), pack2x16float(color.ba),
     );
-    // filling the sorting buffers and the indirect sort dispatch buffer
+    // filling the sorting buffers and the indirect sort dispatch bufferch buffer
     let znear = -camera.proj[3][2] / camera.proj[2][2];
     let zfar = -camera.proj[3][2] / (camera.proj[2][2] - (1.));
-    // filling the sorting buffers and the indirect sort dispatch buffer
-    sort_depths[store_idx] = bitcast<u32>(zfar - pos2d.z) ;//u32(f32(0xffffffu) - pos2d.z / zfar * f32(0xffffffu));
+    sort_depths[store_idx] = bitcast<u32>(pos2d.z);
     sort_indices[store_idx] = store_idx;
 
     let keys_per_wg = 256u * 15u;         // Caution: if workgroup size (256) or keys per thread (15) changes the dispatch is wrong!!

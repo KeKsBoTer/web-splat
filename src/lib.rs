@@ -260,6 +260,7 @@ impl WindowContext {
                 let read_bytes = pc_file.read(&mut buffer).unwrap();
                 let (gaussians,sh_coefs,bbox) =  ply_reader.load_next_chunk(&buffer[..read_bytes]).unwrap();
                 if gaussians.is_empty(){
+                    log::debug!("no more points to read, finishing loading thread");
                     break;
                 }
                 load_pc.upload_chunk(&gaussians,&sh_coefs, &load_queue,&bbox);
@@ -551,7 +552,7 @@ impl WindowContext {
                     view: self.display.texture(),
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(self.splatting_args.background_color),
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,
@@ -568,8 +569,6 @@ impl WindowContext {
             &mut encoder,
             &view_rgb,
             self.splatting_args.background_color,
-            self.renderer.camera(),
-            &self.renderer.render_settings(),
         );
         self.stopwatch.as_mut().map(|s| s.end(&mut encoder));
 

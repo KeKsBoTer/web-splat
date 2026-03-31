@@ -10,15 +10,12 @@ use serde::de::DeserializeSeed;
 use serde::{Deserialize, Serialize};
 use serde_ply::RowVisitor;
 
-pub struct PlyReader{
+pub struct PlyReader {
     read_points: usize,
     parser: serde_ply::PlyChunkedReader,
 }
 
-
 impl PlyReader {
-
-
     pub fn new() -> Self {
         let parser = serde_ply::PlyChunkedReader::new();
         Self {
@@ -36,7 +33,7 @@ impl PlyReader {
             mip_splatting: Self::mip_splatting(header).unwrap_or(None),
             kernel_size: Self::kernel_size(header).unwrap_or(None),
             background_color: Self::background_color(header).unwrap_or(None),
-            compressed: false,
+            quantization: None,
         }
     }
 
@@ -102,7 +99,7 @@ impl PlyReader {
             .transpose()
     }
 
-    pub fn read_metadata(&mut self,data: &[u8]) -> Option<PointCloudMetadata> {
+    pub fn read_metadata(&mut self, data: &[u8]) -> Option<PointCloudMetadata> {
         self.parser.buffer_mut().extend_from_slice(data);
         let header = self.parser.header();
         return header.map(|h| Self::metadata(h));
@@ -110,7 +107,7 @@ impl PlyReader {
 
     pub fn load_next_chunk(
         &mut self,
-        data: &[u8]
+        data: &[u8],
     ) -> Result<(Vec<Gaussian>, Vec<[[f16; 3]; 16]>, Aabb<f32>), anyhow::Error> {
         let mut gaussians = Vec::new();
         let mut sh_coefs = Vec::new();
@@ -121,173 +118,256 @@ impl PlyReader {
 
         self.parser.buffer_mut().extend_from_slice(data);
 
-
         if let Some(current_element) = self.parser.current_element() {
             if current_element.name == "vertex" {
                 RowVisitor::new(|g: GaussianPly| {
                     let gaussian = g.gaussian();
                     bbox.grow(&gaussian.xyz);
                     gaussians.push(gaussian);
-                    sh_coefs.push(g.sh_coefs());
+                    sh_coefs.push(g.features.as_array().map(|v| {
+                        [
+                            f16::from_f32(v[0]),
+                            f16::from_f32(v[1]),
+                            f16::from_f32(v[2]),
+                        ]
+                    }));
                 })
                 .deserialize(&mut self.parser)?;
             } else {
+                log::warn!(
+                    "current element is {}, expected vertex",
+                    current_element.name
+                );
             }
         } else {
-
         }
         self.read_points += gaussians.len();
         return Ok((gaussians, sh_coefs, bbox));
     }
-
-    fn magic_bytes() -> &'static [u8] {
-        "ply".as_bytes()
-    }
-
-    fn file_ending() -> &'static str {
-        "ply"
-    }
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize)]
 struct GaussianPly {
     x: f32,
     y: f32,
     z: f32,
+
+    #[serde(default)]
     nx: f32,
+    #[serde(default)]
     ny: f32,
+    #[serde(default)]
     nz: f32,
-    f_dc_0: f32,
-    f_dc_1: f32,
-    f_dc_2: f32,
-    f_rest_0: f32,
-    f_rest_1: f32,
-    f_rest_2: f32,
-    f_rest_3: f32,
-    f_rest_4: f32,
-    f_rest_5: f32,
-    f_rest_6: f32,
-    f_rest_7: f32,
-    f_rest_8: f32,
-    f_rest_9: f32,
-    f_rest_10: f32,
-    f_rest_11: f32,
-    f_rest_12: f32,
-    f_rest_13: f32,
-    f_rest_14: f32,
-    f_rest_15: f32,
-    f_rest_16: f32,
-    f_rest_17: f32,
-    f_rest_18: f32,
-    f_rest_19: f32,
-    f_rest_20: f32,
-    f_rest_21: f32,
-    f_rest_22: f32,
-    f_rest_23: f32,
-    f_rest_24: f32,
-    f_rest_25: f32,
-    f_rest_26: f32,
-    f_rest_27: f32,
-    f_rest_28: f32,
-    f_rest_29: f32,
-    f_rest_30: f32,
-    f_rest_31: f32,
-    f_rest_32: f32,
-    f_rest_33: f32,
-    f_rest_34: f32,
-    f_rest_35: f32,
-    f_rest_36: f32,
-    f_rest_37: f32,
-    f_rest_38: f32,
-    f_rest_39: f32,
-    f_rest_40: f32,
-    f_rest_41: f32,
-    f_rest_42: f32,
-    f_rest_43: f32,
-    f_rest_44: f32,
+
+    #[serde(flatten)]
+    features: FeaturePly<f32>,
+
     opacity: f32,
-    scale_0: f32,
-    scale_1: f32,
-    scale_2: f32,
-    rot_0: f32,
-    rot_1: f32,
-    rot_2: f32,
-    rot_3: f32,
+
+    #[serde(flatten)]
+    cov: CovariancePly<f32>,
 }
 
 impl GaussianPly {
     fn gaussian(&self) -> Gaussian {
-        let rot = Quaternion::new(self.rot_0, self.rot_1, self.rot_2, self.rot_3).normalize();
-        let scale = Vector3::new(self.scale_0, self.scale_1, self.scale_2).map(|v| v.exp());
-        let cov = build_cov(rot, scale);
+        let cov = self.cov.covariance();
         let opacity = sigmoid(self.opacity);
         Gaussian::new(
             Point3::new(self.x, self.y, self.z),
             f16::from_f32(opacity),
-            cov.map(|f| f16::from_f32(f)),
+            cov,
         )
     }
+}
 
-    fn sh_coefs(&self) -> [[f16; 3]; 16] {
-        let mut sh_coefs = [[f16::from_f32(0.0); 3]; 16];
-        for i in 0..16 {
-            sh_coefs[i][0] = f16::from_f32(*self.get_sh_coef(i, 0));
-            sh_coefs[i][1] = f16::from_f32(*self.get_sh_coef(i, 1));
-            sh_coefs[i][2] = f16::from_f32(*self.get_sh_coef(i, 2));
-        }
-        sh_coefs
+// #[derive(Deserialize, Serialize, Debug)]
+// struct VertexPly {
+//     x: f32,
+//     y: f32,
+//     z: f32,
+//     opacity: u8,
+//     scaling_factor: u8,
+//     gaussian_indices: u32,
+//     feature_indices: u32,
+// }
+
+#[derive(Deserialize, Serialize, Debug)]
+struct CovariancePly<T> {
+    scale_0: T,
+    scale_1: T,
+    scale_2: T,
+    rot_0: T,
+    rot_1: T,
+    rot_2: T,
+    rot_3: T,
+}
+
+impl CovariancePly<f32> {
+    fn covariance(&self) -> [f16; 6] {
+        let rot = Quaternion::new(self.rot_0, self.rot_1, self.rot_2, self.rot_3).normalize();
+        let scale = Vector3::new(self.scale_0, self.scale_1, self.scale_2).map(|v| v.exp());
+        let cov = build_cov(rot, scale);
+        cov.map(|f| f16::from_f32(f))
     }
+}
 
-    fn get_sh_coef(&self, i: usize, c: usize) -> &f32 {
+#[derive(Deserialize, Serialize)]
+struct FeaturePly<T> {
+    f_dc_0: T,
+    f_dc_1: T,
+    f_dc_2: T,
+    #[serde(default)]
+    f_rest_0: T,
+    #[serde(default)]
+    f_rest_1: T,
+    #[serde(default)]
+    f_rest_2: T,
+    #[serde(default)]
+    f_rest_3: T,
+    #[serde(default)]
+    f_rest_4: T,
+    #[serde(default)]
+    f_rest_5: T,
+    #[serde(default)]
+    f_rest_6: T,
+    #[serde(default)]
+    f_rest_7: T,
+    #[serde(default)]
+    f_rest_8: T,
+    #[serde(default)]
+    f_rest_9: T,
+    #[serde(default)]
+    f_rest_10: T,
+    #[serde(default)]
+    f_rest_11: T,
+    #[serde(default)]
+    f_rest_12: T,
+    #[serde(default)]
+    f_rest_13: T,
+    #[serde(default)]
+    f_rest_14: T,
+    #[serde(default)]
+    f_rest_15: T,
+    #[serde(default)]
+    f_rest_16: T,
+    #[serde(default)]
+    f_rest_17: T,
+    #[serde(default)]
+    f_rest_18: T,
+    #[serde(default)]
+    f_rest_19: T,
+    #[serde(default)]
+    f_rest_20: T,
+    #[serde(default)]
+    f_rest_21: T,
+    #[serde(default)]
+    f_rest_22: T,
+    #[serde(default)]
+    f_rest_23: T,
+    #[serde(default)]
+    f_rest_24: T,
+    #[serde(default)]
+    f_rest_25: T,
+    #[serde(default)]
+    f_rest_26: T,
+    #[serde(default)]
+    f_rest_27: T,
+    #[serde(default)]
+    f_rest_28: T,
+    #[serde(default)]
+    f_rest_29: T,
+    #[serde(default)]
+    f_rest_30: T,
+    #[serde(default)]
+    f_rest_31: T,
+    #[serde(default)]
+    f_rest_32: T,
+    #[serde(default)]
+    f_rest_33: T,
+    #[serde(default)]
+    f_rest_34: T,
+    #[serde(default)]
+    f_rest_35: T,
+    #[serde(default)]
+    f_rest_36: T,
+    #[serde(default)]
+    f_rest_37: T,
+    #[serde(default)]
+    f_rest_38: T,
+    #[serde(default)]
+    f_rest_39: T,
+    #[serde(default)]
+    f_rest_40: T,
+    #[serde(default)]
+    f_rest_41: T,
+    #[serde(default)]
+    f_rest_42: T,
+    #[serde(default)]
+    f_rest_43: T,
+    #[serde(default)]
+    f_rest_44: T,
+}
+
+impl<T: Copy> FeaturePly<T> {
+    fn as_array(self) -> [[T; 3]; 16] {
+        std::array::from_fn(|i| {
+            [
+                self.get_sh_coef(i, 0),
+                self.get_sh_coef(i, 1),
+                self.get_sh_coef(i, 2),
+            ]
+        })
+    }
+    fn get_sh_coef(&self, i: usize, c: usize) -> T {
         match (i, c) {
-            (0, 0) => &self.f_dc_0,
-            (0, 1) => &self.f_dc_1,
-            (0, 2) => &self.f_dc_2,
-            (1, 0) => &self.f_rest_0,
-            (2, 0) => &self.f_rest_1,
-            (3, 0) => &self.f_rest_2,
-            (4, 0) => &self.f_rest_3,
-            (5, 0) => &self.f_rest_4,
-            (6, 0) => &self.f_rest_5,
-            (7, 0) => &self.f_rest_6,
-            (8, 0) => &self.f_rest_7,
-            (9, 0) => &self.f_rest_8,
-            (10, 0) => &self.f_rest_9,
-            (11, 0) => &self.f_rest_10,
-            (12, 0) => &self.f_rest_11,
-            (13, 0) => &self.f_rest_12,
-            (14, 0) => &self.f_rest_13,
-            (15, 0) => &self.f_rest_14,
-            (1, 1) => &self.f_rest_15,
-            (2, 1) => &self.f_rest_16,
-            (3, 1) => &self.f_rest_17,
-            (4, 1) => &self.f_rest_18,
-            (5, 1) => &self.f_rest_19,
-            (6, 1) => &self.f_rest_20,
-            (7, 1) => &self.f_rest_21,
-            (8, 1) => &self.f_rest_22,
-            (9, 1) => &self.f_rest_23,
-            (10, 1) => &self.f_rest_24,
-            (11, 1) => &self.f_rest_25,
-            (12, 1) => &self.f_rest_26,
-            (13, 1) => &self.f_rest_27,
-            (14, 1) => &self.f_rest_28,
-            (15, 1) => &self.f_rest_29,
-            (1, 2) => &self.f_rest_30,
-            (2, 2) => &self.f_rest_31,
-            (3, 2) => &self.f_rest_32,
-            (4, 2) => &self.f_rest_33,
-            (5, 2) => &self.f_rest_34,
-            (6, 2) => &self.f_rest_35,
-            (7, 2) => &self.f_rest_36,
-            (8, 2) => &self.f_rest_37,
-            (9, 2) => &self.f_rest_38,
-            (10, 2) => &self.f_rest_39,
-            (11, 2) => &self.f_rest_40,
-            (12, 2) => &self.f_rest_41,
-            (13, 2) => &self.f_rest_42,
-            (14, 2) => &self.f_rest_43,
-            (15, 2) => &self.f_rest_44,
+            (0, 0) => self.f_dc_0,
+            (0, 1) => self.f_dc_1,
+            (0, 2) => self.f_dc_2,
+            (1, 0) => self.f_rest_0,
+            (2, 0) => self.f_rest_1,
+            (3, 0) => self.f_rest_2,
+            (4, 0) => self.f_rest_3,
+            (5, 0) => self.f_rest_4,
+            (6, 0) => self.f_rest_5,
+            (7, 0) => self.f_rest_6,
+            (8, 0) => self.f_rest_7,
+            (9, 0) => self.f_rest_8,
+            (10, 0) => self.f_rest_9,
+            (11, 0) => self.f_rest_10,
+            (12, 0) => self.f_rest_11,
+            (13, 0) => self.f_rest_12,
+            (14, 0) => self.f_rest_13,
+            (15, 0) => self.f_rest_14,
+            (1, 1) => self.f_rest_15,
+            (2, 1) => self.f_rest_16,
+            (3, 1) => self.f_rest_17,
+            (4, 1) => self.f_rest_18,
+            (5, 1) => self.f_rest_19,
+            (6, 1) => self.f_rest_20,
+            (7, 1) => self.f_rest_21,
+            (8, 1) => self.f_rest_22,
+            (9, 1) => self.f_rest_23,
+            (10, 1) => self.f_rest_24,
+            (11, 1) => self.f_rest_25,
+            (12, 1) => self.f_rest_26,
+            (13, 1) => self.f_rest_27,
+            (14, 1) => self.f_rest_28,
+            (15, 1) => self.f_rest_29,
+            (1, 2) => self.f_rest_30,
+            (2, 2) => self.f_rest_31,
+            (3, 2) => self.f_rest_32,
+            (4, 2) => self.f_rest_33,
+            (5, 2) => self.f_rest_34,
+            (6, 2) => self.f_rest_35,
+            (7, 2) => self.f_rest_36,
+            (8, 2) => self.f_rest_37,
+            (9, 2) => self.f_rest_38,
+            (10, 2) => self.f_rest_39,
+            (11, 2) => self.f_rest_40,
+            (12, 2) => self.f_rest_41,
+            (13, 2) => self.f_rest_42,
+            (14, 2) => self.f_rest_43,
+            (15, 2) => self.f_rest_44,
             _ => panic!("invalid sh coef index"),
         }
     }

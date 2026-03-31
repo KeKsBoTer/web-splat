@@ -399,6 +399,7 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
             .show(ctx, |ui| {
                 let bar = egui::ProgressBar::new(num_loaded as f32 / total_points as f32)
                     .show_percentage()
+                    .desired_height(20.)
                     .animate(false).text("Loading...");
                 ui.add(bar);
             });

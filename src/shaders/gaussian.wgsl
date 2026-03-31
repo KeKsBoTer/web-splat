@@ -63,5 +63,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
     let b = min(0.99, exp(-a) * in.color.a); // match 3DGS implementation
-    return vec4<f32>(in.color.rgb, 1.) * b;
+    return vec4<f32>(in.color.rgb, 1.0)*b;
 }

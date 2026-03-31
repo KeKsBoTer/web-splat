@@ -75,7 +75,7 @@ pub struct PointCloudMetadata {
     pub mip_splatting: Option<bool>,
     pub kernel_size: Option<f32>,
     pub background_color: Option<[f32; 3]>,
-    pub compressed: bool,
+    pub quantization: Option<GaussianQuantization>,
 }
 
 struct DynamicPointCloudAttributes {
@@ -208,7 +208,7 @@ impl PointCloud {
             render_bind_group,
             total_num_points: metadata.num_points as u32,
             sh_deg: metadata.sh_deg,
-            compressed: metadata.compressed,
+            compressed: metadata.quantization.is_some(),
             dynamic_attributes: Arc::new(Mutex::new(DynamicPointCloudAttributes {
                 valid_points: 0,
                 bbox: Aabb::unit(),
@@ -430,7 +430,6 @@ pub struct Quantization {
 }
 
 impl Quantization {
-    #[cfg(feature = "npz")]
     pub fn new(zero_point: i32, scale: f32) -> Self {
         Quantization {
             zero_point,
@@ -457,6 +456,8 @@ pub struct GaussianQuantization {
     pub color_rest: Quantization,
     pub opacity: Quantization,
     pub scaling_factor: Quantization,
+    pub scaling: Quantization,
+    pub rotation: Quantization,
 }
 
 #[repr(C)]

@@ -10,7 +10,7 @@ use crate::{
 use std::num::NonZeroU64;
 use std::time::Duration;
 
-use wgpu::{Extent3d, MultisampleState, include_wgsl};
+use wgpu::{include_wgsl, Extent3d, MultisampleState};
 
 use cgmath::{EuclideanSpace, Matrix4, Point3, SquareMatrix, Vector2, Vector4};
 
@@ -62,7 +62,21 @@ impl GaussianRenderer {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: color_format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    // front to back blending 
+                    // this gives better visuals compared to back to front blending
+                    // if used with 8 bit textures
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::OneMinusDstAlpha, 
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
@@ -120,10 +134,6 @@ impl GaussianRenderer {
                 Some("render settings uniform buffer"),
             ),
         }
-    }
-
-    pub(crate) fn camera(&self) -> &UniformBuffer<CameraUniform> {
-        &self.camera
     }
 
     fn preprocess<'a>(
@@ -437,8 +447,6 @@ impl Display {
             label: Some("display pipeline layout"),
             bind_group_layouts: &[
                 &Self::bind_group_layout(device),
-                &UniformBuffer::<CameraUniform>::bind_group_layout(device),
-                &UniformBuffer::<SplattingArgsUniform>::bind_group_layout(device),
             ],
             push_constant_ranges: &[],
         });
@@ -562,8 +570,6 @@ impl Display {
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         background_color: wgpu::Color,
-        camera: &UniformBuffer<CameraUniform>,
-        render_settings: &UniformBuffer<SplattingArgsUniform>,
     ) {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("render pass"),
@@ -579,8 +585,6 @@ impl Display {
             ..Default::default()
         });
         render_pass.set_bind_group(0, &self.bind_group, &[]);
-        render_pass.set_bind_group(1, camera.bind_group(), &[]);
-        render_pass.set_bind_group(2, render_settings.bind_group(), &[]);
         render_pass.set_pipeline(&self.pipeline);
 
         render_pass.draw(0..4, 0..1);

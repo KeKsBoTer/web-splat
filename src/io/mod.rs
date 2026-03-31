@@ -1,21 +1,11 @@
-#[cfg(feature = "npz")]
-use std::io::BufReader;
-use std::io::{Read, Seek};
-
 use bytemuck::Zeroable;
 use cgmath::{Array, EuclideanSpace, InnerSpace, Point3, Vector3};
 use half::f16;
 
-use crate::pointcloud::{Aabb, Covariance3D, Gaussian, GaussianCompressed, GaussianQuantization, PointCloudMetadata};
+use crate::pointcloud::{Aabb, Covariance3D, Gaussian, GaussianCompressed, GaussianQuantization};
 
-#[cfg(feature = "npz")]
-use self::npz::NpzReader;
-
-use self::ply::PlyReader;
-
-#[cfg(feature = "npz")]
-pub mod npz;
 pub mod ply;
+// pub mod compressed;
 
 pub trait PointCloudReader {
     fn read(&mut self) -> Result<GenericGaussianPointCloud, anyhow::Error>;
@@ -27,7 +17,6 @@ pub trait PointCloudReader {
 pub struct GenericGaussianPointCloud {
     gaussians: Vec<u8>,
     sh_coefs: Vec<u8>,
-    compressed: bool,
     pub covars: Option<Vec<Covariance3D>>,
     pub quantization: Option<GaussianQuantization>,
     pub sh_deg: u32,
@@ -119,11 +108,9 @@ impl GenericGaussianPointCloud {
             up: up,
             center,
             aabb: bbox,
-            compressed: false,
         }
     }
 
-    #[cfg(feature = "npz")]
     fn new_compressed(
         gaussians: Vec<GaussianCompressed>,
         sh_coefs: Vec<u8>,
@@ -164,12 +151,15 @@ impl GenericGaussianPointCloud {
             up: up,
             center,
             aabb: bbox,
-            compressed: true,
         }
     }
 
+    pub fn compressed(&self) -> bool {
+        self.quantization.is_some()
+    }
+
     pub fn gaussians(&self) -> anyhow::Result<&[Gaussian]> {
-        if self.compressed {
+        if self.compressed() {
             Err(anyhow::anyhow!("Gaussians are compressed"))
         } else {
             Ok(bytemuck::cast_slice(&self.gaussians))
@@ -177,7 +167,7 @@ impl GenericGaussianPointCloud {
     }
 
     pub fn gaussians_compressed(&self) -> anyhow::Result<&[GaussianCompressed]> {
-        if self.compressed {
+        if self.compressed() {
             Err(anyhow::anyhow!("Gaussians are compressed"))
         } else {
             Ok(bytemuck::cast_slice(&self.gaussians))
@@ -190,10 +180,6 @@ impl GenericGaussianPointCloud {
 
     pub fn gaussian_buffer(&self) -> &[u8] {
         &self.gaussians
-    }
-
-    pub fn compressed(&self) -> bool {
-        self.compressed
     }
 }
 

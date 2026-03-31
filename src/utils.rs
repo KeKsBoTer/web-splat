@@ -175,11 +175,6 @@ where
     }
 }
 
-#[cfg(feature = "npz")]
-pub fn sh_num_coefficients(sh_deg: u32) -> u32 {
-    (sh_deg + 1) * (sh_deg + 1)
-}
-
 pub fn sh_deg_from_num_coefs(n: u32) -> Option<u32> {
     let sqrt = (n as f32).sqrt();
     if sqrt.fract() != 0. {
