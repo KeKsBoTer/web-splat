@@ -203,6 +203,35 @@ fn evaluate_sh(dir: vec3<f32>, v_idx: u32, sh_deg: u32) -> vec3<f32> {
     return result;
 }
 
+// width of the sort keys, 16, 24 or 32 (pipeline constant, see SORT_KEY_BITS in gpu_rs.rs)
+override sort_key_bits: u32;
+
+// sort key of the splat: 32 bit keys are the float bits of the clip space depth (positive,
+// so they sort like the depths), 16 bit keys are quantized view space depths
+fn sort_key(camspace_z: f32, clip_z: f32) -> u32 {
+    if sort_key_bits == 32u {
+        return bitcast<u32>(clip_z);
+    }
+    return depth_key(camspace_z);
+}
+
+// sort key (sort_key_bits < 32 bits) of a view space depth z in [znear, zfar] (smaller is nearer): the float
+// bits of z are a logarithmic scale, so the difference to the bits of znear, shifted to
+// fit the key bits, is a depth resolution relative to the depth (for a far / near ratio of
+// 1000 about 1 / 7000 per octave with 16 bits and 2^-20 with 24 bits).
+// The planes are read from the projection matrix, see build_proj in camera.rs.
+fn depth_key(z: f32) -> u32 {
+    let a = camera.proj[2][2];
+    let b = camera.proj[3][2];
+    let znear = -b / a;
+    let zfar = -b / (a - 1.);
+    let near_bits = bitcast<u32>(znear);
+    let range = bitcast<u32>(zfar) - near_bits;
+    let shift = max(0, 32 - i32(countLeadingZeros(range)) - i32(sort_key_bits)); // bits of range - key bits
+    // (rounding can put z just below znear)
+    return min((max(bitcast<u32>(z), near_bits) - near_bits) >> u32(shift), (1u << sort_key_bits) - 1u);
+}
+
 @compute @workgroup_size(256,1,1)
 fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) wgs: vec3<u32>) {
     let idx = gid.x;
@@ -318,7 +347,7 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
         pack2x16float(color.rg), pack2x16float(color.ba),
     );
     
-    sort_depths[store_idx] = bitcast<u32>(pos2d.z);
+    sort_depths[store_idx] = sort_key(camspace.z, pos2d.z);
     sort_indices[store_idx] = store_idx;
 
     let keys_per_wg = 256u * 15u;         // Caution: if workgroup size (256) or keys per thread (15) changes the dispatch is wrong!!

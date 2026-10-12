@@ -1,7 +1,10 @@
 //! Correctness and speed of the GPU radix sort (needs a GPU):
 //! `cargo test --release --test gpu_sort -- --nocapture`
 
-use web_splats::{WGPUContext, gpu_rs::GPURSSorter};
+use web_splats::{
+    WGPUContext,
+    gpu_rs::{GPURSSorter, SORT_KEY_BITS},
+};
 
 /// xorshift64*, deterministic test data
 struct Rng(u64);
@@ -18,21 +21,32 @@ impl Rng {
 fn distributions() -> Vec<(&'static str, Box<dyn Fn(&mut Rng, usize) -> u32>)> {
     vec![
         ("random", Box::new(|r, _| r.next())),
-        // positive float depths, like the renderers' keys
+        // 16 bit depth keys in a narrow range, like the renderers' keys
         (
             "depths",
-            Box::new(|r, _| (0.2 + 50. * (r.next() as f32 / u32::MAX as f32)).to_bits()),
+            Box::new(|r, _| {
+                let depth = 0.2 + 50. * (r.next() as f32 / u32::MAX as f32);
+                (depth.to_bits() - 0.2f32.to_bits()) >> 11
+            }),
         ),
         ("duplicates", Box::new(|r, _| r.next() % 7)),
+        // few different keys in the low 16 bits, random upper bits
+        (
+            "duplicates, random upper bits",
+            Box::new(|r, _| (r.next() % 7) | (r.next() & 0xFFFF_0000)),
+        ),
         ("sorted", Box::new(|_, i| i as u32)),
         ("reversed", Box::new(|_, i| u32::MAX - i as u32)),
         ("max", Box::new(|_, _| u32::MAX)),
     ]
 }
 
+/// The sort keys are the low SORT_KEY_BITS (feature `sort-keys-32`: 32, else 16) bits of the
+/// u32 keys, the upper bits are ignored (the tests use random upper bits to check that).
 fn cpu_sort(keys: &[u32]) -> (Vec<u32>, Vec<u32>) {
+    let mask = u32::MAX >> (32 - SORT_KEY_BITS);
     let mut idx: Vec<u32> = (0..keys.len() as u32).collect();
-    idx.sort_by_key(|&i| keys[i as usize]); // stable
+    idx.sort_by_key(|&i| keys[i as usize] & mask); // stable
     (idx.iter().map(|&i| keys[i as usize]).collect(), idx)
 }
 

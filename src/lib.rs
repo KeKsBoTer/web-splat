@@ -263,7 +263,9 @@ impl WindowContext {
                 mip_splatting: None,
                 kernel_size: None,
                 clipping_box: None,
-                walltime: Duration::ZERO,
+                // the splats grow in over the first seconds (see preprocess), a high value
+                // shows them fully grown from the start (like the offline renderers)
+                walltime: Duration::from_secs(100),
                 scene_center: None,
                 scene_extend: None,
                 background_color: wgpu::Color::BLACK,

@@ -1,4 +1,4 @@
-use crate::gpu_rs::{GPURSSorter, PointCloudSortStuff};
+use crate::gpu_rs::{GPURSSorter, PointCloudSortStuff, SORT_KEY_BITS};
 use crate::pointcloud::Aabb;
 use crate::utils::GPUStopwatch;
 use crate::{
@@ -401,7 +401,10 @@ impl PreprocessPipeline {
             layout: Some(&pipeline_layout),
             module: &shader,
             entry_point: Some("preprocess"),
-            compilation_options: Default::default(),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &[("sort_key_bits", SORT_KEY_BITS as f64)],
+                ..Default::default()
+            },
             cache: None,
         });
         Self(pipeline)

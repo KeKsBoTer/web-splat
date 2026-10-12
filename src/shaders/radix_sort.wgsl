@@ -8,7 +8,9 @@ const prefix_wg_size: u32 = 128u;      // one thread operates on 2 prefixes at t
 const scatter_wg_size: u32 = 256u;
 const rs_radix_log2: u32 = 8u;         // 8 bit radices
 const rs_radix_size: u32 = 256u;       // entries into the radix table
-const rs_keyval_size: u32 = 4u;        // 32 bit keys, one pass per radix
+// number of radix passes: 2, 3 or 4 for 16, 24 or 32 bit keys (the upper bits of the u32
+// keys are ignored). Set when the pipelines are created (pipeline constant).
+override rs_keyval_size: u32;
 const rs_histogram_block_rows: u32 = 15u;
 const rs_scatter_block_rows: u32 = 15u;
 // workgroup memory of the scatter, see scatter_smem
@@ -66,7 +68,11 @@ fn zero_histograms(@builtin(global_invocation_id) gid : vec3<u32>, @builtin(num_
     let scatter_blocks_ru = (infos.keys_size + scatter_block_kvs - 1u) / scatter_block_kvs;
     
     let histo_size = rs_radix_size;
-    var n = (rs_keyval_size + scatter_blocks_ru - 1u) * histo_size;
+    // the histograms and the partition status of every scatter workgroup, which includes the
+    // extra workgroup of the preprocess (one more than blocks of keys): its look-back reads
+    // the status of the last block, a stale one (from the previous sort, with an odd number
+    // of passes the previous sort leaves "prefix" there) would be taken as valid
+    var n = (rs_keyval_size + scatter_blocks_ru) * histo_size;
     let b = n;
     if infos.keys_size < infos.padded_size {
         n += infos.padded_size - infos.keys_size;
@@ -139,15 +145,15 @@ fn calculate_histogram(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_in
     // efficient loading of multiple values
     fill_kv(wid.x, lid.x);
     
-    // Accumulate and store histograms for passes
-    histogram_pass(3u, lid.x);
-    histogram_pass(2u, lid.x);
-    // if infos.passes > 2u {
-        histogram_pass(1u, lid.x);
-    // }
-    // if infos.passes > 3u {
-        histogram_pass(0u, lid.x);
-    // }
+    // Accumulate and store histograms for the passes (uniform: a pipeline constant)
+    if rs_keyval_size > 3u {
+        histogram_pass(3u, lid.x);
+    }
+    if rs_keyval_size > 2u {
+        histogram_pass(2u, lid.x);
+    }
+    histogram_pass(1u, lid.x);
+    histogram_pass(0u, lid.x);
 }
 
 // --------------------------------------------------------------------------------------------------------------
@@ -347,8 +353,6 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
     // kv_filling is done in the scatter_even and scatter_odd functions to account for front and backbuffer switch
     // in the reference there is a nulling of the smmem here, was moved to line 251 as smem is used in the code until then
 
-    // rank of each keyval among the keyvals of its row of invocations with the
-    // same digit (match operation, line 665 ff in scatter.glsl), see rank_digit
     for (var i = 0u; i < rs_scatter_block_rows; i++) {
         let u_val = bitcast<u32>(kv[i]);
         let digit = extractBits(u_val, pass_ * rs_radix_log2, rs_radix_log2);

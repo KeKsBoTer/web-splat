@@ -58,6 +58,12 @@ required-features = ["video"]
 [features]
 npz = ["dep:npyz"]
 video = []
+# Width of the sort keys: by default 24 bit keys (quantized depth, 3 radix passes), 16 bit
+# keys (2 passes, about twice as fast as 32 bit keys, but distant splats with the same key
+# are ordered differently from frame to frame: flicker) or 32 bit keys (the float bits of
+# the depth, 4 passes), see depth_key in the preprocess shaders
+sort-keys-16 = []
+sort-keys-32 = []
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = { version = "1.0.1", features = ["macro"] }

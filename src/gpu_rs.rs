@@ -15,7 +15,23 @@ use wgpu::{ComputePassDescriptor, util::DeviceExt};
 pub const HISTOGRAM_WG_SIZE: usize = 256;
 const RS_RADIX_LOG2: usize = 8; // 8 bit radices
 const RS_RADIX_SIZE: usize = 1 << RS_RADIX_LOG2; // 256 entries into the radix table
-const RS_KEYVAL_SIZE: usize = 32 / RS_RADIX_LOG2;
+/// Bits of the sort keys, a multiple of RS_RADIX_LOG2: 24 (default), 16 (feature
+/// `sort-keys-16`) or 32 (feature `sort-keys-32`). Shorter keys are in the low bits of the
+/// u32 keys, the upper bits are ignored. The preprocess shaders write keys of this width,
+/// see `sort_key_bits` there.
+pub const SORT_KEY_BITS: usize = if cfg!(feature = "sort-keys-32") {
+    32
+} else if cfg!(feature = "sort-keys-16") {
+    16
+} else {
+    24
+};
+const RS_KEYVAL_SIZE: usize = SORT_KEY_BITS / RS_RADIX_LOG2; // number of radix passes
+/// The passes alternate between the key / payload buffers a and b (starting in a): with an
+/// odd number of passes the sorted data ends in b.
+const RS_SORTED_IN_B: bool = RS_KEYVAL_SIZE % 2 == 1;
+/// pipeline constants of the sort shader
+const SORT_CONSTANTS: [(&str, f64); 1] = [("rs_keyval_size", RS_KEYVAL_SIZE as f64)];
 pub const RS_HISTOGRAM_BLOCK_ROWS: usize = 15;
 const RS_SCATTER_BLOCK_ROWS: usize = RS_HISTOGRAM_BLOCK_ROWS; // DO NOT CHANGE, shader assume this!!!
 pub struct GPURSSorter {
@@ -75,7 +91,13 @@ impl GPURSSorter {
             &sorter_p_a,
             &sorter_p_b,
         );
-        let sorter_render_bg = self.create_bind_group_render(device, &sorter_uni, &sorter_p_a);
+        // the sorted indices (payload) are in a or b, see RS_SORTED_IN_B
+        let sorted_indices = if RS_SORTED_IN_B {
+            &sorter_p_b
+        } else {
+            &sorter_p_a
+        };
+        let sorter_render_bg = self.create_bind_group_render(device, &sorter_uni, sorted_indices);
         let sorter_bg_pre = self.create_bind_group_preprocess(
             device,
             &sorter_uni,
@@ -117,7 +139,10 @@ impl GPURSSorter {
             layout: Some(&pipeline_layout),
             module: &shader,
             entry_point: Some("zero_histograms"),
-            compilation_options: Default::default(),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &SORT_CONSTANTS,
+                ..Default::default()
+            },
             cache: None,
         });
         let histogram_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -125,7 +150,10 @@ impl GPURSSorter {
             layout: Some(&pipeline_layout),
             module: &shader,
             entry_point: Some("calculate_histogram"),
-            compilation_options: Default::default(),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &SORT_CONSTANTS,
+                ..Default::default()
+            },
             cache: None,
         });
         let prefix_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -133,12 +161,16 @@ impl GPURSSorter {
             layout: Some(&pipeline_layout),
             module: &shader,
             entry_point: Some("prefix_histogram"),
-            compilation_options: Default::default(),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &SORT_CONSTANTS,
+                ..Default::default()
+            },
             cache: None,
         });
         // the scatter overwrites its workgroup memory before reading it: zeroing its
         // 17 KB in every workgroup made the scatter about 10x slower (Apple M4)
         let scatter_options = wgpu::PipelineCompilationOptions {
+            constants: &SORT_CONSTANTS,
             zero_initialize_workgroup_memory: false,
             ..Default::default()
         };
@@ -451,7 +483,7 @@ impl GPURSSorter {
             // (see record_sort_indirect): pad its keys too (the keyval buffers
             // have room for it, see create_keyval_buffers)
             padded_size: (count_ru_histo + HISTOGRAM_WG_SIZE * RS_HISTOGRAM_BLOCK_ROWS) as u32,
-            passes: 4,
+            passes: RS_KEYVAL_SIZE as u32,
             even_pass: 0,
             odd_pass: 0,
         };
@@ -574,9 +606,7 @@ impl GPURSSorter {
         // histogram has to be zeroed out such that counts that might have been done in the past are erased and do not interfere with the new count
         // encoder.clear_buffer(histogram_buffer, 0, None);
 
-        // as we only deal with 32 bit float values always 4 passes are conducted
         let (_, _, _, _, hist_blocks_ru, _) = Self::get_scatter_histogram_sizes(keysize);
-        const _PASSES: u32 = 4;
 
         {
             let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
@@ -653,7 +683,7 @@ impl GPURSSorter {
         keysize: usize,
         encoder: &mut wgpu::CommandEncoder,
     ) {
-        assert!(passes == 4); // currently the amount of passes is hardcoded in the shader
+        assert!(passes == RS_KEYVAL_SIZE); // the amount of passes is hardcoded in the shader
         let (_, scatter_blocks_ru, _, _, _, _) = Self::get_scatter_histogram_sizes(keysize);
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Scatter keyvals"),
@@ -661,17 +691,17 @@ impl GPURSSorter {
         });
 
         pass.set_bind_group(0, bind_group, &[]);
-        pass.set_pipeline(&self.scatter_even_p);
-        pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
+        for _ in 0..passes / 2 {
+            pass.set_pipeline(&self.scatter_even_p);
+            pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
 
-        pass.set_pipeline(&self.scatter_odd_p);
-        pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
-
-        pass.set_pipeline(&self.scatter_even_p);
-        pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
-
-        pass.set_pipeline(&self.scatter_odd_p);
-        pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
+            pass.set_pipeline(&self.scatter_odd_p);
+            pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
+        }
+        if passes % 2 == 1 {
+            pass.set_pipeline(&self.scatter_even_p);
+            pass.dispatch_workgroups(scatter_blocks_ru as u32, 1, 1);
+        }
     }
     pub fn record_scatter_keys_indirect(
         &self,
@@ -680,7 +710,7 @@ impl GPURSSorter {
         dispatch_buffer: &wgpu::Buffer,
         encoder: &mut wgpu::CommandEncoder,
     ) {
-        assert!(passes == 4);
+        assert!(passes == RS_KEYVAL_SIZE);
 
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Scatter keyvals"),
@@ -688,17 +718,17 @@ impl GPURSSorter {
         });
 
         pass.set_bind_group(0, bind_group, &[]);
-        pass.set_pipeline(&self.scatter_even_p);
-        pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+        for _ in 0..passes / 2 {
+            pass.set_pipeline(&self.scatter_even_p);
+            pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
 
-        pass.set_pipeline(&self.scatter_odd_p);
-        pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
-
-        pass.set_pipeline(&self.scatter_even_p);
-        pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
-
-        pass.set_pipeline(&self.scatter_odd_p);
-        pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+            pass.set_pipeline(&self.scatter_odd_p);
+            pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+        }
+        if passes % 2 == 1 {
+            pass.set_pipeline(&self.scatter_even_p);
+            pass.dispatch_workgroups_indirect(dispatch_buffer, 0);
+        }
     }
 
     pub fn record_sort(
@@ -708,8 +738,8 @@ impl GPURSSorter {
         encoder: &mut wgpu::CommandEncoder,
     ) {
         self.record_calculate_histogram(&bind_group, keysize, encoder);
-        self.record_prefix_histogram(&bind_group, 4, encoder);
-        self.record_scatter_keys(&bind_group, 4, keysize, encoder);
+        self.record_prefix_histogram(&bind_group, RS_KEYVAL_SIZE, encoder);
+        self.record_scatter_keys(&bind_group, RS_KEYVAL_SIZE, keysize, encoder);
     }
     pub fn record_sort_indirect(
         &self,
@@ -718,8 +748,8 @@ impl GPURSSorter {
         encoder: &mut wgpu::CommandEncoder,
     ) {
         self.record_calculate_histogram_indirect(bind_group, dispatch_buffer, encoder);
-        self.record_prefix_histogram(bind_group, 4, encoder);
-        self.record_scatter_keys_indirect(bind_group, 4, dispatch_buffer, encoder);
+        self.record_prefix_histogram(bind_group, RS_KEYVAL_SIZE, encoder);
+        self.record_scatter_keys_indirect(bind_group, RS_KEYVAL_SIZE, dispatch_buffer, encoder);
     }
 }
 
@@ -729,7 +759,9 @@ impl GPURSSorter {
 pub struct SortBuffers {
     pub capacity: usize,
     keys: wgpu::Buffer,
+    keys_b: wgpu::Buffer,
     values: wgpu::Buffer,
+    values_b: wgpu::Buffer,
     uniform: wgpu::Buffer,
     dispatch: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -746,7 +778,9 @@ impl GPURSSorter {
         SortBuffers {
             capacity,
             keys,
+            keys_b,
             values,
+            values_b,
             uniform,
             dispatch,
             bind_group,
@@ -779,8 +813,13 @@ impl GPURSSorter {
         let mut encoder = device.create_command_encoder(&Default::default());
         self.record_sort_indirect(&buffers.bind_group, &buffers.dispatch, &mut encoder);
         queue.submit([encoder.finish()]);
-        let mut sorted_keys = download_buffer::<u32>(&buffers.keys, device, queue).await;
-        let mut sorted_values = download_buffer::<u32>(&buffers.values, device, queue).await;
+        let (keys, values) = if RS_SORTED_IN_B {
+            (&buffers.keys_b, &buffers.values_b)
+        } else {
+            (&buffers.keys, &buffers.values)
+        };
+        let mut sorted_keys = download_buffer::<u32>(keys, device, queue).await;
+        let mut sorted_values = download_buffer::<u32>(values, device, queue).await;
         sorted_keys.truncate(n);
         sorted_values.truncate(n);
         (sorted_keys, sorted_values)
@@ -919,7 +958,6 @@ mod tests {
         assert_eq!(value("scatter_wg_size"), SCATTER_WG_SIZE);
         assert_eq!(value("rs_radix_log2"), super::RS_RADIX_LOG2);
         assert_eq!(value("rs_radix_size"), super::RS_RADIX_SIZE);
-        assert_eq!(value("rs_keyval_size"), super::RS_KEYVAL_SIZE);
         assert_eq!(
             value("rs_histogram_block_rows"),
             super::RS_HISTOGRAM_BLOCK_ROWS
