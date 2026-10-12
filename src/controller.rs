@@ -51,6 +51,10 @@ pub struct CameraController {
     amount: Vector3<f32>,
     shift: Vector2<f32>,
     rotation: Vector3<f32>,
+    /// mouse motion of the left (rotation) and right (shift) button drags since
+    /// the last update, see [`Self::update_camera`]
+    drag_rotation: Vector2<f32>,
+    drag_shift: Vector2<f32>,
     scroll: f32,
     pub speed: f32,
     pub sensitivity: f32,
@@ -71,6 +75,8 @@ impl CameraController {
             amount: Vector3::zero(),
             shift: Vector2::zero(),
             rotation: Vector3::zero(),
+            drag_rotation: Vector2::zero(),
+            drag_shift: Vector2::zero(),
             up: None,
             scroll: 0.0,
             speed,
@@ -126,13 +132,11 @@ impl CameraController {
 
     pub fn process_mouse(&mut self, mouse_dx: f32, mouse_dy: f32) {
         if self.left_mouse_pressed {
-            self.rotation.x += mouse_dx as f32;
-            self.rotation.y += mouse_dy as f32;
+            self.drag_rotation += Vector2::new(mouse_dx, mouse_dy);
             self.user_inptut = true;
         }
         if self.right_mouse_pressed {
-            self.shift.y += -mouse_dx as f32;
-            self.shift.x += mouse_dy as f32;
+            self.drag_shift += Vector2::new(mouse_dy, -mouse_dx);
             self.user_inptut = true;
         }
     }
@@ -251,7 +255,24 @@ impl CameraController {
     }
 
     pub fn update_camera(&mut self, camera: &mut PerspectiveCamera, dt: Duration) {
-        let dt: f32 = dt.as_secs_f32();
+        let dt: f32 = dt.as_secs_f32().max(1e-4);
+
+        // While a mouse button is held the camera moves by the mouse motion since the
+        // last update, in this frame (without the decay below, which spreads a motion
+        // over the next ~0.2 s and lags behind the mouse). The velocity of the last
+        // frame of a drag is kept as momentum and decays after the release.
+        // DRAG_FACTOR matches the total motion of a decaying input at 60 FPS.
+        const DRAG_FACTOR: f32 = 1. / 12.;
+        if self.left_mouse_pressed {
+            self.rotation.x = self.drag_rotation.x * DRAG_FACTOR / dt;
+            self.rotation.y = self.drag_rotation.y * DRAG_FACTOR / dt;
+        }
+        if self.right_mouse_pressed {
+            self.shift = self.drag_shift * DRAG_FACTOR / dt;
+        }
+        self.drag_rotation = Vector2::zero();
+        self.drag_shift = Vector2::zero();
+
         let mut dir = camera.position - self.center;
         let distance = dir.magnitude();
 

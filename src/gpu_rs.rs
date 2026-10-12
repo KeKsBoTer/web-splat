@@ -42,22 +42,22 @@ pub struct PointCloudSortStuff {
 }
 
 #[allow(dead_code)]
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct IndirectDispatch {
     dispatch_x: u32,
     dispatch_y: u32,
     dispatch_z: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GeneralInfo {
     pub keys_size: u32,
     pub padded_size: u32,
     pub passes: u32,
     pub even_pass: u32,
     pub odd_pass: u32,
-}
-
-unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
-    ::core::slice::from_raw_parts((p as *const T) as *const u8, ::core::mem::size_of::<T>())
 }
 
 impl GPURSSorter {
@@ -620,14 +620,14 @@ impl GPURSSorter {
         };
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Radix uniform buffer"),
-            contents: unsafe { any_as_u8_slice(&uniform_infos) },
+            contents: bytemuck::bytes_of(&uniform_infos),
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
         });
         let dispatch_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Dispatch indirect buffer"),
-            contents: unsafe { any_as_u8_slice(&dispatch_infos) },
+            contents: bytemuck::bytes_of(&dispatch_infos),
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::INDIRECT,
@@ -941,7 +941,7 @@ async fn download_buffer<T: Clone>(
         })
         .unwrap();
     rx.receive().await.unwrap().unwrap();
-    let data = buffer_slice.get_mapped_range();
+    let data = buffer_slice.get_mapped_range().unwrap();
     let r;
 
     unsafe {

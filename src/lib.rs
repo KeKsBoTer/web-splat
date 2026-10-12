@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 #[cfg(target_arch = "wasm32")]
 use web_time::{Duration, Instant};
 
-use cgmath::{Deg, EuclideanSpace, Point3, Quaternion, UlpsEq, Vector2, Vector3};
+use cgmath::{AbsDiffEq, Deg, EuclideanSpace, Point3, Quaternion, UlpsEq, Vector2, Vector3};
 use egui::FullOutput;
 use num_traits::One;
 
@@ -75,10 +75,12 @@ impl WGPUContext {
         #[cfg(target_arch = "wasm32")]
         let required_features = wgpu::Features::default();
         #[cfg(not(target_arch = "wasm32"))]
-        let required_features = wgpu::Features::TIMESTAMP_QUERY
-            | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+        let required_features = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
             | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
-            | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+            // GPU timing is optional, not every backend supports it
+            | (adapter.features()
+                & (wgpu::Features::TIMESTAMP_QUERY
+                    | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS));
 
         let adapter_limits = adapter.limits();
 
@@ -191,13 +193,15 @@ impl WindowContext {
             format: surface_format,
             width: size.width,
             height: size.height,
-            desired_maximum_frame_latency: 2,
+            // one queued frame: less delay between input and display
+            desired_maximum_frame_latency: 1,
             present_mode: if render_config.no_vsync {
                 wgpu::PresentMode::AutoNoVsync
             } else {
                 wgpu::PresentMode::AutoVsync
             },
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            color_space: wgpu::SurfaceColorSpace::Auto,
             view_formats: vec![surface_format.remove_srgb_suffix()],
         };
         surface.configure(&device, &config);
@@ -236,7 +240,11 @@ impl WindowContext {
             size.height,
         );
 
-        let stopwatch = if cfg!(not(target_arch = "wasm32")) {
+        let stopwatch = if cfg!(not(target_arch = "wasm32"))
+            && device.features().contains(
+                wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS,
+            )
+        {
             Some(GPUStopwatch::new(device, Some(3)))
         } else {
             None
@@ -329,12 +337,27 @@ impl WindowContext {
 
     /// returns whether redraw is required
     fn ui(&mut self) -> (bool, egui::FullOutput) {
-        self.ui_renderer.begin_frame(&self.window);
-        let request_redraw = ui::ui(self);
-
-        let shapes = self.ui_renderer.end_frame(&self.window);
-
-        return (request_redraw, shapes);
+        let raw_input = self.ui_renderer.winit.take_egui_input(&self.window);
+        // run_ui (egui >= 0.35) records the root ui's area (the whole window, the
+        // scene behind the egui windows). egui needs it to tell pointer input over
+        // the scene from input over its windows: with begin_pass / end_pass every
+        // pointer event counts as consumed by egui and never reaches the camera
+        // controller. (The context is reference counted; the clone avoids
+        // borrowing it from self inside the closure.)
+        let ctx = self.ui_renderer.winit.egui_ctx().clone();
+        let mut request_redraw = false;
+        let ui_visible = self.ui_visible;
+        let output = ctx.run_ui(raw_input, |_root_ui| {
+            // a hidden UI must not exist for egui, or its (invisible) windows
+            // would still take pointer input
+            if ui_visible {
+                request_redraw = ui::ui(self);
+            }
+        });
+        self.ui_renderer
+            .winit
+            .handle_platform_output(&self.window, output.platform_output.clone());
+        (request_redraw, output)
     }
 
     /// returns whether the sceen changed and we need a redraw
@@ -398,7 +421,12 @@ impl WindowContext {
         let output = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(surface_texture) => surface_texture,
             wgpu::CurrentSurfaceTexture::Suboptimal(surface_texture) => surface_texture,
-            err => return Err(err),
+            err => {
+                if let Some(shapes) = shapes {
+                    self.ui_renderer.skip(shapes);
+                }
+                return Err(err);
+            }
         };
         let view_rgb = output.texture.create_view(&wgpu::TextureViewDescriptor {
             format: Some(self.config.format.remove_srgb_suffix()),
@@ -495,7 +523,7 @@ impl WindowContext {
         }
         self.wgpu_context.queue.submit([encoder.finish()]);
 
-        output.present();
+        self.wgpu_context.queue.present(output);
         self.splatting_args.viewport = Vector2::new(self.config.width, self.config.height);
         Ok(())
     }
@@ -821,6 +849,20 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
                 let old_settings = state.splatting_args.clone();
                 state.update(dt);
 
+                // The controller recomputes the camera every frame. Without input only
+                // rounding differs, which counted as a change: the scene was rendered
+                // every frame and input and UI waited for it. Keep the old camera then.
+                {
+                    let (old_camera, camera) = (&old_settings.camera, &state.splatting_args.camera);
+                    if old_camera.position.abs_diff_eq(&camera.position, 1e-6)
+                        && old_camera.rotation.abs_diff_eq(&camera.rotation, 1e-6)
+                        && (old_camera.projection.fovx.0 - camera.projection.fovx.0).abs() <= 1e-6
+                        && (old_camera.projection.fovy.0 - camera.projection.fovy.0).abs() <= 1e-6
+                    {
+                        state.splatting_args.camera = old_settings.camera;
+                    }
+                }
+
                 let (redraw_ui,shapes) = state.ui();
 
                 let resolution_change = state.splatting_args.viewport != Vector2::new(state.config.width, state.config.height);
@@ -829,15 +871,25 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
 
                 if request_redraw || redraw_ui{
                     state.fps = (1. / dt.as_secs_f32()) * 0.05 + state.fps * 0.95;
-                    match state.render(request_redraw,state.ui_visible.then_some(shapes)) {
+                    let shapes = if state.ui_visible {
+                        Some(shapes)
+                    } else {
+                        state.ui_renderer.skip(shapes);
+                        None
+                    };
+                    match state.render(request_redraw,shapes) {
                         Ok(_) => {}
                         // Reconfigure the surface if lost
                         Err(wgpu::CurrentSurfaceTexture::Suboptimal(_)) => state.resize(state.window.inner_size(), None),
                         Err(wgpu::CurrentSurfaceTexture::Lost) => state.resize(state.window.inner_size(), None),
+                        // the window is hidden or minimized, nothing to draw
+                        Err(wgpu::CurrentSurfaceTexture::Occluded) => {}
                         // The system is out of memory, we should probably quit
                         // All other errors (Outdated, Timeout) should be resolved by the next frame
                         Err(e) => println!("error: {:?}", e),
                     }
+                } else {
+                    state.ui_renderer.skip(shapes);
                 }
                 if config.no_vsync{
                     state.window.request_redraw();

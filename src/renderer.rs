@@ -27,6 +27,9 @@ pub struct GaussianRenderer {
     color_format: wgpu::TextureFormat,
     sorter: GPURSSorter,
     sorter_suff: Option<PointCloudSortStuff>,
+    /// latest finished readback of the visible point count and whether one is in flight
+    visible_count: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    visible_pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl GaussianRenderer {
@@ -129,6 +132,8 @@ impl GaussianRenderer {
             color_format,
             sorter,
             sorter_suff: None,
+            visible_count: Default::default(),
+            visible_pending: Default::default(),
             render_settings: UniformBuffer::new_default(
                 device,
                 Some("render settings uniform buffer"),
@@ -180,26 +185,33 @@ impl GaussianRenderer {
         );
     }
 
+    /// Number of visible points of the latest frame whose readback finished. The
+    /// readback is asynchronous: waiting for the GPU every frame would stall the CPU
+    /// until all submitted work is done and delay the input.
     #[cfg(not(target_arch = "wasm32"))]
-    pub async fn num_visible_points(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> u32 {
-        let n = {
-            let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
-
+    pub fn num_visible_points(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> u32 {
+        use std::sync::atomic::Ordering;
+        if !self.visible_pending.swap(true, Ordering::AcqRel) {
+            let (count, pending) = (self.visible_count.clone(), self.visible_pending.clone());
             wgpu::util::DownloadBuffer::read_buffer(
                 device,
                 queue,
                 &self.draw_indirect_buffer.slice(..),
                 move |b| {
-                    let download = b.unwrap();
-                    let data = download.as_ref();
-                    let num_points = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
-                    tx.send(num_points).unwrap();
+                    if let Ok(download) = b {
+                        let data = download.as_ref();
+                        count.store(
+                            u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
+                            Ordering::Release,
+                        );
+                    }
+                    pending.store(false, Ordering::Release);
                 },
             );
-            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-            rx.receive().await.unwrap()
-        };
-        return n;
+        }
+        // run the callbacks of finished readbacks without waiting
+        device.poll(wgpu::PollType::Poll).ok();
+        self.visible_count.load(Ordering::Acquire)
     }
 
     pub fn prepare(

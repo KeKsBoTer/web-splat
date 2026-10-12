@@ -34,11 +34,9 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    let num_drawn = pollster::block_on(
-        state
-            .renderer
-            .num_visible_points(&state.wgpu_context.device, &state.wgpu_context.queue),
-    );
+    let num_drawn = state
+        .renderer
+        .num_visible_points(&state.wgpu_context.device, &state.wgpu_context.queue);
 
     #[cfg(not(target_arch = "wasm32"))]
     egui::Window::new("Render Stats")
@@ -62,6 +60,10 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
             let sort: Vec<f32> = history.iter().map(|v| v.1.as_secs_f32() * 1000.).collect();
             let rast: Vec<f32> = history.iter().map(|v| v.2.as_secs_f32() * 1000.).collect();
 
+            // no timing data without GPU timestamp support
+            if history.is_empty() {
+                return;
+            }
             ui.label("Frame times (ms):");
             egui_plot::Plot::new("frame times")
                 .allow_drag(false)
@@ -441,7 +443,7 @@ fn optional_drag<T: Numeric>(
     default: Option<T>,
 ) {
     let mut placeholder = default.unwrap_or(T::from_f64(0.));
-    let mut drag = if let Some(ref mut val) = opt {
+    let mut drag = if let Some(val) = opt {
         egui_winit::egui::DragValue::new(val)
     } else {
         egui_winit::egui::DragValue::new(&mut placeholder).custom_formatter(|_, _| {
@@ -474,7 +476,7 @@ fn optional_drag<T: Numeric>(
 #[allow(unused)]
 fn optional_checkbox(ui: &mut egui::Ui, opt: &mut Option<bool>, default: bool) {
     let mut val = default;
-    let checkbox = if let Some(ref mut val) = opt {
+    let checkbox = if let Some(val) = opt {
         egui::Checkbox::new(val, "")
     } else {
         egui::Checkbox::new(&mut val, "")

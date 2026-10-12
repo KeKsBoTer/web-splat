@@ -1,48 +1,48 @@
 [package]
 name = "web_splats"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 authors = ["Simon Niedermayr", "Josef Stumpfegger"]
 description = "3D Gaussian Splatting Viewer"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-wgpu = { version = "29.0.1" }
-winit = "0.30.12"
+wgpu = { version = "30.0.1" }
+winit = "0.30.13"
 cgmath = { version = "0.18.0", features = [
     "bytemuck",
 ], git = 'https://github.com/rustgd/cgmath' }
-env_logger = "0.11.10"
+env_logger = "0.11.11"
 clap = { version = "4.6", features = ["derive"] }
 bytemuck = { version = "1.25", features = ["derive"] }
-anyhow = "1.0.102"
+anyhow = "1.0.104"
 ply-rs = "0.1.3"
 byteorder = "1.5.0"
-serde_json = "1.0.149"
-serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.154"
+serde = { version = "1.0.229", features = ["derive"] }
 num-traits = "0.2.19"
 half = { version = "2.7.1", features = ["bytemuck", "num-traits"] }
-log = "0.4.29"
-rayon = "1.11.0"
+log = "0.4.34"
+rayon = "1.12.0"
 image = "0.25.10"
-indicatif = "0.18.4"
+indicatif = "0.18.6"
 
 
-egui = "0.34.0"
-egui-wgpu = "0.34.0"
-egui-winit = { version = "0.34.0", features = [], default-features = false }
-egui_plot = "0.35.0"
+egui = "0.36.2"
+egui-wgpu = "0.36.2"
+egui-winit = { version = "0.36.2", features = [], default-features = false }
+egui_plot = "0.37.0"
 
-rand = "0.10.0"
-npyz = { version = "0.8.4", features = ["npz", "half"], optional = true }
+rand = "0.10.3"
+npyz = { version = "0.9.1", features = ["npz", "half"], optional = true }
 futures-intrusive = "0.5.0"
 splines = { features = [
     "cgmath",
 ], git = "https://github.com/KeKsBoTer/splines" }
 
 [dev-dependencies]
-wasm-bindgen-cli = "0.2.113"
+wasm-bindgen-cli = "0.2.129"
 
 [lib]
 path = "src/lib.rs"
@@ -60,20 +60,24 @@ npz = ["dep:npyz"]
 video = []
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-pollster = { version = "0.4.0", features = ["macro"] }
+pollster = { version = "1.0.1", features = ["macro"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 
-getrandom = { version = "0.4.1", features = ["wasm_js"] }
-wasm-bindgen = "0.2.113"
+getrandom = { version = "0.4.3", features = ["wasm_js"] }
+wasm-bindgen = "0.2.129"
 console_error_panic_hook = "0.1.7"
-wasm-bindgen-futures = "0.4.63"
+wasm-bindgen-futures = "0.4.79"
 console_log = "1"
 log = "0.4"
 web-time = "1.1.0"
-web-sys = { version = "0.3.90" }
+web-sys = { version = "0.3.106" }
 
 [profile.web-release]
 inherits = "release"
 opt-level = "s"
 strip = "debuginfo"
+
+# egui-winit 0.36.2 does not compile for wasm32 (NativeFile does not implement bytes_async)
+[patch.crates-io]
+egui-winit = { path = "vendor/egui-winit" }

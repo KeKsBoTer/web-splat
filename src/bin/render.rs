@@ -266,5 +266,5 @@ async fn download_buffer(
     rx.receive().await.unwrap().unwrap();
 
     let view = slice.get_mapped_range();
-    return view;
+    return view.unwrap();
 }
