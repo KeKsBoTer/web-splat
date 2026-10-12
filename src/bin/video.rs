@@ -182,12 +182,10 @@ async fn main() {
 
     let mut renderer = GaussianRenderer::new(
         device,
-        queue,
         wgpu::TextureFormat::Rgba32Float,
         pc.sh_deg(),
         pc.compressed(),
-    )
-    .await;
+    );
 
     render_tracking_shot(
         device,

@@ -185,12 +185,10 @@ async fn main() {
 
     let mut renderer = GaussianRenderer::new(
         device,
-        queue,
         wgpu::TextureFormat::Rgba8Unorm,
         pc.sh_deg(),
         pc.compressed(),
-    )
-    .await;
+    );
 
     render_views(
         device,

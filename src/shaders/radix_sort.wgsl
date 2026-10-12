@@ -1,16 +1,25 @@
 // shader implementing gpu radix sort. More information in the beginning of gpu_rs.rs
 // info: 
 
-// also the workgroup sizes are added in these prepasses
-// before the pipeline is started the following constant definitionis are prepended to this shadercode
+// IMPORTANT: these constants have to be synced with the numbers in gpu_rs.rs (checked
+// by a unit test there)
+const histogram_wg_size: u32 = 256u;
+const prefix_wg_size: u32 = 128u;      // one thread operates on 2 prefixes at the same time
+const scatter_wg_size: u32 = 256u;
+const rs_radix_log2: u32 = 8u;         // 8 bit radices
+const rs_radix_size: u32 = 256u;       // entries into the radix table
+const rs_keyval_size: u32 = 4u;        // 32 bit keys, one pass per radix
+const rs_histogram_block_rows: u32 = 15u;
+const rs_scatter_block_rows: u32 = 15u;
+// workgroup memory of the scatter, see scatter_smem
+const rs_mem_dwords: u32 = rs_radix_size + rs_scatter_block_rows * scatter_wg_size;
 
-// const histogram_sg_size
-// const histogram_wg_size
-// const rs_radix_log2
-// const rs_radix_size
-// const rs_keyval_size
-// const rs_histogram_block_rows
-// const rs_scatter_block_rows
+// The scatter ranks the keys of the workgroup in rows of rs_row_size invocations (no
+// subgroup operations, the invocations of a row exchange their digits through workgroup
+// memory with barriers, correct for any hardware subgroup size). accumulate_ranks keeps
+// one histogram of rs_radix_size entries per row in scatter_smem, so a workgroup has at
+// most 16 rows: rs_row_size >= 16. Smaller rows are faster (NVIDIA RTX A5000, Apple M4).
+const rs_row_size: u32 = 16u;
 
 struct GeneralInfo{
     keys_size: u32,
@@ -45,7 +54,7 @@ var<storage, read_write> payload_b : array<u32>;
 // --------------------------------------------------------------------------------------------------------------
 // Filling histograms and keys with default values (also resets the pass infos for odd and even scattering)
 // --------------------------------------------------------------------------------------------------------------
-@compute @workgroup_size({histogram_wg_size})
+@compute @workgroup_size(histogram_wg_size)
 fn zero_histograms(@builtin(global_invocation_id) gid : vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
     if gid.x == 0u {
         infos.even_pass = 0u;
@@ -63,7 +72,7 @@ fn zero_histograms(@builtin(global_invocation_id) gid : vec3<u32>, @builtin(num_
         n += infos.padded_size - infos.keys_size;
     }
     
-    let line_size = nwg.x * {histogram_wg_size}u;
+    let line_size = nwg.x * histogram_wg_size;
     for (var cur_index = gid.x; cur_index < n; cur_index += line_size){
         if cur_index >= n {
             return;
@@ -125,7 +134,7 @@ fn fill_kv_keys_b(wid: u32, lid: u32) {
         kv[i] = keys_b[pos];
     }
 }
-@compute @workgroup_size({histogram_wg_size})
+@compute @workgroup_size(histogram_wg_size)
 fn calculate_histogram(@builtin(workgroup_id) wid : vec3<u32>, @builtin(local_invocation_id) lid : vec3<u32>) {
     // efficient loading of multiple values
     fill_kv(wid.x, lid.x);
@@ -178,7 +187,7 @@ fn prefix_reduce_smem(lid: u32) {
         }
     }
 }
-@compute @workgroup_size({prefix_wg_size})
+@compute @workgroup_size(prefix_wg_size)
 fn prefix_histogram(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid : vec3<u32>) {
     // the work group  id is the pass, and is inverted in the next line, such that pass 3 is at the first position in the histogram buffer
     let histogram_base = (rs_keyval_size - 1u - wid.x) * rs_radix_size;
@@ -190,16 +199,16 @@ fn prefix_histogram(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invoca
     // the smemory is used from the previous section
     // smem[lid.x] = histograms[histogram_offset];
     atomicStore(&smem[lid.x], atomicLoad(&histograms[histogram_offset]));
-    // smem[lid.x + {prefix_wg_size}u] = histograms[histogram_offset + {prefix_wg_size}u];
-    atomicStore(&smem[lid.x + {prefix_wg_size}u], atomicLoad(&histograms[histogram_offset + {prefix_wg_size}u]));
+    // smem[lid.x + prefix_wg_size] = histograms[histogram_offset + prefix_wg_size];
+    atomicStore(&smem[lid.x + prefix_wg_size], atomicLoad(&histograms[histogram_offset + prefix_wg_size]));
 
     prefix_reduce_smem(lid.x);
     workgroupBarrier();
     
     // histograms[histogram_offset] = smem[lid.x];
     atomicStore(&histograms[histogram_offset], atomicLoad(&smem[lid.x]));
-    // histograms[histogram_offset + {prefix_wg_size}u] = smem[lid.x + {prefix_wg_size}u];
-    atomicStore(&histograms[histogram_offset + {prefix_wg_size}u], atomicLoad(&smem[lid.x + {prefix_wg_size}u]));
+    // histograms[histogram_offset + prefix_wg_size] = smem[lid.x + prefix_wg_size];
+    atomicStore(&histograms[histogram_offset + prefix_wg_size], atomicLoad(&smem[lid.x + prefix_wg_size]));
 }
 
 // --------------------------------------------------------------------------------------------------------------
@@ -215,9 +224,6 @@ var<workgroup> scatter_smem: array<u32, rs_mem_dwords>; // note: rs_mem_dwords i
 //  Reorder   | RS_WORKGROUP_SIZE * RS_SCATTER_BLOCK_ROWS | 2-8 KB
 fn partitions_base_offset() -> u32 { return rs_keyval_size * rs_radix_size;}
 fn smem_prefix_offset() -> u32 { return rs_radix_size + rs_radix_size;}
-fn rs_prefix_sweep_0(idx: u32) -> u32 { return scatter_smem[smem_prefix_offset() + rs_mem_sweep_0_offset + idx];}
-fn rs_prefix_sweep_1(idx: u32) -> u32 { return scatter_smem[smem_prefix_offset() + rs_mem_sweep_1_offset + idx];}
-fn rs_prefix_sweep_2(idx: u32) -> u32 { return scatter_smem[smem_prefix_offset() + rs_mem_sweep_2_offset + idx];}
 fn rs_prefix_load(lid: u32, idx: u32) -> u32 { return scatter_smem[rs_radix_size + lid + idx];}
 fn rs_prefix_store(lid: u32, idx: u32, val: u32) { scatter_smem[rs_radix_size + lid + idx] = val;}
 fn is_first_local_invocation(lid: u32) -> bool { return lid == 0u;}
@@ -236,35 +242,104 @@ var<private> kr : array<u32, rs_scatter_block_rows>;
 var<private> pv : array<u32, rs_scatter_block_rows>;
 
 fn fill_kv_even(wid: u32, lid: u32) {
-    let subgroup_id = lid / histogram_sg_size;
-    let subgroup_invoc_id = lid - subgroup_id * histogram_sg_size;
-    let subgroup_keyvals = rs_scatter_block_rows * histogram_sg_size;
+    let row_id = lid / rs_row_size;
+    let row_invoc_id = lid - row_id * rs_row_size;
+    let row_keyvals = rs_scatter_block_rows * rs_row_size;
     let rs_block_keyvals : u32 = rs_histogram_block_rows * histogram_wg_size;
-    let kv_in_offset = wid * rs_block_keyvals + subgroup_id * subgroup_keyvals + subgroup_invoc_id;
+    let kv_in_offset = wid * rs_block_keyvals + row_id * row_keyvals + row_invoc_id;
     for (var i = 0u; i < rs_histogram_block_rows; i++) {
-        let pos = kv_in_offset + i * histogram_sg_size;
+        let pos = kv_in_offset + i * rs_row_size;
         kv[i] = keys[pos];
     }
     for (var i = 0u; i < rs_histogram_block_rows; i++) {
-        let pos = kv_in_offset + i * histogram_sg_size;
+        let pos = kv_in_offset + i * rs_row_size;
         pv[i] = payload_a[pos];
     }
 }
 fn fill_kv_odd(wid: u32, lid: u32) {
-    let subgroup_id = lid / histogram_sg_size;
-    let subgroup_invoc_id = lid - subgroup_id * histogram_sg_size;
-    let subgroup_keyvals = rs_scatter_block_rows * histogram_sg_size;
+    let row_id = lid / rs_row_size;
+    let row_invoc_id = lid - row_id * rs_row_size;
+    let row_keyvals = rs_scatter_block_rows * rs_row_size;
     let rs_block_keyvals : u32 = rs_histogram_block_rows * histogram_wg_size;
-    let kv_in_offset = wid * rs_block_keyvals + subgroup_id * subgroup_keyvals + subgroup_invoc_id;
+    let kv_in_offset = wid * rs_block_keyvals + row_id * row_keyvals + row_invoc_id;
     for (var i = 0u; i < rs_histogram_block_rows; i++) {
-        let pos = kv_in_offset + i * histogram_sg_size;
+        let pos = kv_in_offset + i * rs_row_size;
         kv[i] = keys_b[pos];
     }
     for (var i = 0u; i < rs_histogram_block_rows; i++) {
-        let pos = kv_in_offset + i * histogram_sg_size;
+        let pos = kv_in_offset + i * rs_row_size;
         pv[i] = payload_b[pos];
     }
 }
+// (count << 16) | rank of the keyval with `digit` among the keyvals of its row
+// (rs_row_size invocations, current row of keyvals) with the same digit, rank is 1-based.
+// The digits are exchanged through smem, the barriers make it correct without any
+// lockstep between the invocations of a row.
+fn rank_digit(digit: u32, lid: u32) -> u32 {
+    let row_offset = (lid / rs_row_size) * rs_row_size;
+    let row_tid = lid - row_offset;
+    // the reads of the previous keyval row are done
+    workgroupBarrier();
+    atomicStore(&smem[lid], digit);
+    workgroupBarrier();
+    var count = 0u;
+    var rank = 0u;
+    for (var j = 0u; j < rs_row_size; j++) {
+        if atomicLoad(&smem[row_offset + j]) == digit {
+            count += 1u;
+            if j <= row_tid {
+                rank += 1u;
+            }
+        }
+    }
+    return (count << 16u) | rank;
+}
+
+// turns the row ranks in kr into ranks among all keyvals of the workgroup with
+// the same digit (1-based) and stores the workgroup histogram in smem.
+// Every row counts its digits in its own histogram in scatter_smem (all rows at once,
+// keyval rows in order), then the histograms are scanned over the rows. Needs
+// row count * rs_radix_size <= rs_mem_dwords, i.e. rs_row_size >= 16. Barriers only, no
+// lockstep between the invocations of a row is assumed.
+fn accumulate_ranks(pass_: u32, lid: u32) {
+    let row_id = lid / rs_row_size;
+    let row_count = scatter_wg_size / rs_row_size;
+    let base = row_id * rs_radix_size;
+    for (var i = lid; i < row_count * rs_radix_size; i += scatter_wg_size) {
+        scatter_smem[i] = 0u;
+    }
+    workgroupBarrier();
+    for (var j = 0u; j < rs_scatter_block_rows; j++) {
+        let digit = extractBits(kv[j], pass_ * rs_radix_log2, rs_radix_log2);
+        let rank = kr[j] & 0xFFFFu;
+        let count = kr[j] >> 16u;
+        let prev = scatter_smem[base + digit];
+        workgroupBarrier();
+        // the last keyval of the digit in this row updates the count
+        if rank == count {
+            scatter_smem[base + digit] = prev + count;
+        }
+        workgroupBarrier();
+        kr[j] = prev + rank;
+    }
+    // exclusive scan over the rows, the totals are the workgroup histogram
+    if lid < rs_radix_size {
+        var total = 0u;
+        for (var s = 0u; s < row_count; s++) {
+            let c = scatter_smem[s * rs_radix_size + lid];
+            scatter_smem[s * rs_radix_size + lid] = total;
+            total += c;
+        }
+        histogram_store(lid, total);
+    }
+    workgroupBarrier();
+    for (var j = 0u; j < rs_scatter_block_rows; j++) {
+        let digit = extractBits(kv[j], pass_ * rs_radix_log2, rs_radix_log2);
+        kr[j] += scatter_smem[base + digit];
+    }
+    workgroupBarrier();
+}
+
 fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3<u32>, partition_status_invalid: u32, partition_status_reduction: u32, partition_status_prefix: u32) {
     let partition_mask_invalid = partition_status_invalid << 30u;
     let partition_mask_reduction = partition_status_reduction << 30u;
@@ -272,58 +347,17 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
     // kv_filling is done in the scatter_even and scatter_odd functions to account for front and backbuffer switch
     // in the reference there is a nulling of the smmem here, was moved to line 251 as smem is used in the code until then
 
-    // The following implements conceptually the same as the
-    // Emulate a "match" operation with broadcasts for small subgroup sizes (line 665 ff in scatter.glsl)
-    // The difference however is, that instead of using subrgoupBroadcast each thread stores
-    // its current number in the smem at lid.x, and then looks up their neighbouring values of the subgroup
-    let subgroup_id = lid.x / histogram_sg_size;
-    let subgroup_offset = subgroup_id * histogram_sg_size;
-    let subgroup_tid = lid.x - subgroup_offset;
-    let subgroup_count = {scatter_wg_size}u / histogram_sg_size;
+    // rank of each keyval among the keyvals of its row of invocations with the
+    // same digit (match operation, line 665 ff in scatter.glsl), see rank_digit
     for (var i = 0u; i < rs_scatter_block_rows; i++) {
         let u_val = bitcast<u32>(kv[i]);
         let digit = extractBits(u_val, pass_ * rs_radix_log2, rs_radix_log2);
-        // smem[lid.x] = digit;
-        atomicStore(&smem[lid.x], digit);
-        var count = 0u;
-        var rank = 0u;
-        
-        for (var j = 0u; j < histogram_sg_size; j++) {
-            // if smem[subgroup_offset + j] == digit {
-            if atomicLoad(&smem[subgroup_offset + j]) == digit {
-                count += 1u;
-                if j <= subgroup_tid {
-                    rank += 1u;
-                }
-            }
-        }
-        
-        kr[i] = (count << 16u) | rank;
+        kr[i] = rank_digit(digit, lid.x);
     }
     
-    zero_smem(lid.x);   // now zeroing the smmem as we are now accumulating the histogram there
-    workgroupBarrier();
-
-    // The final histogram is stored in the smem buffer
-    for (var i = 0u; i < subgroup_count; i++) {
-        if subgroup_id == i {
-            for (var j = 0u; j < rs_scatter_block_rows; j++) {
-                let v = bitcast<u32>(kv[j]);
-                let digit = extractBits(v, pass_ * rs_radix_log2, rs_radix_log2);
-                let prev = histogram_load(digit);
-                let rank = kr[j] & 0xFFFFu;
-                let count = kr[j] >> 16u;
-                kr[j] = prev + rank;
-
-                if rank == count {
-                    histogram_store(digit, (prev + count));
-                }
-                
-                // TODO: check if the barrier here is needed
-            }            
-        }
-        workgroupBarrier();
-    }
+    // rank among all keyvals of the workgroup with the same digit, workgroup
+    // histogram in smem, see accumulate_ranks
+    accumulate_ranks(pass_, lid.x);
     // kr filling is now done and contains the total offset for each value to be able to 
     // move the values into order without having any collisions
     
@@ -420,7 +454,7 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
 
         // Load keyval dword from sorted location
         for (var j = 0u; j < rs_scatter_block_rows; j++) {
-            kv[j] = scatter_smem[smem_base + j * {scatter_wg_size}u];
+            kv[j] = scatter_smem[smem_base + j * scatter_wg_size];
         }
         workgroupBarrier();
         // payload ----------------------------------------------
@@ -434,7 +468,7 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
 
         // Load payload dword from sorted location
         for (var j = 0u; j < rs_scatter_block_rows; j++) {
-            pv[j] = scatter_smem[smem_base + j * {scatter_wg_size}u];
+            pv[j] = scatter_smem[smem_base + j * scatter_wg_size];
         }
         workgroupBarrier();
     //}
@@ -448,7 +482,7 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
 
     // Load kr[] from sorted location -- we only need the rank
     for (var i = 0u; i < rs_scatter_block_rows; i++) {
-        kr[i] = scatter_smem[smem_base + i * {scatter_wg_size}u] & 0xFFFFu;
+        kr[i] = scatter_smem[smem_base + i * scatter_wg_size] & 0xFFFFu;
     }
     
     // convert local index to a global index, corresponds to rs_local_to_global
@@ -462,7 +496,7 @@ fn scatter(pass_: u32, lid: vec3<u32>, gid: vec3<u32>, wid: vec3<u32>, nwg: vec3
     
     // the storing is done in the scatter_even and scatter_odd functions as the front and back buffer changes
 }
-@compute @workgroup_size({scatter_wg_size})
+@compute @workgroup_size(scatter_wg_size)
 fn scatter_even(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
     if gid.x == 0u {
         infos.odd_pass = (infos.odd_pass + 1u) % 2u; // for this to work correctly the odd_pass has to start 1
@@ -485,7 +519,7 @@ fn scatter_even(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation
         payload_b[kr[i]] = pv[i];
     }
 }
-@compute @workgroup_size({scatter_wg_size})
+@compute @workgroup_size(scatter_wg_size)
 fn scatter_odd(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>, @builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
     if gid.x == 0u {
         infos.even_pass = (infos.even_pass + 1u) % 2u; // for this to work correctly the even_pass has to start at 0

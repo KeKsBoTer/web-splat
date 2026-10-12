@@ -11,15 +11,13 @@
 use wgpu::{ComputePassDescriptor, util::DeviceExt};
 
 // IMPORTANT: the following constants have to be synced with the numbers in radix_sort.wgsl
+// (checked by the test at the end of this file)
 pub const HISTOGRAM_WG_SIZE: usize = 256;
 const RS_RADIX_LOG2: usize = 8; // 8 bit radices
 const RS_RADIX_SIZE: usize = 1 << RS_RADIX_LOG2; // 256 entries into the radix table
 const RS_KEYVAL_SIZE: usize = 32 / RS_RADIX_LOG2;
 pub const RS_HISTOGRAM_BLOCK_ROWS: usize = 15;
 const RS_SCATTER_BLOCK_ROWS: usize = RS_HISTOGRAM_BLOCK_ROWS; // DO NOT CHANGE, shader assume this!!!
-const PREFIX_WG_SIZE: usize = 1 << 7; // one thread operates on 2 prefixes at the same time
-const SCATTER_WG_SIZE: usize = 1 << 8;
-
 pub struct GPURSSorter {
     bind_group_layout: wgpu::BindGroupLayout,
     render_bind_group_layout: wgpu::BindGroupLayout,
@@ -29,7 +27,6 @@ pub struct GPURSSorter {
     prefix_p: wgpu::ComputePipeline,
     scatter_even_p: wgpu::ComputePipeline,
     scatter_odd_p: wgpu::ComputePipeline,
-    subgroup_size: usize,
 }
 
 pub struct PointCloudSortStuff {
@@ -61,82 +58,6 @@ pub struct GeneralInfo {
 }
 
 impl GPURSSorter {
-    // The new call also needs the queue to be able to determine the maximum subgroup size (Does so by running test runs)
-    pub async fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
-        let sg_size = device.adapter_info().subgroup_min_size;
-        if sg_size == 0 || sg_size > 512 {
-            let mut cur_sorter: GPURSSorter;
-
-            log::warn!(
-                "Searching for the maximum subgroup size (wgpu currently does not allow to query subgroup sizes)"
-            );
-            let sizes = vec![1, 8, 16, 32];
-            let mut cur_size = 2;
-            enum State {
-                Init,
-                Increasing,
-                Decreasing,
-            }
-            let mut biggest_that_worked = 0;
-            let mut s = State::Init;
-            loop {
-                if cur_size >= sizes.len() {
-                    break;
-                }
-                log::debug!("Checking sorting with subgroupsize {}", sizes[cur_size]);
-                cur_sorter = Self::new_with_sg_size(device, sizes[cur_size]);
-                let sort_success = cur_sorter.test_sort(device, queue).await;
-                log::debug!("{} worked: {}", sizes[cur_size], sort_success);
-                match s {
-                    State::Init => {
-                        if sort_success {
-                            biggest_that_worked = sizes[cur_size];
-                            s = State::Increasing;
-                            cur_size += 1;
-                        } else {
-                            s = State::Decreasing;
-                            cur_size -= 1;
-                        }
-                    }
-                    State::Increasing => {
-                        if sort_success {
-                            if sizes[cur_size] > biggest_that_worked {
-                                biggest_that_worked = sizes[cur_size];
-                            }
-                            cur_size += 1;
-                        } else {
-                            break;
-                        }
-                    }
-                    State::Decreasing => {
-                        if sort_success {
-                            if sizes[cur_size] > biggest_that_worked {
-                                biggest_that_worked = sizes[cur_size];
-                            }
-                            break;
-                        } else {
-                            cur_size -= 1;
-                        }
-                    }
-                }
-            }
-            if biggest_that_worked == 0 {
-                panic!(
-                    "GPURSSorter::new() No workgroup size that works was found. Unable to use sorter"
-                );
-            }
-            cur_sorter = Self::new_with_sg_size(device, biggest_that_worked as u32);
-            log::info!(
-                "Created a sorter with subgroup size {}\n",
-                cur_sorter.subgroup_size
-            );
-            return cur_sorter;
-        } else {
-            log::info!("Created a sorter with subgroup size {}\n", sg_size);
-            return Self::new_with_sg_size(device, sg_size);
-        }
-    }
-
     pub fn create_sort_stuff(
         &self,
         device: &wgpu::Device,
@@ -173,21 +94,9 @@ impl GPURSSorter {
         }
     }
 
-    fn new_with_sg_size(device: &wgpu::Device, sg_size: u32) -> Self {
-        // special variables for scatter shade
-        let histogram_sg_size: usize = sg_size as usize;
-        let rs_sweep_0_size: usize = RS_RADIX_SIZE / histogram_sg_size;
-        let rs_sweep_1_size: usize = rs_sweep_0_size / histogram_sg_size;
-        let rs_sweep_2_size: usize = rs_sweep_1_size / histogram_sg_size;
-        let rs_sweep_size: usize = rs_sweep_0_size + rs_sweep_1_size + rs_sweep_2_size;
-        let _rs_smem_phase_1: usize = RS_RADIX_SIZE + RS_RADIX_SIZE + rs_sweep_size;
-        let rs_smem_phase_2: usize = RS_RADIX_SIZE + RS_SCATTER_BLOCK_ROWS * SCATTER_WG_SIZE;
-        // rs_smem_phase_2 will always be larger, so always use phase2
-        let rs_mem_dwords: usize = rs_smem_phase_2;
-        let rs_mem_sweep_0_offset: usize = 0;
-        let rs_mem_sweep_1_offset: usize = rs_mem_sweep_0_offset + rs_sweep_0_size;
-        let rs_mem_sweep_2_offset: usize = rs_mem_sweep_1_offset + rs_sweep_1_size;
-
+    /// Creates the sorter. The scatter ranks keys without subgroup operations (see
+    /// `rs_row_size` in the shader), so it works the same on any GPU and in browsers.
+    pub fn new(device: &wgpu::Device) -> Self {
         let bind_group_layout = Self::bind_group_layouts(device);
         let render_bind_group_layout = Self::bind_group_layout_rendering(device);
         let preprocess_bind_group_layout = Self::bind_group_layout_preprocess(device);
@@ -199,43 +108,9 @@ impl GPURSSorter {
                 immediate_size: 0,
             });
 
-        let raw_shader: &str = include_str!("shaders/radix_sort.wgsl");
-        let shader_w_const = format!(
-            "const histogram_sg_size: u32 = {:}u;\n\
-            const histogram_wg_size: u32 = {:}u;\n\
-            const rs_radix_log2: u32 = {:}u;\n\
-            const rs_radix_size: u32 = {:}u;\n\
-            const rs_keyval_size: u32 = {:}u;\n\
-            const rs_histogram_block_rows: u32 = {:}u;\n\
-            const rs_scatter_block_rows: u32 = {:}u;\n\
-            const rs_mem_dwords: u32 = {:}u;\n\
-            const rs_mem_sweep_0_offset: u32 = {:}u;\n\
-            const rs_mem_sweep_1_offset: u32 = {:}u;\n\
-            const rs_mem_sweep_2_offset: u32 = {:}u;\n{:}",
-            histogram_sg_size,
-            HISTOGRAM_WG_SIZE,
-            RS_RADIX_LOG2,
-            RS_RADIX_SIZE,
-            RS_KEYVAL_SIZE,
-            RS_HISTOGRAM_BLOCK_ROWS,
-            RS_SCATTER_BLOCK_ROWS,
-            rs_mem_dwords,
-            rs_mem_sweep_0_offset,
-            rs_mem_sweep_1_offset,
-            rs_mem_sweep_2_offset,
-            raw_shader
-        );
-        let shader_code = shader_w_const
-            .replace(
-                "{histogram_wg_size}",
-                HISTOGRAM_WG_SIZE.to_string().as_str(),
-            )
-            .replace("{prefix_wg_size}", PREFIX_WG_SIZE.to_string().as_str())
-            .replace("{scatter_wg_size}", SCATTER_WG_SIZE.to_string().as_str());
-
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Radix sort shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_code.into()),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/radix_sort.wgsl").into()),
         });
         let zero_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Zero the histograms"),
@@ -261,12 +136,18 @@ impl GPURSSorter {
             compilation_options: Default::default(),
             cache: None,
         });
+        // the scatter overwrites its workgroup memory before reading it: zeroing its
+        // 17 KB in every workgroup made the scatter about 10x slower (Apple M4)
+        let scatter_options = wgpu::PipelineCompilationOptions {
+            zero_initialize_workgroup_memory: false,
+            ..Default::default()
+        };
         let scatter_even_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("scatter_even"),
             layout: Some(&pipeline_layout),
             module: &shader,
             entry_point: Some("scatter_even"),
-            compilation_options: Default::default(),
+            compilation_options: scatter_options.clone(),
             cache: None,
         });
         let scatter_odd_p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -274,7 +155,7 @@ impl GPURSSorter {
             layout: Some(&pipeline_layout),
             module: &shader,
             entry_point: Some("scatter_odd"),
-            compilation_options: Default::default(),
+            compilation_options: scatter_options.clone(),
             cache: None,
         });
 
@@ -287,49 +168,7 @@ impl GPURSSorter {
             prefix_p,
             scatter_even_p,
             scatter_odd_p,
-            subgroup_size: histogram_sg_size,
         };
-    }
-
-    async fn test_sort(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> bool {
-        // smiply runs a small sort and check if the sorting result is correct
-        let n = 8192; // means that 2 workgroups are needed for sorting
-        let scrambled_data: Vec<f32> = (0..n).rev().map(|x| x as f32).collect();
-        let sorted_data: Vec<f32> = (0..n).map(|x| x as f32).collect();
-
-        let internal_mem_buffer = Self::create_internal_mem_buffer(self, device, n);
-        let (keyval_a, keyval_b, payload_a, payload_b) = Self::create_keyval_buffers(device, n, 4);
-        let (_uniform_buffer, _dispatch_buffer, bind_group) = self.create_bind_group(
-            device,
-            n,
-            &internal_mem_buffer,
-            &keyval_a,
-            &keyval_b,
-            &payload_a,
-            &payload_b,
-        );
-
-        upload_to_buffer(&keyval_a, device, queue, scrambled_data.as_slice());
-
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("GPURSSorter test_sort"),
-        });
-        self.record_sort(&bind_group, n, &mut encoder);
-        let idx = queue.submit([encoder.finish()]);
-        device
-            .poll(wgpu::PollType::Wait {
-                submission_index: Some(idx),
-                timeout: None,
-            })
-            .unwrap();
-
-        let sorted = download_buffer::<f32>(&keyval_a, device, queue).await;
-        for i in 0..n {
-            if sorted[i] != sorted_data[i] {
-                return false;
-            }
-        }
-        return true;
     }
 
     // layouts used by the sorting pipeline, as the dispatch buffer has to be in separate bind group
@@ -526,7 +365,8 @@ impl GPURSSorter {
             mapped_at_creation: false,
         });
         assert!(bytes_per_payload_elem == 4); // currently only 4 byte values are allowed
-        let payload_size = (keysize * bytes_per_payload_elem).max(1); // make sure that we have at least 1 byte of data;
+        // padded like the keys: the padding keys' payloads are moved as well
+        let payload_size = count_ru_histo * bytes_per_payload_elem;
         let payload_a = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Radix data buffer a"),
             size: payload_size as u64,
@@ -556,12 +396,6 @@ impl GPURSSorter {
     ) -> wgpu::Buffer {
         // currently only a few different key bits are supported, maybe has to be extended
         // assert!(key_bits == 32 || key_bits == 64 || key_bits == 16);
-
-        // subgroup and workgroup sizes
-        let histo_sg_size: usize = self.subgroup_size;
-        let _histo_wg_size: usize = HISTOGRAM_WG_SIZE;
-        let _prefix_sg_size: usize = histo_sg_size;
-        let _internal_sg_size: usize = histo_sg_size;
 
         // The "internal" memory map looks like this:
         //   +---------------------------------+ <-- 0
@@ -613,7 +447,10 @@ impl GPURSSorter {
         };
         let uniform_infos = GeneralInfo {
             keys_size: keysize as u32,
-            padded_size: count_ru_histo as u32,
+            // the preprocess dispatches one workgroup more than there are blocks
+            // (see record_sort_indirect): pad its keys too (the keyval buffers
+            // have room for it, see create_keyval_buffers)
+            padded_size: (count_ru_histo + HISTOGRAM_WG_SIZE * RS_HISTOGRAM_BLOCK_ROWS) as u32,
             passes: 4,
             even_pass: 0,
             odd_pass: 0,
@@ -886,30 +723,134 @@ impl GPURSSorter {
     }
 }
 
-fn upload_to_buffer<T: bytemuck::Pod>(
-    buffer: &wgpu::Buffer,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    values: &[T],
-) {
-    let staging_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Staging buffer"),
-        contents: bytemuck::cast_slice(values),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-    });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("Copye endoder"),
-    });
-    encoder.copy_buffer_to_buffer(&staging_buffer, 0, buffer, 0, staging_buffer.size());
-    let idx = queue.submit([encoder.finish()]);
+/// Buffers for sorting up to `capacity` keys with [`GPURSSorter::sort_key_values`]
+/// (tests and benchmarks).
+#[doc(hidden)]
+pub struct SortBuffers {
+    pub capacity: usize,
+    keys: wgpu::Buffer,
+    values: wgpu::Buffer,
+    uniform: wgpu::Buffer,
+    dispatch: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
 
-    device
-        .poll(wgpu::PollType::Wait {
-            submission_index: Some(idx),
-            timeout: None,
-        })
-        .unwrap();
-    staging_buffer.destroy();
+impl GPURSSorter {
+    #[doc(hidden)]
+    pub fn create_sort_buffers(&self, device: &wgpu::Device, capacity: usize) -> SortBuffers {
+        let (keys, keys_b, values, values_b) = Self::create_keyval_buffers(device, capacity, 4);
+        let internal = self.create_internal_mem_buffer(device, capacity);
+        let (uniform, dispatch, bind_group) = self.create_bind_group(
+            device, capacity, &internal, &keys, &keys_b, &values, &values_b,
+        );
+        SortBuffers {
+            capacity,
+            keys,
+            values,
+            uniform,
+            dispatch,
+            bind_group,
+        }
+    }
+
+    /// Sorts `keys` (ascending, stable) and their `values` like the renderers do:
+    /// the key count and the indirect dispatch size are written as the
+    /// preprocess shaders write them. Returns the sorted keys and values (tests and
+    /// benchmarks).
+    #[doc(hidden)]
+    pub async fn sort_key_values(
+        &self,
+        buffers: &SortBuffers,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        keys: &[u32],
+        values: &[u32],
+    ) -> (Vec<u32>, Vec<u32>) {
+        let n = keys.len();
+        assert!(n == values.len() && n <= buffers.capacity);
+        queue.write_buffer(&buffers.keys, 0, bytemuck::cast_slice(keys));
+        queue.write_buffer(&buffers.values, 0, bytemuck::cast_slice(values));
+        Self::record_reset_indirect_buffer(&buffers.dispatch, &buffers.uniform, queue);
+        queue.write_buffer(&buffers.uniform, 0, &(n as u32).to_le_bytes());
+        // the preprocess adds one workgroup for safety and one per started block
+        let blocks = n.div_ceil(HISTOGRAM_WG_SIZE * RS_HISTOGRAM_BLOCK_ROWS) as u32 + 1;
+        queue.write_buffer(&buffers.dispatch, 0, &blocks.to_le_bytes());
+
+        let mut encoder = device.create_command_encoder(&Default::default());
+        self.record_sort_indirect(&buffers.bind_group, &buffers.dispatch, &mut encoder);
+        queue.submit([encoder.finish()]);
+        let mut sorted_keys = download_buffer::<u32>(&buffers.keys, device, queue).await;
+        let mut sorted_values = download_buffer::<u32>(&buffers.values, device, queue).await;
+        sorted_keys.truncate(n);
+        sorted_values.truncate(n);
+        (sorted_keys, sorted_values)
+    }
+}
+
+impl GPURSSorter {
+    /// Wall-clock times of `iterations` sorts of `keys` after an untimed warm-up of
+    /// about 300 ms (benchmarks). The unsorted
+    /// keys and values are restored before each sort, only the sort's submission is
+    /// timed (includes the submission overhead, an upper bound of the GPU time).
+    #[doc(hidden)]
+    pub async fn bench_sort(
+        &self,
+        buffers: &SortBuffers,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        keys: &[u32],
+        values: &[u32],
+        iterations: u32,
+    ) -> Vec<std::time::Duration> {
+        let n = keys.len();
+        assert!(n == values.len() && n <= buffers.capacity);
+        let source = |data: &[u8]| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("bench source"),
+                contents: data,
+                usage: wgpu::BufferUsages::COPY_SRC,
+            })
+        };
+        let (key_src, value_src) = (
+            source(bytemuck::cast_slice(keys)),
+            source(bytemuck::cast_slice(values)),
+        );
+        let blocks = n.div_ceil(HISTOGRAM_WG_SIZE * RS_HISTOGRAM_BLOCK_ROWS) as u32 + 1;
+        // as the preprocess writes them
+        let uniform_src = source(&(n as u32).to_le_bytes());
+        let dispatch_src = source(&blocks.to_le_bytes());
+        let wait = |idx| {
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: Some(idx),
+                    timeout: None,
+                })
+                .unwrap();
+        };
+        // untimed sorts first: the GPU only clocks up from idle after some milliseconds
+        // of sustained work, the first sorts of a cold process are several times slower
+        const WARMUP: std::time::Duration = std::time::Duration::from_millis(300);
+        let warmup_start = std::time::Instant::now();
+        let mut times = Vec::with_capacity(iterations as usize);
+        while times.len() < iterations as usize {
+            let warm = warmup_start.elapsed() < WARMUP;
+            let mut encoder = device.create_command_encoder(&Default::default());
+            encoder.copy_buffer_to_buffer(&key_src, 0, &buffers.keys, 0, key_src.size());
+            encoder.copy_buffer_to_buffer(&value_src, 0, &buffers.values, 0, value_src.size());
+            encoder.copy_buffer_to_buffer(&uniform_src, 0, &buffers.uniform, 0, 4);
+            encoder.copy_buffer_to_buffer(&dispatch_src, 0, &buffers.dispatch, 0, 4);
+            wait(queue.submit([encoder.finish()]));
+
+            let mut encoder = device.create_command_encoder(&Default::default());
+            self.record_sort_indirect(&buffers.bind_group, &buffers.dispatch, &mut encoder);
+            let start = std::time::Instant::now();
+            wait(queue.submit([encoder.finish()]));
+            if !warm {
+                times.push(start.elapsed());
+            }
+        }
+        times
+    }
 }
 
 async fn download_buffer<T: Clone>(
@@ -950,4 +891,47 @@ async fn download_buffer<T: Clone>(
     }
 
     return r;
+}
+
+#[cfg(test)]
+mod tests {
+    const PREFIX_WG_SIZE: usize = 1 << 7; // one thread operates on 2 prefixes at the same time
+    const SCATTER_WG_SIZE: usize = 1 << 8;
+
+    /// The constants of the shader and of this file have to be the same
+    #[test]
+    fn shader_constants_match() {
+        let shader = include_str!("shaders/radix_sort.wgsl");
+        let value = |name: &str| -> usize {
+            let prefix = format!("const {name}: u32 = ");
+            let line = shader
+                .lines()
+                .find(|l| l.starts_with(&prefix))
+                .unwrap_or_else(|| panic!("const {name} not found in radix_sort.wgsl"));
+            let digits: String = line[prefix.len()..]
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            digits.parse().unwrap()
+        };
+        assert_eq!(value("histogram_wg_size"), super::HISTOGRAM_WG_SIZE);
+        assert_eq!(value("prefix_wg_size"), PREFIX_WG_SIZE);
+        assert_eq!(value("scatter_wg_size"), SCATTER_WG_SIZE);
+        assert_eq!(value("rs_radix_log2"), super::RS_RADIX_LOG2);
+        assert_eq!(value("rs_radix_size"), super::RS_RADIX_SIZE);
+        assert_eq!(value("rs_keyval_size"), super::RS_KEYVAL_SIZE);
+        assert_eq!(
+            value("rs_histogram_block_rows"),
+            super::RS_HISTOGRAM_BLOCK_ROWS
+        );
+        assert_eq!(value("rs_scatter_block_rows"), super::RS_SCATTER_BLOCK_ROWS);
+        // accumulate_ranks keeps one histogram per row in the scatter's workgroup memory
+        let row_size = value("rs_row_size");
+        assert!(row_size.is_power_of_two());
+        assert!(
+            SCATTER_WG_SIZE / row_size <= 16,
+            "at most 16 rows per workgroup, rs_row_size >= 16"
+        );
+        assert!(row_size <= SCATTER_WG_SIZE);
+    }
 }

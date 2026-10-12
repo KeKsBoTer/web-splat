@@ -28,14 +28,15 @@ pub struct GaussianRenderer {
     sorter: GPURSSorter,
     sorter_suff: Option<PointCloudSortStuff>,
     /// latest finished readback of the visible point count and whether one is in flight
+    #[cfg(not(target_arch = "wasm32"))]
     visible_count: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    #[cfg(not(target_arch = "wasm32"))]
     visible_pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl GaussianRenderer {
-    pub async fn new(
+    pub fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         color_format: wgpu::TextureFormat,
         sh_deg: u32,
         compressed: bool,
@@ -119,7 +120,7 @@ impl GaussianRenderer {
             }],
         });
 
-        let sorter = GPURSSorter::new(device, queue).await;
+        let sorter = GPURSSorter::new(device);
 
         let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
         let preprocess = PreprocessPipeline::new(device, sh_deg, compressed);
@@ -132,7 +133,9 @@ impl GaussianRenderer {
             color_format,
             sorter,
             sorter_suff: None,
+            #[cfg(not(target_arch = "wasm32"))]
             visible_count: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
             visible_pending: Default::default(),
             render_settings: UniformBuffer::new_default(
                 device,

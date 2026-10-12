@@ -158,7 +158,7 @@ async fn main() {
     let render_format = wgpu::TextureFormat::Rgba16Float;
 
     let mut renderer =
-        GaussianRenderer::new(&device, &queue, render_format, pc.sh_deg(), pc.compressed()).await;
+        GaussianRenderer::new(&device, render_format, pc.sh_deg(), pc.compressed());
 
     render_views(
         device,

@@ -170,7 +170,6 @@ impl WindowContext {
         let wgpu_context = WGPUContext::new(&instance, Some(&surface)).await;
 
         let device = &wgpu_context.device;
-        let queue = &wgpu_context.queue;
 
         let surface_caps = surface.get_capabilities(&wgpu_context.adapter);
 
@@ -211,8 +210,7 @@ impl WindowContext {
         log::info!("loaded point cloud with {:} points", pc.num_points());
 
         let renderer =
-            GaussianRenderer::new(&device, &queue, render_format, pc.sh_deg(), pc.compressed())
-                .await;
+            GaussianRenderer::new(&device, render_format, pc.sh_deg(), pc.compressed());
 
         let aabb = pc.bbox();
         let aspect = size.width as f32 / size.height as f32;
