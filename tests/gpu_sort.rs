@@ -2,7 +2,7 @@
 //! `cargo test --release --test gpu_sort -- --nocapture`
 
 use web_splats::{
-    WGPUContext,
+    GaussianRenderer, WGPUContext,
     gpu_rs::{GPURSSorter, SORT_KEY_BITS},
 };
 
@@ -62,17 +62,10 @@ fn gpu_sort_matches_cpu_stable_sort() {
         let sorter = GPURSSorter::new(device);
         let mut rng = Rng(0x9E3779B97F4A7C15);
 
-        // SORT_CHECK_SIZES=5000000,4999999: other numbers of keys
-        let sizes: Vec<usize> = match std::env::var("SORT_CHECK_SIZES") {
-            Ok(sizes) => sizes
-                .split(',')
-                .map(|n| n.trim().parse().unwrap())
-                .collect(),
-            Err(_) => vec![
-                1, 2, 255, 256, 3839, 3840, 3841, 7680, 10_000, 160_000, 119_281, 50_000, 999_999,
-                1_000_000, 3841, 160_000,
-            ],
-        };
+        let sizes: Vec<usize> = vec![
+            1, 2, 255, 256, 3839, 3840, 3841, 7680, 10_000, 160_000, 119_281, 50_000, 999_999,
+            1_000_000, 3841, 160_000,
+        ];
         // buffers are reused across sorts of different sizes, as in the renderers
         let buffers = sorter.create_sort_buffers(device, *sizes.iter().max().unwrap());
         for (name, generate) in distributions() {
@@ -93,6 +86,23 @@ fn gpu_sort_matches_cpu_stable_sort() {
     });
 }
 
+/// The renderer's pipelines (preprocess with its sort key width, sort, render) can be created
+/// for the sort key width this was built with (pipeline constants are evaluated when the
+/// pipelines are created, e.g. a shift by 32 bits is an error there).
+#[test]
+fn renderer_pipelines_compile() {
+    pollster::block_on(async {
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let ctx = WGPUContext::new(&instance, None).await;
+        let device = &ctx.device;
+        for compressed in [false, true] {
+            let _renderer =
+                GaussianRenderer::new(device, wgpu::TextureFormat::Rgba8Unorm, 3, compressed);
+        }
+    });
+}
+
 /// Heavy on the GPU, only runs on request:
 /// `cargo test --release --test gpu_sort -- --ignored --nocapture gpu_sort_speed`
 #[test]
@@ -108,14 +118,7 @@ fn gpu_sort_speed() {
         let sorter = GPURSSorter::new(device);
         let mut rng = Rng(1);
         const ITERATIONS: u32 = 11;
-        // SORT_SIZES=1000000,5000000: the numbers of keys to sort
-        let sizes: Vec<usize> = match std::env::var("SORT_SIZES") {
-            Ok(sizes) => sizes
-                .split(',')
-                .map(|n| n.trim().parse().unwrap())
-                .collect(),
-            Err(_) => vec![120_000, 160_000, 1_000_000],
-        };
+        let sizes: Vec<usize> = vec![120_000, 160_000, 1_000_000];
         for n in sizes {
             let buffers = sorter.create_sort_buffers(device, n);
             let keys: Vec<u32> = (0..n)

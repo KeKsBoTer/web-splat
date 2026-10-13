@@ -229,7 +229,7 @@ fn depth_key(z: f32) -> u32 {
     let range = bitcast<u32>(zfar) - near_bits;
     let shift = max(0, 32 - i32(countLeadingZeros(range)) - i32(sort_key_bits)); // bits of range - key bits
     // (rounding can put z just below znear)
-    return min((max(bitcast<u32>(z), near_bits) - near_bits) >> u32(shift), (1u << sort_key_bits) - 1u);
+    return min((max(bitcast<u32>(z), near_bits) - near_bits) >> u32(shift), 0xFFFFFFFFu >> (32u - sort_key_bits));
 }
 
 @compute @workgroup_size(256,1,1)
