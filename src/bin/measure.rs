@@ -8,7 +8,7 @@ use std::{
 };
 #[allow(unused_imports)]
 use web_splats::{
-    GaussianRenderer, PerspectiveCamera, PointCloud, Scene, SceneCamera, SplattingArgs, Split,
+    DEFAULT_ALPHA_CUTOFF, GaussianRenderer, PerspectiveCamera, PointCloud, Scene, SceneCamera, SplattingArgs, Split,
     WGPUContext, io,
 };
 
@@ -69,6 +69,7 @@ async fn render_views(
             mip_splatting: None,
             kernel_size: None,
             clipping_box: None,
+            alpha_cutoff: DEFAULT_ALPHA_CUTOFF,
             walltime: Duration::from_secs(100),
             scene_center: None,
             scene_extend: None,
@@ -119,6 +120,7 @@ async fn render_views(
                     mip_splatting: None,
                     kernel_size: None,
                     clipping_box: None,
+            alpha_cutoff: DEFAULT_ALPHA_CUTOFF,
                     walltime: Duration::from_secs(100),
                     scene_center: None,
                     scene_extend: None,

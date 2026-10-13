@@ -101,6 +101,7 @@ struct RenderSettings {
     kernel_size: f32,
     walltime: f32,
     scene_extend: f32,
+    alpha_cutoff: f32,
     center: vec3<f32>,
 }
 
@@ -264,6 +265,10 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
     // let opacity = unpack2x16float(vertex.pos_zw).y;
     var opacity = dequantize(extractBits(i32(vertex.opacity_scale), 0u * 8u, 8u), quantization.opacity);
     let scaling_factor = exp(dequantize(extractBits(i32(vertex.opacity_scale), 1u * 8u, 8u), quantization.scaling_factor));
+    // splats that contribute less than the cutoff everywhere are neither sorted nor drawn
+    if opacity < render_settings.alpha_cutoff {
+        return;
+    }
 
     let s2 = scaling_factor * scaling_factor;
     let cov1: vec2<f32> = unpack2x16float(geometric_info.cov[0]) * s2;
@@ -312,6 +317,10 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
             coef = 0.0;
         }
         opacity *= coef;
+    }
+    // splats that contribute less than the cutoff everywhere are neither sorted nor drawn
+    if opacity < render_settings.alpha_cutoff {
+        return;
     }
 
 

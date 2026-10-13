@@ -83,6 +83,7 @@ struct RenderSettings {
     kernel_size: f32,
     walltime: f32,
     scene_extend: f32,
+    alpha_cutoff: f32,
     center: vec3<f32>,
 }
 
@@ -220,6 +221,11 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
         return;
     }
 
+    // splats that contribute less than the cutoff everywhere are neither sorted nor drawn
+    if opacity < render_settings.alpha_cutoff {
+        return;
+    }
+
     let cov_sparse = cov_coefs(idx);
 
     let walltime = render_settings.walltime;
@@ -262,6 +268,10 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
             coef = 0.0;
         }
         opacity *= coef;
+    }
+    // splats that contribute less than the cutoff everywhere are neither sorted nor drawn
+    if opacity < render_settings.alpha_cutoff {
+        return;
     }
 
     let diagonal1 = cov[0][0] + kernel_size;

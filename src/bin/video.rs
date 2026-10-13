@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 use web_splats::{
-    Animation, GaussianRenderer, PointCloud, Scene, SceneCamera, SplattingArgs, TrackingShot,
+    Animation, DEFAULT_ALPHA_CUTOFF, GaussianRenderer, PointCloud, Scene, SceneCamera, SplattingArgs, TrackingShot,
     WGPUContext, io, smoothstep,
 };
 
@@ -125,6 +125,7 @@ async fn render_tracking_shot(
                 mip_splatting: None,
                 kernel_size: None,
                 clipping_box: None,
+                alpha_cutoff: DEFAULT_ALPHA_CUTOFF,
                 walltime: state_time,
                 scene_center: None,
                 scene_extend: None,

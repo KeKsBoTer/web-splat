@@ -46,6 +46,9 @@ impl GaussianRenderer {
             bind_group_layouts: &[
                 Some(&PointCloud::bind_group_layout_render(device)), // Needed for points_2d (on binding 2)
                 Some(&GPURSSorter::bind_group_layout_rendering(device)), // Needed for indices   (on binding 4)
+                Some(&UniformBuffer::<SplattingArgsUniform>::bind_group_layout(
+                    device,
+                )), // alpha cutoff
             ],
             immediate_size: 0,
         });
@@ -283,6 +286,7 @@ impl GaussianRenderer {
     ) {
         render_pass.set_bind_group(0, pc.render_bind_group(), &[]);
         render_pass.set_bind_group(1, &self.sorter_suff.as_ref().unwrap().sorter_render_bg, &[]);
+        render_pass.set_bind_group(2, self.render_settings.bind_group(), &[]);
         render_pass.set_pipeline(&self.pipeline);
 
         render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
@@ -629,6 +633,8 @@ pub struct SplattingArgs {
     pub mip_splatting: Option<bool>,
     pub kernel_size: Option<f32>,
     pub clipping_box: Option<Aabb<f32>>,
+    /// splat contributions (alpha) below this value are not drawn, see gaussian.wgsl
+    pub alpha_cutoff: f32,
     pub walltime: Duration,
     pub scene_center: Option<Point3<f32>>,
     pub scene_extend: Option<f32>,
@@ -636,6 +642,8 @@ pub struct SplattingArgs {
 }
 
 pub const DEFAULT_KERNEL_SIZE: f32 = 0.3;
+/// one step of an 8 bit color
+pub const DEFAULT_ALPHA_CUTOFF: f32 = 1. / 255.;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SplattingArgsUniform {
@@ -649,7 +657,8 @@ pub struct SplattingArgsUniform {
 
     walltime: f32,
     scene_extend: f32,
-    _pad: [u32; 2],
+    alpha_cutoff: f32,
+    _pad: u32,
 
     scene_center: Vector4<f32>,
 }
@@ -678,6 +687,7 @@ impl SplattingArgsUniform {
                 .to_vec()
                 .extend(0.),
             walltime: args.walltime.as_secs_f32(),
+            alpha_cutoff: args.alpha_cutoff,
             scene_center: pc.center().to_vec().extend(0.),
             scene_extend: args
                 .scene_extend
@@ -705,7 +715,8 @@ impl Default for SplattingArgsUniform {
             walltime: 0.,
             scene_center: Vector4::new(0., 0., 0., 0.),
             scene_extend: 1.,
-            _pad: [0; 2],
+            alpha_cutoff: DEFAULT_ALPHA_CUTOFF,
+            _pad: 0,
         }
     }
 }

@@ -42,7 +42,7 @@ pub use pointcloud::PointCloud;
 pub mod io;
 
 mod renderer;
-pub use renderer::{GaussianRenderer, SplattingArgs};
+pub use renderer::{DEFAULT_ALPHA_CUTOFF, GaussianRenderer, SplattingArgs};
 
 mod scene;
 use crate::utils::GPUStopwatch;
@@ -263,6 +263,7 @@ impl WindowContext {
                 mip_splatting: None,
                 kernel_size: None,
                 clipping_box: None,
+                alpha_cutoff: DEFAULT_ALPHA_CUTOFF,
                 // the splats grow in over the first seconds (see preprocess), a high value
                 // shows them fully grown from the start (like the offline renderers)
                 walltime: Duration::from_secs(100),

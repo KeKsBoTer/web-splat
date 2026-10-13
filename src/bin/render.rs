@@ -7,8 +7,8 @@ use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
 use std::{fs::File, path::PathBuf, time::Duration};
 #[allow(unused_imports)]
 use web_splats::{
-    GaussianRenderer, PerspectiveCamera, PointCloud, Scene, SceneCamera, SplattingArgs, Split,
-    WGPUContext, io::GenericGaussianPointCloud,
+    DEFAULT_ALPHA_CUTOFF, GaussianRenderer, PerspectiveCamera, PointCloud, Scene, SceneCamera,
+    SplattingArgs, Split, WGPUContext, io::GenericGaussianPointCloud,
 };
 
 #[derive(Debug, Parser)]
@@ -27,6 +27,10 @@ struct Opt {
     /// maximum allowed Spherical Harmonics (SH) degree
     #[arg(long, default_value_t = 3)]
     max_sh_deg: u32,
+
+    /// splat contributions (alpha) below this value are not drawn (minimum 1/255)
+    #[arg(long, default_value_t = DEFAULT_ALPHA_CUTOFF)]
+    alpha_cutoff: f32,
 }
 
 #[allow(unused)]
@@ -38,6 +42,7 @@ async fn render_views(
     cameras: Vec<SceneCamera>,
     img_out: &PathBuf,
     split: &str,
+    alpha_cutoff: f32,
 ) {
     let img_out = img_out.join(&split);
     println!("saving images to '{}'", img_out.to_string_lossy());
@@ -97,6 +102,7 @@ async fn render_views(
                 mip_splatting: None,
                 kernel_size: None,
                 clipping_box: None,
+                alpha_cutoff,
                 walltime: Duration::from_secs(100),
                 scene_center: None,
                 scene_extend: None,
@@ -157,8 +163,7 @@ async fn main() {
 
     let render_format = wgpu::TextureFormat::Rgba16Float;
 
-    let mut renderer =
-        GaussianRenderer::new(&device, render_format, pc.sh_deg(), pc.compressed());
+    let mut renderer = GaussianRenderer::new(&device, render_format, pc.sh_deg(), pc.compressed());
 
     render_views(
         device,
@@ -168,6 +173,7 @@ async fn main() {
         scene.cameras(Some(Split::Test)),
         &opt.img_out,
         "test",
+        opt.alpha_cutoff.max(DEFAULT_ALPHA_CUTOFF),
     )
     .await;
     render_views(
@@ -178,6 +184,7 @@ async fn main() {
         scene.cameras(Some(Split::Train)),
         &opt.img_out,
         "train",
+        opt.alpha_cutoff.max(DEFAULT_ALPHA_CUTOFF),
     )
     .await;
 

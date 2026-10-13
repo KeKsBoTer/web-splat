@@ -4,6 +4,7 @@ use std::time::Duration;
 #[cfg(target_arch = "wasm32")]
 use web_time::Duration;
 
+use crate::renderer::DEFAULT_ALPHA_CUTOFF;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::renderer::DEFAULT_KERNEL_SIZE;
 use crate::{SceneCamera, Split, WindowContext};
@@ -101,6 +102,17 @@ pub(crate) fn ui(state: &mut WindowContext) -> bool {
                         .range((1e-4)..=1.)
                         .clamp_existing_to_range(true)
                         .speed(1e-2),
+                );
+                ui.end_row();
+                ui.label("Opacity Cutoff").on_hover_text(
+                    "Splat contributions (opacity * gaussian falloff) below this alpha are not \
+                     drawn. 1/255 (0.0039, the smallest step of an 8 bit color) is the minimum; higher \
+                     values draw smaller splats (faster, but they fade out earlier).",
+                );
+                ui.add(
+                    egui::Slider::new(&mut state.splatting_args.alpha_cutoff, DEFAULT_ALPHA_CUTOFF..=0.2)
+                        .logarithmic(true)
+                        .clamping(egui::SliderClamping::Always),
                 );
                 ui.end_row();
                 ui.label("Directional Color");
