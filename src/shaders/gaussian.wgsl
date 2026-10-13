@@ -93,9 +93,8 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let a = dot(in.screen_pos, in.screen_pos);
-    if a > in.max_a {
-        discard;
-    }
-    let b = min(0.99, exp(-a) * in.color.a);
+    // no discard: it is slower on tile based GPUs. Outside of the ellipse where the splat
+    // falls below the cutoff the output is zero, which leaves the blended pixel unchanged.
+    let b = select(0., min(0.99, exp(-a) * in.color.a), a <= in.max_a);
     return vec4<f32>(in.color.rgb, 1.) * b;
 }
