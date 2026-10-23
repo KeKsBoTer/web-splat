@@ -1,6 +1,7 @@
 use cgmath::Vector2;
 use clap::Parser;
 
+use half::f16;
 use image::{ImageBuffer, Rgb};
 use indicatif::{ProgressIterator, ProgressStyle};
 use std::{
@@ -9,8 +10,8 @@ use std::{
     time::Duration,
 };
 use web_splats::{
-    Animation, DEFAULT_ALPHA_CUTOFF, GaussianRenderer, PointCloud, Scene, SceneCamera, SplattingArgs, TrackingShot,
-    WGPUContext, io, smoothstep,
+    Animation, DEFAULT_ALPHA_CUTOFF, GaussianRenderer, PointCloud, Scene, SceneCamera,
+    SplattingArgs, TrackingShot, WGPUContext, io, smoothstep,
 };
 
 #[derive(Debug, Parser)]
@@ -140,19 +141,23 @@ async fn render_tracking_shot(
                     view: &target_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(bg),
+                        // (front to back blending needs the alpha to start at 0, the
+                        // background is added when the image is saved)
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
+                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             renderer.render(&mut render_pass, &pc);
         }
         queue.submit(std::iter::once(encoder.finish()));
 
-        let img = download_texture(&target, device, queue).await;
+        let img = download_texture(&target, device, queue, bg).await;
 
         img.save(&video_out.join(format!("frame_{:04}.png", i)))
             .unwrap();
@@ -173,17 +178,19 @@ async fn main() {
 
     let scene = Scene::from_json(scene_file).unwrap();
 
-    let wgpu_context = WGPUContext::new_instance().await;
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let wgpu_context = WGPUContext::new(&instance, None).await;
     let device = &wgpu_context.device;
     let queue = &wgpu_context.queue;
 
     println!("reading point cloud file '{}'", opt.input.to_string_lossy());
     let pc_raw = io::GenericGaussianPointCloud::load(&mut ply_file).unwrap();
-    let pc = PointCloud::new(device, pc_raw).unwrap();
+    let pc = PointCloud::new(device, queue, pc_raw).unwrap();
 
     let mut renderer = GaussianRenderer::new(
         device,
-        wgpu::TextureFormat::Rgba32Float,
+        wgpu::TextureFormat::Rgba16Float,
         pc.sh_deg(),
         pc.compressed(),
     );
@@ -207,6 +214,7 @@ pub async fn download_texture(
     texture: &wgpu::Texture,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
+    background: wgpu::Color,
 ) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
     let texture_format = texture.format();
 
@@ -219,7 +227,7 @@ pub async fn download_texture(
 
     let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         size: output_buffer_size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         label: Some("texture download buffer"),
         mapped_at_creation: false,
     });
@@ -231,9 +239,9 @@ pub async fn download_texture(
 
     encoder.copy_texture_to_buffer(
         texture.as_image_copy(),
-        wgpu::ImageCopyBufferBase {
+        wgpu::TexelCopyBufferInfoBase {
             buffer: &staging_buffer,
-            layout: wgpu::ImageDataLayout {
+            layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(bytes_per_row),
                 rows_per_image: Some(fb_size.height),
@@ -241,59 +249,53 @@ pub async fn download_texture(
         },
         fb_size,
     );
-    queue.submit(std::iter::once(encoder.finish()));
+    let sub_idx = queue.submit(std::iter::once(encoder.finish()));
 
     let mut image = {
-        let data = download_buffer(&staging_buffer, device, queue).await;
+        let data = download_buffer(device, &staging_buffer, Some(sub_idx)).await;
 
+        // rgba, 16 bit floats (the rows can be padded). The color is premultiplied with the
+        // alpha: the background shows through where the alpha is below 1
+        let bg = [
+            background.r as f32,
+            background.g as f32,
+            background.b as f32,
+        ];
+        let channel = |c: &[u8], i: usize| f16::from_le_bytes([c[2 * i], c[2 * i + 1]]).to_f32();
         let buf: Vec<u8> = data
-            .to_vec()
-            .chunks_exact(16)
+            .chunks_exact(texel_size as usize)
             .flat_map(|c| {
-                let r = f32::from_le_bytes(c[0..4].try_into().unwrap()).clamp(0., 1.);
-                let g = f32::from_le_bytes(c[4..8].try_into().unwrap()).clamp(0., 1.);
-                let b = f32::from_le_bytes(c[8..12].try_into().unwrap()).clamp(0., 1.);
-                let _a = f32::from_le_bytes(c[12..16].try_into().unwrap()).clamp(0., 1.);
-                [(r * 255.) as u8, (g * 255.) as u8, (b * 255.) as u8]
+                let alpha = channel(c, 3).clamp(0., 1.);
+                [0, 1, 2]
+                    .map(|i| ((channel(c, i) + (1. - alpha) * bg[i]).clamp(0., 1.) * 255.) as u8)
             })
             .collect();
-        ImageBuffer::<Rgb<u8>, _>::from_raw(fb_size.width, fb_size.height, buf).unwrap()
+        ImageBuffer::<Rgb<u8>, _>::from_raw(bytes_per_row / texel_size, fb_size.height, buf)
+            .unwrap()
     };
+
+    staging_buffer.unmap();
 
     return image::imageops::crop(&mut image, 0, 0, fb_size.width, fb_size.height).to_image();
 }
 
-async fn download_buffer<T: Clone>(
-    buffer: &wgpu::Buffer,
+async fn download_buffer(
     device: &wgpu::Device,
-    queue: &wgpu::Queue,
-) -> Vec<T> {
-    // copy buffer data
-    let download_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Download buffer"),
-        size: buffer.size(),
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("Copy encoder"),
-    });
-    encoder.copy_buffer_to_buffer(buffer, 0, &download_buffer, 0, buffer.size());
-    queue.submit([encoder.finish()]);
+    buffer: &wgpu::Buffer,
+    wait_idx: Option<wgpu::SubmissionIndex>,
+) -> wgpu::BufferView {
+    let slice = buffer.slice(..);
 
-    // download buffer
-    let buffer_slice = download_buffer.slice(..);
     let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
-    buffer_slice.map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
-    device.poll(wgpu::MaintainBase::Wait).unwrap();
+    slice.map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: wait_idx,
+            timeout: None,
+        })
+        .unwrap();
     rx.receive().await.unwrap().unwrap();
-    let data = buffer_slice.get_mapped_range();
-    let r;
 
-    unsafe {
-        let (_, d, _) = data.align_to::<T>();
-        r = d.to_vec();
-    }
-
-    return r;
+    let view = slice.get_mapped_range();
+    return view.unwrap();
 }

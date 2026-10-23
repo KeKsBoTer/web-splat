@@ -39,6 +39,7 @@ jobs:
       - name: Build
         run: |
           cargo install -f wasm-bindgen-cli --version 0.2.129
+          cargo install -f wasm-opt --locked
           bash build_wasm.sh
       - name: Download scenes
         uses: robinraju/release-downloader@v1.8

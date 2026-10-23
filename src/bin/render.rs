@@ -159,7 +159,7 @@ async fn main() {
     println!("reading point cloud file '{}'", opt.input.to_string_lossy());
 
     let pc_raw = GenericGaussianPointCloud::load(ply_file).unwrap();
-    let mut pc = PointCloud::new(&device, pc_raw).unwrap();
+    let mut pc = PointCloud::new(&device, queue, pc_raw).unwrap();
 
     let render_format = wgpu::TextureFormat::Rgba16Float;
 

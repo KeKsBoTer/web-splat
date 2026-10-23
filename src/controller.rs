@@ -150,6 +150,8 @@ impl CameraController {
         // Update touch state
         match touch.phase {
             TouchPhase::Started => {
+                // (a touch that is not over yet would count as a second finger)
+                self.touch_state.touches.retain(|t| t.id != touch.id);
                 self.touch_state.touches.push(touch);
             }
             TouchPhase::Moved => {
@@ -173,6 +175,14 @@ impl CameraController {
 
     fn handle_touch_gestures(&mut self) {
         let touch_count = self.touch_state.touches.len();
+
+        // The movement is the difference to the last position of the gesture. When fingers are
+        // added or lifted the gesture changes (e.g. the center of two fingers is not the position
+        // of the one that is left), so it starts again, otherwise the camera jumps.
+        if touch_count != self.touch_state.last_touch_count {
+            self.touch_state.last_pinch_distance = None;
+            self.touch_state.last_touch_center = None;
+        }
 
         match touch_count {
             1 => {
@@ -203,10 +213,14 @@ impl CameraController {
                 let current_distance = (dx * dx + dy * dy).sqrt();
 
                 if let Some(last_distance) = self.touch_state.last_pinch_distance {
-                    // Pinch to zoom with improved sensitivity
-                    let distance_change = current_distance - last_distance;
-                    let zoom_factor = distance_change * 0.005; // Adjusted for better mobile zoom control
-                    self.scroll += zoom_factor;
+                    // Pinch to zoom: spreading the fingers by a factor moves the camera
+                    // closer by the same factor. Scrolling is a velocity that decays, a
+                    // scroll value of 1 zooms by about 0.08 (in log distance), see update_camera.
+                    // (a positive scroll moves the camera away, as for the mouse wheel)
+                    const PINCH_ZOOM: f32 = 12.;
+                    if last_distance > 1. && current_distance > 1. {
+                        self.scroll -= (current_distance / last_distance).ln() * PINCH_ZOOM;
+                    }
                 }
 
                 if let Some(last_center) = self.touch_state.last_touch_center {

@@ -88,7 +88,11 @@ where
                 // do not change to wgpu::ShaderStages::all(), this gives an error in chrome
                 visibility: wgpu::ShaderStages::VERTEX
                     | wgpu::ShaderStages::FRAGMENT
-                    | wgpu::ShaderStages::COMPUTE,
+                    | if crate::renderer::supports_compute(device) {
+                        wgpu::ShaderStages::COMPUTE
+                    } else {
+                        wgpu::ShaderStages::NONE
+                    },
                 ty: Self::binding_type(),
                 count: None,
             }],

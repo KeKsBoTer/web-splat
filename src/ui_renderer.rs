@@ -8,6 +8,8 @@ pub struct EguiWGPU {
     pending_textures: TexturesDelta,
     /// latest cursor position (points), see [`Self::on_event`]
     cursor_pos: Option<egui::Pos2>,
+    /// touches that started on the ui, they belong to egui until they end
+    ui_touches: std::collections::HashSet<u64>,
 }
 
 impl EguiWGPU {
@@ -26,6 +28,7 @@ impl EguiWGPU {
             ),
             pending_textures: TexturesDelta::default(),
             cursor_pos: None,
+            ui_touches: Default::default(),
         }
     }
 
@@ -51,8 +54,7 @@ impl EguiWGPU {
         let resp = self.winit.on_window_event(window, event);
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pixels_per_point =
-                    egui_winit::pixels_per_point(self.winit.egui_ctx(), window);
+                let pixels_per_point = egui_winit::pixels_per_point(self.winit.egui_ctx(), window);
                 self.cursor_pos = Some(egui::pos2(
                     position.x as f32 / pixels_per_point,
                     position.y as f32 / pixels_per_point,
@@ -66,6 +68,36 @@ impl EguiWGPU {
             WindowEvent::MouseInput { state, .. } => {
                 *state == ElementState::Pressed && self.pointer_over_ui()
             }
+            // Like for the mouse, a touch belongs to egui if it starts on the ui and to the
+            // application otherwise. The end of a touch always reaches the application: when a
+            // touch that started on the scene is lifted over a ui window the application would
+            // never see it end and keep a touch that does not exist, which breaks the next
+            // gestures.
+            WindowEvent::Touch(touch) => match touch.phase {
+                winit::event::TouchPhase::Started => {
+                    let pixels_per_point =
+                        egui_winit::pixels_per_point(self.winit.egui_ctx(), window);
+                    let pos = egui::pos2(
+                        touch.location.x as f32 / pixels_per_point,
+                        touch.location.y as f32 / pixels_per_point,
+                    );
+                    let on_ui = self.winit.egui_ctx().egui_is_using_pointer()
+                        || self
+                            .winit
+                            .egui_ctx()
+                            .layer_id_at(pos)
+                            .is_some_and(|layer| layer.order != egui::Order::Background);
+                    if on_ui {
+                        self.ui_touches.insert(touch.id);
+                    }
+                    on_ui
+                }
+                winit::event::TouchPhase::Moved => self.ui_touches.contains(&touch.id),
+                winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
+                    self.ui_touches.remove(&touch.id);
+                    false
+                }
+            },
             _ => resp.consumed,
         }
     }

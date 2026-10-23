@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 #[cfg(target_arch = "wasm32")]
 use web_time::{Duration, Instant};
 
-use cgmath::{AbsDiffEq, Deg, EuclideanSpace, Point3, Quaternion, UlpsEq, Vector2, Vector3};
+use cgmath::{
+    AbsDiffEq, Deg, EuclideanSpace, InnerSpace, Point3, Quaternion, UlpsEq, Vector2, Vector3,
+};
 use egui::FullOutput;
 use num_traits::One;
 
@@ -36,7 +38,11 @@ mod camera;
 pub use camera::{Camera, PerspectiveCamera, PerspectiveProjection};
 mod controller;
 pub use controller::CameraController;
+mod cpu_sort;
 mod pointcloud;
+mod sort;
+#[cfg(target_arch = "wasm32")]
+mod web_backend;
 pub use pointcloud::PointCloud;
 
 pub mod io;
@@ -53,6 +59,38 @@ pub mod gpu_rs;
 mod ui_renderer;
 mod uniform;
 mod utils;
+
+/// Where the points of the viewed point cloud come from.
+pub enum PointCloudSource {
+    /// everything is loaded, ready to be uploaded
+    Full(io::GenericGaussianPointCloud),
+    /// points arrive while the point cloud is rendered, the header must be available already
+    Stream(io::PointCloudStream),
+}
+
+/// number of streamed points that are uploaded to the GPU per frame
+const STREAM_UPLOAD_POINTS_PER_FRAME: usize = 1 << 19;
+
+/// duration of the camera movement when the point cloud grows while it is loading
+const FRAME_TRANSITION: Duration = Duration::from_millis(600);
+/// the camera only moves to a new view of a growing point cloud when the view moved by more
+/// than this fraction of the radius of the point cloud
+const FRAME_RETARGET_DISTANCE: f32 = 0.05;
+
+/// The camera that looks at the whole point cloud.
+fn default_camera(aabb: &pointcloud::Aabb<f32>, size: PhysicalSize<u32>) -> PerspectiveCamera {
+    let aspect = size.width as f32 / size.height as f32;
+    PerspectiveCamera::new(
+        aabb.center() - Vector3::new(1., 1., 1.) * aabb.radius() * 0.5,
+        Quaternion::one(),
+        PerspectiveProjection::new(
+            Vector2::new(size.width, size.height),
+            Vector2::new(Deg(45.), Deg(45. / aspect)),
+            0.01,
+            1000.,
+        ),
+    )
+}
 
 pub struct RenderConfig {
     pub no_vsync: bool,
@@ -97,7 +135,10 @@ impl WGPUContext {
 
                 #[cfg(target_arch = "wasm32")]
                 required_limits: wgpu::Limits {
-                    max_compute_workgroup_storage_size: 1 << 15,
+                    // (there are no compute shaders with WebGL2)
+                    max_compute_workgroup_storage_size: adapter_limits
+                        .max_compute_workgroup_storage_size
+                        .min(1 << 15),
                     ..adapter_limits
                 },
                 label: None,
@@ -124,6 +165,20 @@ pub struct WindowContext {
     scale_factor: f32,
 
     pc: PointCloud,
+    /// points that are still being loaded
+    stream: Option<io::PointCloudStream>,
+    load_error: Option<String>,
+    /// While the point cloud is loading and the camera was not moved, it keeps looking at
+    /// the whole point cloud.
+    auto_frame: bool,
+    /// timing of loading a streamed point cloud, to find out what is slow
+    load_started: Instant,
+    /// time spent to upload the points
+    upload_time: Duration,
+    /// frames drawn since the loading started
+    load_frames: u32,
+    /// the view the camera moved (or is moving) to by auto framing
+    frame_target: Option<PerspectiveCamera>,
     pointcloud_file_path: Option<PathBuf>,
     renderer: GaussianRenderer,
     animation: Option<(Animation<PerspectiveCamera>, bool)>,
@@ -134,6 +189,8 @@ pub struct WindowContext {
     ui_renderer: ui_renderer::EguiWGPU,
     fps: f32,
     ui_visible: bool,
+    /// the render target was recreated and the scene has to be drawn again
+    scene_dirty: bool,
 
     #[cfg(not(target_arch = "wasm32"))]
     history: RingBuffer<(Duration, Duration, Duration)>,
@@ -149,9 +206,9 @@ pub struct WindowContext {
 
 impl WindowContext {
     // Creating some of the wgpu types requires async code
-    async fn new<R: Read + Seek>(
+    async fn new(
         window: Window,
-        pc_file: R,
+        source: PointCloudSource,
         render_config: &RenderConfig,
     ) -> anyhow::Result<Self> {
         let mut size = window.inner_size();
@@ -161,9 +218,26 @@ impl WindowContext {
 
         let window = Arc::new(window);
 
-        let instance = wgpu::Instance::new(
-            wgpu::InstanceDescriptor::new_with_display_handle_from_env(window.clone_for_wgpu()),
-        );
+        #[allow(unused_mut)]
+        let mut instance_desc =
+            wgpu::InstanceDescriptor::new_with_display_handle_from_env(window.clone_for_wgpu());
+        // The url can force a backend (?backend=webgpu or ?backend=webgl). Otherwise: browsers
+        // can have `navigator.gpu` without being able to create an adapter, this checks for
+        // a working WebGPU and uses WebGL2 if there is none.
+        #[cfg(target_arch = "wasm32")]
+        let instance = match web_backend::requested_backend() {
+            Some(web_backend::WebBackend::WebGpu) => {
+                instance_desc.backends = wgpu::Backends::BROWSER_WEBGPU;
+                wgpu::Instance::new(instance_desc)
+            }
+            Some(web_backend::WebBackend::WebGl) => {
+                instance_desc.backends = wgpu::Backends::GL;
+                wgpu::Instance::new(instance_desc)
+            }
+            None => wgpu::util::new_instance_with_webgpu_detection(instance_desc).await,
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let instance = wgpu::Instance::new(instance_desc);
 
         let surface: wgpu::Surface = instance.create_surface(window.clone())?;
 
@@ -173,10 +247,17 @@ impl WindowContext {
 
         let surface_caps = surface.get_capabilities(&wgpu_context.adapter);
 
+        // The scene is drawn to a view of the surface without the srgb suffix. Where surfaces
+        // can't have other view formats (WebGL2) the surface itself must not be srgb.
+        let surface_view_formats = wgpu_context
+            .adapter
+            .get_downlevel_capabilities()
+            .flags
+            .contains(wgpu::DownlevelFlags::SURFACE_VIEW_FORMATS);
         let surface_format = surface_caps
             .formats
             .iter()
-            .filter(|f| f.is_srgb())
+            .filter(|f| f.is_srgb() == surface_view_formats)
             .next()
             .unwrap_or(&surface_caps.formats[0])
             .clone();
@@ -201,29 +282,30 @@ impl WindowContext {
             },
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             color_space: wgpu::SurfaceColorSpace::Auto,
-            view_formats: vec![surface_format.remove_srgb_suffix()],
+            view_formats: if surface_view_formats {
+                vec![surface_format.remove_srgb_suffix()]
+            } else {
+                vec![]
+            },
         };
         surface.configure(&device, &config);
 
-        let pc_raw = io::GenericGaussianPointCloud::load(pc_file)?;
-        let pc = PointCloud::new(&device, pc_raw)?;
-        log::info!("loaded point cloud with {:} points", pc.num_points());
+        let (pc, stream) = match source {
+            PointCloudSource::Full(pc_raw) => {
+                (PointCloud::new(&device, &wgpu_context.queue, pc_raw)?, None)
+            }
+            PointCloudSource::Stream(stream) => {
+                let info = stream
+                    .info()
+                    .ok_or_else(|| anyhow::anyhow!("ply header is not available"))?;
+                (PointCloud::new_streaming(&device, &info)?, Some(stream))
+            }
+        };
+        log::info!("point cloud with {:} points", pc.num_points());
 
-        let renderer =
-            GaussianRenderer::new(&device, render_format, pc.sh_deg(), pc.compressed());
+        let renderer = GaussianRenderer::new(&device, render_format, pc.sh_deg(), pc.compressed());
 
-        let aabb = pc.bbox();
-        let aspect = size.width as f32 / size.height as f32;
-        let view_camera = PerspectiveCamera::new(
-            aabb.center() - Vector3::new(1., 1., 1.) * aabb.radius() * 0.5,
-            Quaternion::one(),
-            PerspectiveProjection::new(
-                Vector2::new(size.width, size.height),
-                Vector2::new(Deg(45.), Deg(45. / aspect)),
-                0.01,
-                1000.,
-            ),
-        );
+        let view_camera = default_camera(pc.bbox(), size);
 
         let mut controller = CameraController::new(0.1, 0.05);
         controller.center = pc.center();
@@ -241,8 +323,7 @@ impl WindowContext {
         let stopwatch = if cfg!(not(target_arch = "wasm32"))
             && device.features().contains(
                 wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS,
-            )
-        {
+            ) {
             Some(GPUStopwatch::new(device, Some(3)))
         } else {
             None
@@ -271,6 +352,13 @@ impl WindowContext {
                 scene_extend: None,
                 background_color: wgpu::Color::BLACK,
             },
+            auto_frame: stream.is_some(),
+            load_started: Instant::now(),
+            upload_time: Duration::ZERO,
+            load_frames: 0,
+            frame_target: None,
+            stream,
+            load_error: None,
             pc,
             // camera: view_camera,
             controller,
@@ -279,6 +367,7 @@ impl WindowContext {
             #[cfg(not(target_arch = "wasm32"))]
             history: RingBuffer::new(512),
             ui_visible: true,
+            scene_dirty: false,
             display,
             saved_cameras: Vec::new(),
             #[cfg(feature = "video")]
@@ -298,7 +387,7 @@ impl WindowContext {
             log::info!("reloading volume from {:?}", file_path);
             let file = std::fs::File::open(file_path)?;
             let pc_raw = io::GenericGaussianPointCloud::load(file)?;
-            self.pc = PointCloud::new(&self.wgpu_context.device, pc_raw)?;
+            self.pc = PointCloud::new(&self.wgpu_context.device, &self.wgpu_context.queue, pc_raw)?;
         } else {
             return Err(anyhow::anyhow!("no pointcloud file path present"));
         }
@@ -319,6 +408,8 @@ impl WindowContext {
                 .configure(&self.wgpu_context.device, &self.config);
             self.display
                 .resize(&self.wgpu_context.device, new_size.width, new_size.height);
+            // the new render target is empty
+            self.scene_dirty = true;
             self.splatting_args
                 .camera
                 .projection
@@ -361,6 +452,80 @@ impl WindowContext {
         (request_redraw, output)
     }
 
+    /// Updates the draw order of the splats when the sorting happens on the CPU (without compute
+    /// shaders). Returns whether the scene changed and we need a redraw.
+    fn poll_sort(&mut self) -> bool {
+        let view = self.splatting_args.camera.view_matrix();
+        self.pc.update_sort(
+            &self.wgpu_context.queue,
+            [view.x.z, view.y.z, view.z.z, view.w.z],
+        )
+    }
+
+    /// Uploads the points of a streamed point cloud that arrived since the last call.
+    /// Returns whether the scene changed and we need a redraw.
+    fn poll_stream(&mut self) -> bool {
+        let Some(stream) = &self.stream else {
+            return false;
+        };
+        if let Some(err) = stream.error() {
+            log::error!("loading the point cloud failed: {err}");
+            self.load_error = Some(err);
+            self.stream = None;
+            return true;
+        }
+        let mut changed = false;
+        let upload_start = Instant::now();
+        for chunk in stream.take(STREAM_UPLOAD_POINTS_PER_FRAME) {
+            changed |= self.pc.append(&self.wgpu_context.queue, &chunk) > 0;
+        }
+        self.upload_time += upload_start.elapsed();
+        self.load_frames += 1;
+        let complete = self.pc.is_complete();
+        if complete {
+            let total = self.load_started.elapsed();
+            log::info!(
+                "loaded point cloud with {:} points in {:.1} s ({:.1} s uploading to the gpu, {} frames, {:.1} fps while loading)",
+                self.pc.num_points(),
+                total.as_secs_f32(),
+                self.upload_time.as_secs_f32(),
+                self.load_frames,
+                self.load_frames as f32 / total.as_secs_f32().max(1e-3),
+            );
+            self.stream = None;
+        }
+        if changed {
+            self.reframe_camera(complete);
+        }
+        changed
+    }
+
+    /// Looks at the whole point cloud as long as the camera was not moved. The first time the
+    /// camera jumps to the point cloud, after that it moves there smoothly.
+    /// A transition that is running is not interrupted (restarting it every frame would make
+    /// the camera crawl), unless this is the final view (`last`).
+    fn reframe_camera(&mut self, last: bool) {
+        if !self.auto_frame || self.scene.is_some() {
+            return;
+        }
+        let size = PhysicalSize::new(self.config.width, self.config.height);
+        let target = default_camera(self.pc.bbox(), size);
+        self.controller.center = self.pc.center();
+
+        let Some(previous) = self.frame_target else {
+            // nothing to move from yet
+            self.splatting_args.camera = target;
+            self.frame_target = Some(target);
+            return;
+        };
+        let moved = (target.position - previous.position).magnitude();
+        let significant = moved > FRAME_RETARGET_DISTANCE * self.pc.bbox().radius();
+        if last || (significant && self.animation.is_none()) {
+            self.frame_target = Some(target);
+            self.set_camera(target, FRAME_TRANSITION);
+        }
+    }
+
     /// returns whether the sceen changed and we need a redraw
     fn update(&mut self, dt: Duration) {
         // ema fps update
@@ -370,6 +535,7 @@ impl WindowContext {
         }
         if let Some((next_camera, playing)) = &mut self.animation {
             if self.controller.user_inptut {
+                self.auto_frame = false;
                 self.cancle_animation()
             } else {
                 let dt = if *playing { dt } else { Duration::ZERO };
@@ -384,6 +550,9 @@ impl WindowContext {
                 }
             }
         } else {
+            if self.controller.user_inptut {
+                self.auto_frame = false;
+            }
             self.controller
                 .update_camera(&mut self.splatting_args.camera, dt);
 
@@ -539,6 +708,7 @@ impl WindowContext {
         center /= scene.num_cameras() as f32;
 
         self.controller.center = center;
+        self.auto_frame = false;
         self.scene.replace(scene);
         if self.saved_cameras.is_empty() {
             self.saved_cameras = self
@@ -639,6 +809,8 @@ pub fn smoothstep(x: f32) -> f32 {
     return x * x * (3.0 - 2.0 * x);
 }
 
+/// Opens the viewer for a point cloud file. Ply files are streamed on native, the viewer opens as
+/// soon as the header is read and the points appear while the file is read.
 pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
     file: R,
     scene_file: Option<R>,
@@ -648,6 +820,39 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
 ) {
     #[cfg(not(target_arch = "wasm32"))]
     env_logger::init();
+    let source = load_source(file).unwrap();
+    run_window(
+        source,
+        scene_file,
+        config,
+        pointcloud_file_path,
+        scene_file_path,
+    )
+    .await
+}
+
+fn load_source<R: Read + Seek + Send + 'static>(mut file: R) -> anyhow::Result<PointCloudSource> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut signature = [0u8; 3];
+        file.read_exact(&mut signature)?;
+        file.rewind()?;
+        if signature == *b"ply" {
+            return Ok(PointCloudSource::Stream(io::stream::spawn_reader(file)?));
+        }
+    }
+    Ok(PointCloudSource::Full(io::GenericGaussianPointCloud::load(
+        &mut file,
+    )?))
+}
+
+async fn run_window<S: Read + Seek>(
+    source: PointCloudSource,
+    scene_file: Option<S>,
+    config: RenderConfig,
+    pointcloud_file_path: Option<PathBuf>,
+    scene_file_path: Option<PathBuf>,
+) {
     let event_loop = EventLoop::new().unwrap();
 
     let scene = scene_file.and_then(|f| match Scene::from_json(f) {
@@ -714,7 +919,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
         })
         .unwrap_or(Duration::from_millis(17));
 
-    let mut state = WindowContext::new(window, file, &config).await.unwrap();
+    let mut state = WindowContext::new(window, source, &config).await.unwrap();
     state.pointcloud_file_path = pointcloud_file_path;
 
     if let Some(scene) = scene {
@@ -864,11 +1069,14 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
                     }
                 }
 
+                let stream_changed = state.poll_stream();
+                let sort_changed = state.poll_sort();
+
                 let (redraw_ui,shapes) = state.ui();
 
                 let resolution_change = state.splatting_args.viewport != Vector2::new(state.config.width, state.config.height);
 
-                let request_redraw = old_settings != state.splatting_args || resolution_change;
+                let request_redraw = old_settings != state.splatting_args || resolution_change || state.scene_dirty || stream_changed || sort_changed;
 
                 if request_redraw || redraw_ui{
                     state.fps = (1. / dt.as_secs_f32()) * 0.05 + state.fps * 0.95;
@@ -879,7 +1087,7 @@ pub async fn open_window<R: Read + Seek + Send + Sync + 'static>(
                         None
                     };
                     match state.render(request_redraw,shapes) {
-                        Ok(_) => {}
+                        Ok(_) => state.scene_dirty = false,
                         // Reconfigure the surface if lost
                         Err(wgpu::CurrentSurfaceTexture::Suboptimal(_)) => state.resize(state.window.inner_size(), None),
                         Err(wgpu::CurrentSurfaceTexture::Lost) => state.resize(state.window.inner_size(), None),
@@ -933,4 +1141,98 @@ pub async fn run_wasm(
         pc_file.and_then(|s| PathBuf::from_str(s.as_str()).ok()),
         scene_file.and_then(|s| PathBuf::from_str(s.as_str()).ok()),
     ));
+}
+
+/// Streams a ply file into the viewer on the web. The page reads the response body of a `fetch`
+/// and passes the pieces to [`Self::push`]. After the header arrived ([`Self::is_ready`]) the
+/// viewer can be opened with [`Self::start_viewer`], the points appear while the rest of the file
+/// is still downloading.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub struct PointCloudLoader {
+    feeder: io::PlyFeeder,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+impl PointCloudLoader {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        std::panic::set_hook(Box::new(console_error_panic_hook::hook));
+        console_log::init().ok();
+        Self {
+            feeder: io::PlyFeeder::new(),
+        }
+    }
+
+    /// the next bytes of the file
+    pub fn push(&mut self, bytes: &[u8]) -> Result<(), wasm_bindgen::JsError> {
+        self.feeder
+            .push(bytes)
+            .map_err(|e| wasm_bindgen::JsError::new(&format!("{e:#}")))
+    }
+
+    /// to be called when the whole file was pushed
+    pub fn finish(&mut self) -> Result<(), wasm_bindgen::JsError> {
+        self.feeder
+            .finish()
+            .map_err(|e| wasm_bindgen::JsError::new(&format!("{e:#}")))
+    }
+
+    /// whether the header was received, which is required to open the viewer
+    pub fn is_ready(&self) -> bool {
+        self.feeder.is_ready()
+    }
+
+    pub fn start_viewer(
+        &self,
+        scene: Option<Vec<u8>>,
+        pc_file: Option<String>,
+        scene_file: Option<String>,
+    ) -> Result<(), wasm_bindgen::JsError> {
+        use std::{io::Cursor, str::FromStr};
+
+        if !self.feeder.is_ready() {
+            return Err(wasm_bindgen::JsError::new(
+                "the ply header was not received",
+            ));
+        }
+        wasm_bindgen_futures::spawn_local(run_window(
+            PointCloudSource::Stream(self.feeder.stream()),
+            scene.map(Cursor::new),
+            RenderConfig {
+                no_vsync: false,
+                hdr: false,
+            },
+            pc_file.and_then(|s| PathBuf::from_str(s.as_str()).ok()),
+            scene_file.and_then(|s| PathBuf::from_str(s.as_str()).ok()),
+        ));
+        Ok(())
+    }
+}
+
+/// The sort of the splats for devices without compute shaders, runs in a web worker
+/// (see `public/sort_worker.js` and `cpu_sort.rs`).
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub struct SplatSorter(sort::DepthSorter);
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+impl SplatSorter {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self(sort::DepthSorter::new())
+    }
+
+    /// adds points, three values (xyz) per point
+    pub fn add_positions(&mut self, xyz: &[f32]) {
+        self.0.add_positions(xyz);
+    }
+
+    /// the indices of the points in front of the camera, the nearest first, `view` is the third
+    /// row of the view matrix
+    pub fn sort(&self, view: &[f32]) -> Vec<u32> {
+        self.0.sort([view[0], view[1], view[2], view[3]])
+    }
 }

@@ -102,6 +102,7 @@ struct RenderSettings {
     walltime: f32,
     scene_extend: f32,
     alpha_cutoff: f32,
+    num_points: u32,
     center: vec3<f32>,
 }
 
@@ -236,7 +237,7 @@ fn depth_key(z: f32) -> u32 {
 @compute @workgroup_size(256,1,1)
 fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) wgs: vec3<u32>) {
     let idx = gid.x;
-    if idx >= arrayLength(&vertices) {
+    if idx >= render_settings.num_points || idx >= arrayLength(&vertices) {
         return;
     }
 

@@ -29,10 +29,10 @@ image = "0.25.10"
 indicatif = "0.18.6"
 
 
-egui = "0.36.2"
-egui-wgpu = "0.36.2"
-egui-winit = { version = "0.36.2", features = [], default-features = false }
-egui_plot = "0.37.0"
+egui = { version = "0.37.0", features = ["monochrome_emoji_fonts"] }
+egui-wgpu = "0.37.0"
+egui-winit = { version = "0.37.0", features = [], default-features = false }
+egui_plot = "0.38.0"
 
 rand = "0.10.3"
 npyz = { version = "0.9.1", features = ["npz", "half"], optional = true }
@@ -40,6 +40,7 @@ futures-intrusive = "0.5.0"
 splines = { features = [
     "cgmath",
 ], git = "https://github.com/KeKsBoTer/splines" }
+serde-ply = "0.2.2"
 
 [dev-dependencies]
 wasm-bindgen-cli = "0.2.129"
@@ -69,6 +70,8 @@ sort-keys-32 = []
 pollster = { version = "1.0.1", features = ["macro"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# WebGL2 as fallback for browsers without WebGPU (rendering without sorting)
+wgpu = { version = "30.0.1", features = ["webgl"] }
 
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
 wasm-bindgen = "0.2.129"
@@ -77,13 +80,23 @@ wasm-bindgen-futures = "0.4.79"
 console_log = "1"
 log = "0.4"
 web-time = "1.1.0"
-web-sys = { version = "0.3.106" }
+web-sys = { version = "0.3.106", features = [
+    "Worker", "WorkerOptions", "WorkerType", "MessageEvent",
+    # dom access
+    "Window", "Document", "Element", "HtmlElement", "HtmlInputElement", "Node",
+    "Event", "EventTarget", "KeyboardEvent", "InputEvent",
+    # touch device detection (ui.rs)
+    "MediaQueryList",
+    # the backend parameter of the url (web_backend.rs)
+    "Location",
+] }
+js-sys = "0.3"
 
 [profile.web-release]
 inherits = "release"
 opt-level = "s"
 strip = "debuginfo"
 
-# egui-winit 0.36.2 does not compile for wasm32 (NativeFile does not implement bytes_async)
-[patch.crates-io]
-egui-winit = { path = "vendor/egui-winit" }
+# # egui-winit 0.36.2 does not compile for wasm32 (NativeFile does not implement bytes_async)
+# [patch.crates-io]
+# egui-winit = { path = "vendor/egui-winit" }

@@ -8,9 +8,16 @@
         content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0, minimum-scale=1.0">
     <link rel="stylesheet" href="https://unpkg.com/normalize.css@8/normalize.css">
     <style>
+        /* The body fills the visible part of the page. 100vh would be wrong on phones: it is the
+           height with the address bar and toolbars hidden, so the bottom of the page (and
+           everything that is anchored there) would be behind them. */
         body {
-            width: 100vw;
-            height: 100vh;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            margin: 0;
             overflow: hidden;
             background-color: black;
             color: white;
@@ -142,9 +149,11 @@
     </div>
     <div id="no-webgpu" class="alert" style="display: none;">
         <h1>WebGPU not supported</h1>
-        <p>Your browser does not support WebGPU.<br><a
+        <p>Your browser supports neither WebGPU nor WebGL2.<br><a
                 href="https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API#browser_compatibility">Please use a
                 browser that supports WebGPU.</a></p>
+        <button id="use-webgl" style="display: none; font-size: 1.1em; padding: 0.5em 1.2em; cursor: pointer;">Use
+            WebGL</button>
     </div>
     <div id="loading-error" class="alert" style="display: none;">
         <h1>An error occured</h1>
@@ -168,12 +177,45 @@
             }
         }
 
-        if (!await checkWebGPU()) {
-            document.getElementById("no-webgpu").style.display = "flex";
-            throw Error("WebGPU not supported.");
+        // The backend can be forced with the url parameter "backend" (webgpu or webgl). Without
+        // it the viewer uses WebGPU and falls back to WebGL2, which renders with a CPU sort.
+        function checkWebGL2() {
+            try {
+                return !!document.createElement("canvas").getContext("webgl2");
+            } catch (e) {
+                return false;
+            }
         }
 
-        import init, { run_wasm } from "./web_splats.js";
+        function urlWithBackend(backend) {
+            const p = new URLSearchParams(window.location.search);
+            p.set("backend", backend);
+            return window.location.pathname + "?" + p.toString();
+        }
+
+        const forced_backend = new URLSearchParams(window.location.search).get("backend");
+        const webgl2_available = checkWebGL2();
+        const has_webgpu = forced_backend === "webgl" ? false : await checkWebGPU();
+        const has_webgl = forced_backend === "webgpu" ? false : webgl2_available;
+        if (!has_webgpu && !has_webgl) {
+            const alert = document.getElementById("no-webgpu");
+            alert.style.display = "flex";
+            const text = alert.getElementsByTagName("p")[0];
+            if (forced_backend === "webgpu" && webgl2_available) {
+                // WebGPU was requested but is not there, WebGL2 can be used instead
+                text.innerHTML = "Your browser does not support WebGPU.<br>The viewer can use WebGL instead " +
+                    "(the splats are sorted on the CPU).";
+                const button = document.getElementById("use-webgl");
+                button.style.display = "inline-block";
+                button.onclick = () => { window.location.href = urlWithBackend("webgl"); };
+            } else if (forced_backend) {
+                text.innerHTML = "The requested backend (" + forced_backend + ") is not supported by your browser.<br>" +
+                    "<a href=\"" + window.location.pathname + window.location.search.replace(/[?&]backend=[^&]*/, "").replace(/^&/, "?") + "\">Open the viewer without forcing a backend</a>";
+            }
+            throw Error("The graphics backend is not supported.");
+        }
+
+        import init, { run_wasm, PointCloudLoader } from "./web_splats.js";
         let init_promise = init();
 
         let params = new URLSearchParams(window.location.search);
@@ -181,45 +223,84 @@
         let pc_file = params.get("file");
 
 
-        function withProgress(response) {
+        function showProgress(loaded, total) {
+            if (total) {
+                document.querySelector('.meter-1').style.strokeDashoffset = 360 - Math.round(loaded / total * 360);
+            }
+            document.querySelector('#loading-display').innerHTML = Math.round(loaded / (1024 * 1024) * 10) / 10 + " MB"
+        }
+
+        function concat(chunks) {
+            const data = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
+            let offset = 0;
+            for (const c of chunks) {
+                data.set(c, offset);
+                offset += c.byteLength;
+            }
+            return data;
+        }
+
+        // Downloads the point cloud. Ply files are streamed: the viewer opens when the header
+        // arrived and the points appear while the rest is downloading. Other formats are
+        // downloaded completely before the viewer opens.
+        async function loadPointCloud(response, scene_data) {
             if (!response.ok) {
                 throw new Error("Cannot download file", { cause: response });
             }
-            const contentLength = response.headers.get('content-length') || 0;
-            const total = parseInt(contentLength, 10);
+            const total = parseInt(response.headers.get('content-length') || 0, 10);
+            const reader = response.body.getReader();
+            // timing, to find out what is slow (see the console)
+            const t_start = performance.now();
+            let push_ms = 0;
             let loaded = 0;
-            return new Response(
-                new ReadableStream({
-                    start(controller) {
-                        const reader = response.body.getReader();
-
-                        read();
-                        function read() {
-                            reader.read().then(({ done, value }) => {
-                                if (done) {
-                                    controller.close();
-                                    return;
-                                }
-                                loaded += value.byteLength;
-                                document.querySelector('.meter-1').style.strokeDashoffset = 360 - Math.round(loaded / total * 360);
-                                document.querySelector('#loading-display').innerHTML = Math.round(loaded / (1024 * 1024) * 10) / 10 + " MB"
-                                controller.enqueue(value);
-                                read();
-                            }).catch(error => {
-                                console.error(error);
-                                controller.error(error)
-                            })
+            let loader = null;
+            let started = false;
+            let pending = []; // data until the file format is known, or the whole file for formats that cannot be streamed
+            let pendingBytes = 0;
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                loaded += value.byteLength;
+                showProgress(loaded, total);
+                if (loader) {
+                    const t = performance.now();
+                    loader.push(value);
+                    push_ms += performance.now() - t;
+                } else {
+                    pending.push(value);
+                    pendingBytes += value.byteLength;
+                    if (pendingBytes >= 3) {
+                        const head = concat(pending);
+                        if (head[0] == 0x70 && head[1] == 0x6c && head[2] == 0x79) { // "ply"
+                            loader = new PointCloudLoader();
+                            loader.push(head);
+                            pending = [];
                         }
                     }
-                })
-            );
+                }
+                if (loader && !started && loader.is_ready()) {
+                    loader.start_viewer(scene_data, pc_file, scene_file);
+                    started = true;
+                    console.log(`viewer started after ${((performance.now() - t_start) / 1000).toFixed(1)} s`);
+                }
+            }
+            console.log(`download finished after ${((performance.now() - t_start) / 1000).toFixed(1)} s, ` +
+                `${(loaded / 1048576).toFixed(0)} MB, ${(push_ms / 1000).toFixed(1)} s of it parsing the ply (main thread)`);
+            if (loader) {
+                loader.finish();
+                if (!started) {
+                    loader.start_viewer(scene_data, pc_file, scene_file);
+                }
+            } else {
+                run_wasm(concat(pending), scene_data, pc_file, scene_file);
+            }
         }
         if (!pc_file) {
             document.getElementById("no-file").style.display = "flex";
         } else {
             try {
                 document.getElementById("spinner").style.display = "flex";
-                let pc_promise = fetch(pc_file).then(withProgress).then(response => response.arrayBuffer()).then(data => new Uint8Array(data));
+                let pc_promise = fetch(pc_file);
                 var scene_promise = Promise.resolve(null);
                 if (scene_file) {
                     scene_promise = fetch(scene_file, {
@@ -229,19 +310,21 @@
                     }).then(r => r.arrayBuffer()).then(data => new Uint8Array(data))
                 }
 
-                let [pc_data, scene_data] = await Promise.all([pc_promise, scene_promise]);
+                let [pc_response, scene_data] = await Promise.all([pc_promise, scene_promise]);
                 await init_promise;
-                run_wasm(pc_data, scene_data, pc_file, scene_file);
+                await loadPointCloud(pc_response, scene_data);
             } catch (e) {
                 document.getElementById("spinner").style.display = "none";
                 let errorPane = document.getElementById("loading-error");
                 errorPane.style.display = "flex";
                 errorPane.getElementsByTagName("p")[0].innerHTML = e.message + ("cause" in e ? ": " + e.cause.statusText : "") + "<pre>" + pc_file + "</pre>";
-                console.error(e.cause.statusText);
+                console.error(e);
             }
             window.addEventListener('resize', function (event) {
-                document.getElementById("window-canvas").width = window.innerWidth;
-                document.getElementById("window-canvas").height = window.innerHeight;
+                // (the size of the canvas in pixels, not in css pixels)
+                const canvas = document.getElementById("window-canvas");
+                canvas.width = Math.round(window.innerWidth * window.devicePixelRatio);
+                canvas.height = Math.round(window.innerHeight * window.devicePixelRatio);
             }, true);
 
             document.addEventListener('contextmenu', event => event.preventDefault());

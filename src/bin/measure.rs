@@ -8,8 +8,8 @@ use std::{
 };
 #[allow(unused_imports)]
 use web_splats::{
-    DEFAULT_ALPHA_CUTOFF, GaussianRenderer, PerspectiveCamera, PointCloud, Scene, SceneCamera, SplattingArgs, Split,
-    WGPUContext, io,
+    DEFAULT_ALPHA_CUTOFF, GaussianRenderer, PerspectiveCamera, PointCloud, Scene, SceneCamera,
+    SplattingArgs, Split, WGPUContext, io,
 };
 
 #[derive(Debug, Parser)]
@@ -120,7 +120,7 @@ async fn render_views(
                     mip_splatting: None,
                     kernel_size: None,
                     clipping_box: None,
-            alpha_cutoff: DEFAULT_ALPHA_CUTOFF,
+                    alpha_cutoff: DEFAULT_ALPHA_CUTOFF,
                     walltime: Duration::from_secs(100),
                     scene_center: None,
                     scene_extend: None,
@@ -183,7 +183,7 @@ async fn main() {
     let mut reader = std::io::BufReader::new(file);
 
     let pc_raw = io::GenericGaussianPointCloud::load(&mut reader).unwrap();
-    let pc = PointCloud::new(&device, pc_raw).unwrap();
+    let pc = PointCloud::new(&device, &queue, pc_raw).unwrap();
 
     let mut renderer = GaussianRenderer::new(
         device,

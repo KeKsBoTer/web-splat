@@ -3,19 +3,24 @@ use std::io::BufReader;
 use std::io::{Read, Seek};
 
 use bytemuck::Zeroable;
-use cgmath::{Array, EuclideanSpace, InnerSpace, Point3, Vector3};
+use cgmath::{Point3, Vector3};
 use half::f16;
 
-use crate::pointcloud::{Aabb, Covariance3D, Gaussian, GaussianCompressed, GaussianQuantization};
+use crate::pointcloud::{
+    Aabb, Covariance3D, Gaussian, GaussianCompressed, GaussianQuantization, PlaneFit, Quantization,
+};
 
 #[cfg(feature = "npz")]
 use self::npz::NpzReader;
 
 use self::ply::PlyReader;
+pub use self::ply::{GaussianChunk, PlyInfo};
+pub use self::stream::{PlyFeeder, PointCloudStream};
 
 #[cfg(feature = "npz")]
 pub mod npz;
 pub mod ply;
+pub mod stream;
 
 pub trait PointCloudReader {
     fn read(&mut self) -> Result<GenericGaussianPointCloud, anyhow::Error>;
@@ -57,6 +62,12 @@ impl GenericGaussianPointCloud {
             let mut npz_reader = NpzReader::new(&mut reader)?;
             return npz_reader.read();
         }
+        #[cfg(not(feature = "npz"))]
+        if signature.starts_with(b"PK\x03\x04") {
+            return Err(anyhow::anyhow!(
+                "npz files need the `npz` feature (cargo run --release --features npz ...)"
+            ));
+        }
         return Err(anyhow::anyhow!("Unknown file format"));
     }
 
@@ -76,13 +87,11 @@ impl GenericGaussianPointCloud {
             bbox.grow(&v.xyz);
         }
 
-        let (center, mut up) = plane_from_points(
-            gaussians
-                .iter()
-                .map(|g| g.xyz.cast().unwrap())
-                .collect::<Vec<Point3<f32>>>()
-                .as_slice(),
-        );
+        let mut plane_fit = PlaneFit::default();
+        for g in &gaussians {
+            plane_fit.add(g.xyz.cast().unwrap());
+        }
+        let (center, mut up) = plane_fit.finish();
 
         if bbox.radius() < 10. {
             up = None;
@@ -121,13 +130,11 @@ impl GenericGaussianPointCloud {
             bbox.grow(&v.xyz);
         }
 
-        let (center, mut up) = plane_from_points(
-            gaussians
-                .iter()
-                .map(|g| g.xyz.cast().unwrap())
-                .collect::<Vec<Point3<f32>>>()
-                .as_slice(),
-        );
+        let mut plane_fit = PlaneFit::default();
+        for g in &gaussians {
+            plane_fit.add(g.xyz.cast().unwrap());
+        }
+        let (center, mut up) = plane_fit.finish();
 
         if bbox.radius() < 10. {
             up = None;
@@ -165,6 +172,65 @@ impl GenericGaussianPointCloud {
         }
     }
 
+    /// The gaussians and their sh coefficients as they are used for rendering without
+    /// compression: compressed point clouds are decoded the way `preprocess_compressed.wgsl`
+    /// does it.
+    /// Only the points in `range` are converted, so that not all points have to be in memory
+    /// twice.
+    pub(crate) fn to_chunk(&self, range: std::ops::Range<usize>) -> GaussianChunk {
+        if !self.compressed {
+            let gaussians: &[Gaussian] = bytemuck::cast_slice(&self.gaussians);
+            let sh_coefs: &[[[f16; 3]; 16]] = bytemuck::cast_slice(&self.sh_coefs);
+            return GaussianChunk {
+                gaussians: gaussians[range.clone()].to_vec(),
+                sh_coefs: sh_coefs[range].to_vec(),
+            };
+        }
+        let compressed: &[GaussianCompressed] =
+            &bytemuck::cast_slice::<_, GaussianCompressed>(&self.gaussians)[range];
+        let covars = self
+            .covars
+            .as_ref()
+            .expect("compressed point cloud without covariances");
+        let quantization = self
+            .quantization
+            .as_ref()
+            .expect("compressed point cloud without quantization");
+        let sh_values: &[i8] = bytemuck::cast_slice(&self.sh_coefs);
+        let num_coefs = ((self.sh_deg + 1) * (self.sh_deg + 1)) as usize;
+        let dequantize =
+            |value: i8, q: &Quantization| (value as f32 - q.zero_point as f32) * q.scale;
+
+        let mut gaussians = Vec::with_capacity(compressed.len());
+        let mut sh_coefs = Vec::with_capacity(compressed.len());
+        for g in compressed {
+            let opacity = dequantize(g.opacity, &quantization.opacity);
+            let scaling_factor = dequantize(g.scale_factor, &quantization.scaling_factor).exp();
+            let cov = covars[g.geometry_idx as usize]
+                .0
+                .map(|c| f16::from_f32(c.to_f32() * scaling_factor * scaling_factor));
+            gaussians.push(Gaussian::new(g.xyz, f16::from_f32(opacity), cov));
+
+            let mut sh = [[f16::ZERO; 3]; 16];
+            for (c, coef) in sh.iter_mut().enumerate().take(num_coefs) {
+                let q = if c == 0 {
+                    &quantization.color_dc
+                } else {
+                    &quantization.color_rest
+                };
+                for (k, value) in coef.iter_mut().enumerate() {
+                    let i = 3 * (g.sh_idx as usize * num_coefs + c) + k;
+                    *value = f16::from_f32(dequantize(sh_values[i], q));
+                }
+            }
+            sh_coefs.push(sh);
+        }
+        GaussianChunk {
+            gaussians,
+            sh_coefs,
+        }
+    }
+
     pub fn sh_coefs_buffer(&self) -> &[u8] {
         &self.sh_coefs
     }
@@ -175,110 +241,5 @@ impl GenericGaussianPointCloud {
 
     pub fn compressed(&self) -> bool {
         self.compressed
-    }
-}
-
-// Fit a plane to a collection of points.
-// Fast, and accurate to within a few degrees.
-// Returns None if the points do not span a plane.
-// see http://www.ilikebigbits.com/2017_09_25_plane_from_points_2.html
-fn plane_from_points(points: &[Point3<f32>]) -> (Point3<f32>, Option<Vector3<f32>>) {
-    let n = points.len();
-
-    let mut sum = Point3 {
-        x: 0.0f32,
-        y: 0.0f32,
-        z: 0.0f32,
-    };
-    for p in points {
-        sum = &sum + p.to_vec();
-    }
-    let centroid = &sum * (1.0 / (n as f32));
-    if n < 3 {
-        return (centroid, None);
-    }
-
-    // Calculate full 3x3 covariance matrix, excluding symmetries:
-    let mut xx = 0.0;
-    let mut xy = 0.0;
-    let mut xz = 0.0;
-    let mut yy = 0.0;
-    let mut yz = 0.0;
-    let mut zz = 0.0;
-
-    for p in points {
-        let r = p - centroid;
-        xx += r.x * r.x;
-        xy += r.x * r.y;
-        xz += r.x * r.z;
-        yy += r.y * r.y;
-        yz += r.y * r.z;
-        zz += r.z * r.z;
-    }
-
-    xx /= n as f32;
-    xy /= n as f32;
-    xz /= n as f32;
-    yy /= n as f32;
-    yz /= n as f32;
-    zz /= n as f32;
-
-    let mut weighted_dir = Vector3 {
-        x: 0.0,
-        y: 0.0,
-        z: 0.0,
-    };
-
-    {
-        let det_x = yy * zz - yz * yz;
-        let axis_dir = Vector3 {
-            x: det_x,
-            y: xz * yz - xy * zz,
-            z: xy * yz - xz * yy,
-        };
-        let mut weight = det_x * det_x;
-        if weighted_dir.dot(axis_dir) < 0.0 {
-            weight = -weight;
-        }
-        weighted_dir += &axis_dir * weight;
-    }
-
-    {
-        let det_y = xx * zz - xz * xz;
-        let axis_dir = Vector3 {
-            x: xz * yz - xy * zz,
-            y: det_y,
-            z: xy * xz - yz * xx,
-        };
-        let mut weight = det_y * det_y;
-        if weighted_dir.dot(axis_dir) < 0.0 {
-            weight = -weight;
-        }
-        weighted_dir += &axis_dir * weight;
-    }
-
-    {
-        let det_z = xx * yy - xy * xy;
-        let axis_dir = Vector3 {
-            x: xy * yz - xz * yy,
-            y: xy * xz - yz * xx,
-            z: det_z,
-        };
-        let mut weight = det_z * det_z;
-        if weighted_dir.dot(axis_dir) < 0.0 {
-            weight = -weight;
-        }
-        weighted_dir += &axis_dir * weight;
-    }
-
-    let mut normal = weighted_dir.normalize();
-
-    if normal.dot(Vector3::unit_y()) < 0. {
-        normal = -normal;
-    }
-    if normal.is_finite() {
-        (centroid, Some(normal))
-    } else {
-        (centroid, None)
     }
 }

@@ -14,17 +14,22 @@ use wgpu::{Extent3d, MultisampleState, include_wgsl};
 
 use cgmath::{EuclideanSpace, Matrix4, Point3, SquareMatrix, Vector2, Vector4};
 
-pub struct GaussianRenderer {
-    pipeline: wgpu::RenderPipeline,
-    camera: UniformBuffer<CameraUniform>,
+/// Whether the device can run the compute based renderer (preprocess and sort in compute shaders,
+/// splats in storage buffers). Without (WebGL2) the splats are projected in the vertex shader
+/// and drawn unsorted, see `gaussian_vertex.wgsl`.
+pub fn supports_compute(device: &wgpu::Device) -> bool {
+    let limits = device.limits();
+    limits.max_compute_workgroups_per_dimension > 0
+        && limits.max_compute_workgroup_size_x >= 256
+        && limits.max_storage_buffers_per_shader_stage > 0
+}
 
-    render_settings: UniformBuffer<SplattingArgsUniform>,
+/// The resources for sorted rendering with compute shaders.
+struct ComputeBackend {
     preprocess: PreprocessPipeline,
-
     draw_indirect_buffer: wgpu::Buffer,
     #[allow(dead_code)]
     draw_indirect: wgpu::BindGroup,
-    color_format: wgpu::TextureFormat,
     sorter: GPURSSorter,
     sorter_suff: Option<PointCloudSortStuff>,
     /// latest finished readback of the visible point count and whether one is in flight
@@ -34,6 +39,55 @@ pub struct GaussianRenderer {
     visible_pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
+impl ComputeBackend {
+    fn new(device: &wgpu::Device, sh_deg: u32, compressed: bool) -> Self {
+        let draw_indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("indirect draw buffer"),
+            size: std::mem::size_of::<wgpu::util::DrawIndirectArgs>() as u64,
+            usage: wgpu::BufferUsages::INDIRECT
+                | wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        let indirect_layout = GaussianRenderer::bind_group_layout(device);
+        let draw_indirect = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("draw indirect buffer"),
+            layout: &indirect_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: draw_indirect_buffer.as_entire_binding(),
+            }],
+        });
+
+        Self {
+            preprocess: PreprocessPipeline::new(device, sh_deg, compressed),
+            draw_indirect_buffer,
+            draw_indirect,
+            sorter: GPURSSorter::new(device),
+            sorter_suff: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            visible_count: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            visible_pending: Default::default(),
+        }
+    }
+}
+
+pub struct GaussianRenderer {
+    pipeline: wgpu::RenderPipeline,
+    camera: UniformBuffer<CameraUniform>,
+
+    render_settings: UniformBuffer<SplattingArgsUniform>,
+    color_format: wgpu::TextureFormat,
+    /// `None` if the device has no compute shaders, then the splats are not sorted
+    compute: Option<ComputeBackend>,
+}
+
+/// the index of a gaussian in the vertex shader path (`gaussian_vertex.wgsl`)
+const INDEX_ATTRIBUTES: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![0 => Uint32];
+
 impl GaussianRenderer {
     pub fn new(
         device: &wgpu::Device,
@@ -41,19 +95,39 @@ impl GaussianRenderer {
         sh_deg: u32,
         compressed: bool,
     ) -> Self {
+        let compute =
+            supports_compute(device).then(|| ComputeBackend::new(device, sh_deg, compressed));
+
+        let layouts: Vec<wgpu::BindGroupLayout> = if compute.is_some() {
+            vec![
+                PointCloud::bind_group_layout_render(device), // Needed for points_2d (on binding 2)
+                GPURSSorter::bind_group_layout_rendering(device), // Needed for indices   (on binding 4)
+                UniformBuffer::<SplattingArgsUniform>::bind_group_layout(device), // alpha cutoff
+            ]
+        } else {
+            vec![
+                UniformBuffer::<CameraUniform>::bind_group_layout(device),
+                UniformBuffer::<SplattingArgsUniform>::bind_group_layout(device),
+                PointCloud::bind_group_layout_data(device),
+            ]
+        };
+        let layout_refs: Vec<Option<&wgpu::BindGroupLayout>> = layouts.iter().map(Some).collect();
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("render pipeline layout"),
-            bind_group_layouts: &[
-                Some(&PointCloud::bind_group_layout_render(device)), // Needed for points_2d (on binding 2)
-                Some(&GPURSSorter::bind_group_layout_rendering(device)), // Needed for indices   (on binding 4)
-                Some(&UniformBuffer::<SplattingArgsUniform>::bind_group_layout(
-                    device,
-                )), // alpha cutoff
-            ],
+            bind_group_layouts: &layout_refs,
             immediate_size: 0,
         });
 
-        let shader = device.create_shader_module(wgpu::include_wgsl!("shaders/gaussian.wgsl"));
+        let shader = if compute.is_some() {
+            device.create_shader_module(wgpu::include_wgsl!("shaders/gaussian.wgsl"))
+        } else {
+            device.create_shader_module(wgpu::include_wgsl!("shaders/gaussian_vertex.wgsl"))
+        };
+        let vertex_buffers = [Some(wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<u32>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &INDEX_ATTRIBUTES,
+        })];
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("render pipeline"),
@@ -61,7 +135,11 @@ impl GaussianRenderer {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[],
+                buffers: if compute.is_some() {
+                    &[]
+                } else {
+                    &vertex_buffers
+                },
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -103,43 +181,11 @@ impl GaussianRenderer {
             multiview_mask: None,
         });
 
-        let draw_indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("indirect draw buffer"),
-            size: std::mem::size_of::<wgpu::util::DrawIndirectArgs>() as u64,
-            usage: wgpu::BufferUsages::INDIRECT
-                | wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
-        let indirect_layout = Self::bind_group_layout(device);
-        let draw_indirect = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("draw indirect buffer"),
-            layout: &indirect_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: draw_indirect_buffer.as_entire_binding(),
-            }],
-        });
-
-        let sorter = GPURSSorter::new(device);
-
-        let camera = UniformBuffer::new_default(device, Some("camera uniform buffer"));
-        let preprocess = PreprocessPipeline::new(device, sh_deg, compressed);
         GaussianRenderer {
             pipeline,
-            camera,
-            preprocess,
-            draw_indirect_buffer,
-            draw_indirect,
+            camera: UniformBuffer::new_default(device, Some("camera uniform buffer")),
             color_format,
-            sorter,
-            sorter_suff: None,
-            #[cfg(not(target_arch = "wasm32"))]
-            visible_count: Default::default(),
-            #[cfg(not(target_arch = "wasm32"))]
-            visible_pending: Default::default(),
+            compute,
             render_settings: UniformBuffer::new_default(
                 device,
                 Some("render settings uniform buffer"),
@@ -151,11 +197,11 @@ impl GaussianRenderer {
         &self.camera
     }
 
-    fn preprocess<'a>(
-        &'a mut self,
-        encoder: &'a mut wgpu::CommandEncoder,
+    /// uploads the camera and the render settings
+    fn update_uniforms(
+        &mut self,
         queue: &wgpu::Queue,
-        pc: &'a PointCloud,
+        pc: &PointCloud,
         render_settings: SplattingArgs,
     ) {
         let camera = render_settings.camera;
@@ -168,41 +214,27 @@ impl GaussianRenderer {
         let settings_uniform = self.render_settings.as_mut();
         *settings_uniform = SplattingArgsUniform::from_args_and_pc(render_settings, pc);
         self.render_settings.sync(queue);
-
-        // TODO perform this in vertex buffer after draw call
-        queue.write_buffer(
-            &self.draw_indirect_buffer,
-            0,
-            wgpu::util::DrawIndirectArgs {
-                vertex_count: 4,
-                instance_count: 0,
-                first_vertex: 0,
-                first_instance: 0,
-            }
-            .as_bytes(),
-        );
-        let depth_buffer = &self.sorter_suff.as_ref().unwrap().sorter_bg_pre;
-        self.preprocess.run(
-            encoder,
-            pc,
-            &self.camera,
-            &self.render_settings,
-            depth_buffer,
-        );
     }
 
     /// Number of visible points of the latest frame whose readback finished. The
     /// readback is asynchronous: waiting for the GPU every frame would stall the CPU
     /// until all submitted work is done and delay the input.
+    /// Without compute shaders the visible points are not counted, this is 0.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn num_visible_points(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> u32 {
         use std::sync::atomic::Ordering;
-        if !self.visible_pending.swap(true, Ordering::AcqRel) {
-            let (count, pending) = (self.visible_count.clone(), self.visible_pending.clone());
+        let Some(compute) = &self.compute else {
+            return 0;
+        };
+        if !compute.visible_pending.swap(true, Ordering::AcqRel) {
+            let (count, pending) = (
+                compute.visible_count.clone(),
+                compute.visible_pending.clone(),
+            );
             wgpu::util::DownloadBuffer::read_buffer(
                 device,
                 queue,
-                &self.draw_indirect_buffer.slice(..),
+                &compute.draw_indirect_buffer.slice(..),
                 move |b| {
                     if let Ok(download) = b {
                         let data = download.as_ref();
@@ -217,7 +249,7 @@ impl GaussianRenderer {
         }
         // run the callbacks of finished readbacks without waiting
         device.poll(wgpu::PollType::Poll).ok();
-        self.visible_count.load(Ordering::Acquire)
+        compute.visible_count.load(Ordering::Acquire)
     }
 
     pub fn prepare(
@@ -229,22 +261,30 @@ impl GaussianRenderer {
         render_settings: SplattingArgs,
         stopwatch: &mut Option<GPUStopwatch>,
     ) {
-        if self.sorter_suff.is_none()
-            || self
+        self.update_uniforms(queue, pc, render_settings);
+
+        // without compute shaders everything happens when the splats are drawn
+        let Some(compute) = self.compute.as_mut() else {
+            return;
+        };
+
+        if compute.sorter_suff.is_none()
+            || compute
                 .sorter_suff
                 .as_ref()
                 .is_some_and(|s| s.num_points != pc.num_points() as usize)
         {
             log::debug!("created sort buffers for {:} points", pc.num_points());
-            self.sorter_suff = Some(
-                self.sorter
+            compute.sorter_suff = Some(
+                compute
+                    .sorter
                     .create_sort_stuff(device, pc.num_points() as usize),
             );
         }
 
         GPURSSorter::record_reset_indirect_buffer(
-            &self.sorter_suff.as_ref().unwrap().sorter_dis,
-            &self.sorter_suff.as_ref().unwrap().sorter_uni,
+            &compute.sorter_suff.as_ref().unwrap().sorter_dis,
+            &compute.sorter_suff.as_ref().unwrap().sorter_uni,
             &queue,
         );
 
@@ -253,7 +293,26 @@ impl GaussianRenderer {
             stopwatch.start(encoder, "preprocess").unwrap();
         }
 
-        self.preprocess(encoder, queue, &pc, render_settings);
+        // TODO perform this in vertex buffer after draw call
+        queue.write_buffer(
+            &compute.draw_indirect_buffer,
+            0,
+            wgpu::util::DrawIndirectArgs {
+                vertex_count: 4,
+                instance_count: 0,
+                first_vertex: 0,
+                first_instance: 0,
+            }
+            .as_bytes(),
+        );
+        let depth_buffer = &compute.sorter_suff.as_ref().unwrap().sorter_bg_pre;
+        compute.preprocess.run(
+            encoder,
+            pc,
+            &self.camera,
+            &self.render_settings,
+            depth_buffer,
+        );
         if let Some(stopwatch) = stopwatch {
             stopwatch.stop(encoder, "preprocess").unwrap();
         }
@@ -261,9 +320,9 @@ impl GaussianRenderer {
         if let Some(stopwatch) = stopwatch {
             stopwatch.start(encoder, "sorting").unwrap();
         }
-        self.sorter.record_sort_indirect(
-            &self.sorter_suff.as_ref().unwrap().sorter_bg,
-            &self.sorter_suff.as_ref().unwrap().sorter_dis,
+        compute.sorter.record_sort_indirect(
+            &compute.sorter_suff.as_ref().unwrap().sorter_bg,
+            &compute.sorter_suff.as_ref().unwrap().sorter_dis,
             encoder,
         );
         if let Some(stopwatch) = stopwatch {
@@ -271,9 +330,9 @@ impl GaussianRenderer {
         }
 
         encoder.copy_buffer_to_buffer(
-            &self.sorter_suff.as_ref().unwrap().sorter_uni,
+            &compute.sorter_suff.as_ref().unwrap().sorter_uni,
             0,
-            &self.draw_indirect_buffer,
+            &compute.draw_indirect_buffer,
             std::mem::size_of::<u32>() as u64,
             std::mem::size_of::<u32>() as u64,
         );
@@ -284,12 +343,32 @@ impl GaussianRenderer {
         render_pass: &mut wgpu::RenderPass<'rpass>,
         pc: &'rpass PointCloud,
     ) {
-        render_pass.set_bind_group(0, pc.render_bind_group(), &[]);
-        render_pass.set_bind_group(1, &self.sorter_suff.as_ref().unwrap().sorter_render_bg, &[]);
-        render_pass.set_bind_group(2, self.render_settings.bind_group(), &[]);
         render_pass.set_pipeline(&self.pipeline);
+        match &self.compute {
+            Some(compute) => {
+                render_pass.set_bind_group(0, pc.render_bind_group(), &[]);
+                render_pass.set_bind_group(
+                    1,
+                    &compute.sorter_suff.as_ref().unwrap().sorter_render_bg,
+                    &[],
+                );
+                render_pass.set_bind_group(2, self.render_settings.bind_group(), &[]);
 
-        render_pass.draw_indirect(&self.draw_indirect_buffer, 0);
+                render_pass.draw_indirect(&compute.draw_indirect_buffer, 0);
+            }
+            None => {
+                render_pass.set_bind_group(0, self.camera.bind_group(), &[]);
+                render_pass.set_bind_group(1, self.render_settings.bind_group(), &[]);
+                let gaussians = pc
+                    .cpu_sorted()
+                    .expect("point cloud without compute shaders has to be sorted on the cpu");
+                if gaussians.visible() > 0 {
+                    render_pass.set_bind_group(2, gaussians.bind_group(), &[]);
+                    render_pass.set_vertex_buffer(0, gaussians.index_buffer().slice(..));
+                    render_pass.draw(0..4, 0..gaussians.visible());
+                }
+            }
+        }
     }
 
     pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -447,7 +526,7 @@ impl PreprocessPipeline {
         pass.set_bind_group(2, sort_bg, &[]);
         pass.set_bind_group(3, render_settings.bind_group(), &[]);
 
-        let wgs_x = (pc.num_points() as f32 / 256.0).ceil() as u32;
+        let wgs_x = (pc.loaded_points() as f32 / 256.0).ceil() as u32;
         pass.dispatch_workgroups(wgs_x, 1, 1);
     }
 }
@@ -658,7 +737,8 @@ pub struct SplattingArgsUniform {
     walltime: f32,
     scene_extend: f32,
     alpha_cutoff: f32,
-    _pad: u32,
+    /// number of points that are loaded, the rest of the buffers is not initialized
+    num_points: u32,
 
     scene_center: Vector4<f32>,
 }
@@ -688,6 +768,7 @@ impl SplattingArgsUniform {
                 .extend(0.),
             walltime: args.walltime.as_secs_f32(),
             alpha_cutoff: args.alpha_cutoff,
+            num_points: pc.loaded_points(),
             scene_center: pc.center().to_vec().extend(0.),
             scene_extend: args
                 .scene_extend
@@ -716,7 +797,7 @@ impl Default for SplattingArgsUniform {
             scene_center: Vector4::new(0., 0., 0., 0.),
             scene_extend: 1.,
             alpha_cutoff: DEFAULT_ALPHA_CUTOFF,
-            _pad: 0,
+            num_points: 0,
         }
     }
 }
